@@ -1,0 +1,7 @@
+.venv/
+llama.cpp/
+*.gguf
+__pycache__/
+
+# local reference material (J help download, etc.)
+reference/
