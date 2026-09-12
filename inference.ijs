@@ -54,14 +54,9 @@ NB. arch loader parse from the mapped raw. The mapping is unmap'd after
 NB. load (one model per load) — the llm noun never holds the mapped-raw ref,
 NB. so unmap frees it.
 NB. ---- Real GGUF chat-template (set per-load by arch loaders; '' = none) ----
-NB. The arch loader extracts `tokenizer.chat_template` from the GGUF and stores
-NB. it here; chat_prompt renders it via the minja/chat_template port when
-NB. non-empty, else falls back to the bespoke per-arch prompt. Reset per load
-NB. so loading a non-chat-template model clears a stale template.
-ct_tmpl_g =: ''
-NB. ---- Extra chat-template variables (e.g. enable_thinking) ----
-NB. minja obj (Value) holding template vars; passed as `extra` to ct_apply.
-ct_vars_g =: ''
+NB. ct_tmpl_g/ct_vars_g are initialized in util/chat.ijs (the chat layer,
+NB. loaded by inference.ijs and by the chat tests). Reset per load so loading
+NB. a non-chat-template model clears a stale template.
 
 load_gguf_to_llm =: 3 : 0
   NB. Accept a model spec (catalog id / HF path / URL / ~models path) or a

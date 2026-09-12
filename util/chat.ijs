@@ -15,6 +15,14 @@ coclass 'inference'
 require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 
+NB. ---- Real GGUF chat-template + template variables (chat layer globals) ----
+NB. ct_tmpl_g: the real jinja template pulled from the GGUF by the arch
+NB. loader ('' = none -> bespoke fallback). Reset per load in inference.ijs.
+NB. ct_vars_g: minja obj (Value) holding extra template variables
+NB. (enable_thinking etc.), passed as `extra` to ct_apply.
+ct_tmpl_g =: ''
+ct_vars_g =: ''
+
 NB. ---- Dispatch helpers (arch string -> arch verb) ----
 chat_prompt =: 4 : 0
   select. x
