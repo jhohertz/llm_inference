@@ -1,0 +1,4 @@
+[gMASK]<sop><|user|>
+What's your favourite LLM framework?<|assistant|>
+<think></think>
+llama.cpp!<|assistant|>
