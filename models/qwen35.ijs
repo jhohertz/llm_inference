@@ -16,6 +16,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_gpt2'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- KV helpers ----
 qw35_kv_uint =: 4 : 0
@@ -911,6 +913,8 @@ qw35_load =: 3 : 0
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (<n_rot) , (< mi_rope_freq mi))
   mi =. mi , rope_tables
   mi =. mi , (<"0) key_len , n_rot , ssm_d_inner , ssm_d_state , ssm_dt_rank , ssm_n_group
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   all_tensors =. ''
   tensor_idx =. 0
@@ -1023,6 +1027,11 @@ qw35_ltrim_nl =: 3 : 0
 
 qw35_chat_prompt =: 3 : 0
   messages =. y
+  if. -. ('' -: ct_tmpl_g) do.
+    chat_tmpl_render messages
+    return.
+  end.
+  NB. Bespoke fallback (no GGUF template).
   n =. # messages
   res =. ''
   NB. Merged system block (num_sys = 1 or 2 leading system/developer msgs).
