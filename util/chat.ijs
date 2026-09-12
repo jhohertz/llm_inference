@@ -12,6 +12,8 @@ NB.   messages = boxed list of message boxes; each message = <role ; content>
 NB.   built with (role) ; content  — e.g. ('user') ; 'The capital of France is'
 NB. ================================================================
 coclass 'inference'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- Dispatch helpers (arch string -> arch verb) ----
 chat_prompt =: 4 : 0
@@ -89,8 +91,8 @@ chat_stop_tokens =: 3 : 0
 )
 
 NB. ---- Chat arg parsing ----
-NB. y = <messages ; max_steps ; <params>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
-NB. Returns <messages; max_steps; temp; k; p; min_p>
+NB. y = <messages ; max_steps ; <params> ; <tmpl_vars?>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
+NB. Returns <messages; max_steps; temp; k; p; min_p; tmpl_vars>
 chat_args =: 3 : 0
   messages =. > 0 { y
   max_steps =. > 1 { y
@@ -104,13 +106,75 @@ chat_args =: 3 : 0
   k =. 1 { flat
   p =. 2 { flat
   min_p =. 3 { flat
-  (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p)
+  tmpl_vars =. ''
+  if. 3 < # y do. tmpl_vars =. > 3 { y end.
+  (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<tmpl_vars)
+)
+
+NB. ---- Template variables: boxed list of (<key) ; <value -> minja obj ----
+NB. Values may be strings (char), ints, or floats. Sets the chat-template
+NB. variables (enable_thinking etc.) used by the real jinja render.
+chat_vars_obj =: 3 : 0
+  vars =. y
+  o =. mkobj_minja_ ''
+  for_i. i. # vars do.
+    p =. > i { vars
+    k =. > 0 { p
+    v =. > 1 { p
+    if. 2 = 3!:0 v do.
+      mv =. mkstr_minja_ v
+    elseif. 1 = 3!:0 v do.
+      mv =. mkint_minja_ v
+    else.
+      mv =. mkfloat_minja_ v
+    end.
+    o =. ((<k) , <mv) obj_set_minja_ o
+  end.
+  o
+)
+
+NB. ---- Real GGUF chat-template render (shared across arches) ----
+NB. y = messages: boxed list of <role ; content>. Renders the real jinja
+NB. template stored in ct_tmpl_g (set by the arch loader from the GGUF) via the
+NB. minja/chat_template port, with ct_vars_g as extra template variables.
+NB. Returns the rendered prompt string ('' if no template).
+days_from_civil =: 3 : 0
+  'y m d' =. y
+  y =. y - (m <: 2)
+  era =. <. ((y - 399 * (y < 0)) % 400)
+  yoe =. y - era * 400
+  m2 =. m + 9 - 12 * (m > 2)
+  doy =. (<. ((153 * m2) + 2) % 5) + d - 1
+  doe =. ((yoe * 365) + (<. (yoe % 4))) - (<. (yoe % 100))
+  doe =. doe + doy
+  (era * 146097) + doe - 719468
+)
+
+chat_tmpl_render =: 3 : 0
+  messages =. y
+  vals =. ''
+  for_i. i. # messages do.
+    msg =. > i { messages
+    role =. > 0 { msg
+    content =. > 1 { msg
+    mv =. mkobj_minja_ ((('role') pair_minja_ (mkstr_minja_ role)) , (('content') pair_minja_ (mkstr_minja_ content)))
+    vals =. vals , < mv
+  end.
+  msgs =. mkarr_minja_ vals
+  extra =. ct_vars_g
+  if. '' -: extra do. extra =. mkobj_minja_ '' end.
+  now =. (days_from_civil (3 {. (6!:0 ''))) * 86400
+  inputs =. ((<msgs) , (<(mknull_minja_ '')) , (<1) , (<extra) , (<now) , (<'') , (<''))
+  src =. ct_tmpl_g
+  caps =. ct_new_chatpl_ (src ; '' ; '')
+  ct_apply_chatpl_ ((<src) , (<inputs) , (<caps) , (<ct_tool_ex_g_chatpl_) , (<(mk_options_chatpl_ '')))
 )
 
 NB. ---- Chat generation ----
-NB. llm chat_generate (messages ; max_steps ; <temp;k;p;min_p>) -> answer text.
-NB. Renders the full message history (multi-turn), adds the generation prompt,
-NB. and generates until the arch's stop tokens. The stop token is not included.
+NB. llm chat_generate (messages ; max_steps ; <temp;k;p;min_p> ; <tmpl_vars>) -> answer text.
+NB. tmpl_vars = boxed list of (<key) ; <value — extra jinja template variables
+NB. (e.g. enable_thinking). Renders the full message history (multi-turn), adds
+NB. the generation prompt, and generates until the arch's stop tokens.
 chat_generate =: 4 : 0
   llm =. x
   args =. chat_args y
@@ -120,6 +184,8 @@ chat_generate =: 4 : 0
   k =. > 3 { args
   p =. > 4 { args
   min_p =. > 5 { args
+  tmpl_vars =. > 6 { args
+  ct_vars_g =: chat_vars_obj tmpl_vars
 
   arch =. llm_arch llm
   prompt =. arch chat_prompt messages
@@ -221,6 +287,8 @@ chat_core =: 4 : 0
   k =. 1 { flat
   p =. 2 { flat
   min_p =. 3 { flat
+  NB. persistent chat takes no tmpl_vars — clear any from chat_generate.
+  ct_vars_g =: ''
   arch =. llm_arch llm
 
   if. 0 = # chat_session_g do.
