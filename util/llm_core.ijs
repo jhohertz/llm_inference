@@ -608,16 +608,3 @@ split_specials =: 4 : 0
   segs
 )
 
-NB. ---- Trim leading/trailing whitespace (chat template `| trim`) ----
-NB. `i { s` returns a CHAR; `e.` against a numeric ws set is a type-mismatch
-NB. (0), so convert to byte code with `a. i.` before the membership test.
-trim_ws =: 3 : 0
-  s =. y
-  ws =. 32 9 10 13
-  i =. 0
-  while. (i < # s) *. ((a. i. i { s) e. ws) do. i =. i + 1 end.
-  s =. i }. s
-  j =. # s
-  while. (0 < j) *. ((a. i. (j - 1) { s) e. ws) do. j =. j - 1 end.
-  j {. s
-)

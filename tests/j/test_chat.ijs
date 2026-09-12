@@ -36,6 +36,8 @@ test_arch_prompt =: 3 : 0
   msg =. ('user') ; 'The capital of France is'
   messages =. <msg
   kv =. parse_kv_pairs path
+  NB. Render via the real GGUF jinja template (chat_prompt is pure jinja now).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv)
   select. arch
   case. 'gemma3' do.
     tk =. build_llama3_tokenizer kv

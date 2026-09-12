@@ -996,117 +996,13 @@ qw35_infer =: 4 : 0
 )
 
 NB. ---- Chat template prompt (qwen3.5: thinking/response generation prompt) ----
-NB. The real template (GGUF tokenizer.chat_template, reference/qwen35-chat_template.jinja)
-NB. renders the generation prompt with angle-bracket tags (5-char 'think'):
-NB.   thinking LF LF response LF LF  (default)  or  thinking LF  (enable_thinking=true).
-NB. Tags are built via char codes (60 116 104 105 110 107 62 = '<think>').
-qw35_tk_open =: 60 116 104 105 110 107 62 { a.
-qw35_tk_close =: 60 47 116 104 105 110 107 62 { a.
-
-NB. x = needle, y = text -> first occurrence index (or # text)
-qw35_find =: 4 : 0
-  m =. x
-  s =. y
-  occ =. m E. s
-  if. 1 e. occ do. occ i. 1 else. # s end.
-)
-
-NB. strip trailing / leading LF chars (template rstrip('\n') / lstrip('\n'))
-qw35_rtrim_nl =: 3 : 0
-  s =. y
-  j =. # s
-  while. (0 < j) *. (LF -: (j - 1) { s) do. j =. j - 1 end.
-  j {. s
-)
-qw35_ltrim_nl =: 3 : 0
-  s =. y
-  i =. 0
-  while. (i < # s) *. (LF -: i { s) do. i =. i + 1 end.
-  i }. s
-)
+NB. The real template (GGUF tokenizer.chat_template) renders the generation
+NB. prompt with angle-bracket tags: thinking LF LF response LF LF (default) or
+NB. thinking LF (enable_thinking=true). Rendered via chat_tmpl_render.
 
 qw35_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  n =. # messages
-  res =. ''
-  NB. Merged system block (num_sys = 1 or 2 leading system/developer msgs).
-  num_sys =. 0
-  merged_system =. ''
-  if. n > 0 do.
-    m0 =. > 0 { messages
-    if. ('system' -: > 0 { m0) +. ('developer' -: > 0 { m0) do.
-      first =. trim_ws > 1 { m0
-      if. n > 1 do.
-        m1 =. > 1 { messages
-        if. ('system' -: > 0 { m1) +. ('developer' -: > 0 { m1) do.
-          second =. trim_ws > 1 { m1
-          merged_system =. first , LF , second
-          num_sys =. 2
-        else.
-          merged_system =. first
-          num_sys =. 1
-        end.
-      else.
-        merged_system =. first
-        num_sys =. 1
-      end.
-    end.
-  end.
-  if. 0 < # merged_system do.
-    res =. res , '<|im_start|>system' , LF , merged_system , '<|im_end|>' , LF
-  end.
-
-  NB. last_query_index: reverse scan for the last non-tool user message.
-  last_query_index =. n - 1
-  for_qi. i. n do.
-    idx =. n - 1 - qi
-    msg =. > idx { messages
-    if. 'user' -: > 0 { msg do.
-      content =. trim_ws > 1 { msg
-      is_tool =. ('<tool_response>' -: (8 {. content)) *. ('</tool_response>' -: ((- 14) {. content))
-      if. -. is_tool do.
-        last_query_index =. idx
-        break.
-      end.
-    end.
-  end.
-
-  NB. Main loop (system/developer msgs already rendered in the merged block).
-  for_i. i. n do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    if. (i < num_sys) +. ('system' -: role) +. ('developer' -: role) do. continue. end.
-    content =. trim_ws > 1 { msg
-    if. 'user' -: role do.
-      res =. res , '<|im_start|>user' , LF , content , '<|im_end|>' , LF
-    elseif. 'assistant' -: role do.
-      reasoning =. ''
-      if. (# content) > qw35_tk_close qw35_find content do.
-        before_rsp =. (qw35_tk_close qw35_find content) {. content
-        rstripped =. qw35_rtrim_nl before_rsp
-        NB. reasoning = (before  response) rtrim LF, then after last  thinking, ltrim LF, trim
-        p_t =. qw35_tk_open qw35_find rstripped
-        reasoning =. trim_ws (qw35_ltrim_nl ((p_t + (# qw35_tk_open)) }. rstripped))
-        NB. content = after first  response, ltrim LF
-        content =. qw35_ltrim_nl (((qw35_tk_close qw35_find content) + (# qw35_tk_close)) }. content)
-      end.
-      if. i > last_query_index do.
-        res =. res , '<|im_start|>assistant' , LF , qw35_tk_open , LF , reasoning , LF , qw35_tk_close , LF , LF , content
-      else.
-        res =. res , '<|im_start|>assistant' , LF , content
-      end.
-      res =. res , '<|im_end|>' , LF
-    end.
-  end.
-
-  NB. Generation prompt (default; enable_thinking undefined/false).
-  res =. res , '<|im_start|>assistant' , LF , qw35_tk_open , LF , LF , qw35_tk_close , LF , LF
-  res
+  chat_tmpl_render messages
 )
 
 NB. ---- Generate (chat-template single turn) ----

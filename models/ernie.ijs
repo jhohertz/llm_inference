@@ -254,26 +254,7 @@ NB. 'Assistant: <content><|end_of_sentence|>'; system '<content>\n'; then the
 NB. generation prompt 'Assistant: '. No BOS (add_bos_token=false) and no trim.
 ernie_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  res =. '<|begin_of_sentence|>'
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    if. 'user' -: role do.
-      res =. res , 'User: ' , content , LF
-    elseif. 'assistant' -: role do.
-      res =. res , 'Assistant: ' , content , '<|end_of_sentence|>'
-    elseif. 'system' -: role do.
-      res =. res , content , LF
-    end.
-  end.
-  res =. res , 'Assistant: '
-  res
+  chat_tmpl_render messages
 )
 
 ernie_default_params =: 0 0 0.95 0.0

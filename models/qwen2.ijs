@@ -753,23 +753,7 @@ NB. (chat_tmpl_render in chat.ijs); falls back to the bespoke qwen2 prompt
 NB. when the GGUF has none. No BOS (llama.cpp qwen2 chat omits bos).
 qw2_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  res =. ''
-  if. -. ('system' -: > 0 { > 0 { messages) do.
-    res =. '<|im_start|>system' , LF , 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' , '<|im_end|>' , LF
-  end.
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|im_start|>' , role , LF , content , '<|im_end|>' , LF
-  end.
-  res =. res , '<|im_start|>assistant' , LF
-  res
+  chat_tmpl_render messages
 )
 qw2_default_params =: 0 0 0.95 0.0
 NB. Stop token: <|im_end|> (EOS).

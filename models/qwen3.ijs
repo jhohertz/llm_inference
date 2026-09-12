@@ -740,20 +740,7 @@ NB. '<|im_start|>assistant\n'. The qwen3 template adds NO default system
 NB. message (unlike qwen2). No BOS (gpt2 tokenize adds none).
 qw3_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  res =. ''
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|im_start|>' , role , LF , content , '<|im_end|>' , LF
-  end.
-  res =. res , '<|im_start|>assistant' , LF
-  res
+  chat_tmpl_render messages
 )
 qw3_default_params =: 0 0 0.95 0.0
 NB. Stop token: <|im_end|> (EOS).

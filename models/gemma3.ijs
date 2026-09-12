@@ -883,21 +883,7 @@ NB. generation prompt '<start_of_turn>model' appended. BOS is added by the
 NB. llama3 tokenizer (llama.cpp also prepends bos for gemma chat).
 gem3_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  res =. ''
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    if. role -: 'assistant' do. role =. 'model' end.
-    res =. res , '<start_of_turn>' , role , LF , (trim_ws content) , '<end_of_turn>' , LF
-  end.
-  res =. res , '<start_of_turn>model' , LF
-  res
+  chat_tmpl_render messages
 )
 gem3_default_params =: 1.0 64 0.95 0.001
 NB. Stop tokens: <end_of_turn> (EOS) and <eos> (token 1) — per gemma params file.

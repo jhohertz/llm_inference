@@ -905,20 +905,7 @@ NB. block. {{bos_token}} is rendered as '' — lf2_tokenize prepends BOS so the
 NB. token stream matches llama.cpp (bos once).
 lf2_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  res =. ''
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|im_start|>' , role , LF , content , '<|im_end|>' , LF
-  end.
-  res =. res , '<|im_start|>assistant' , LF
-  res
+  chat_tmpl_render messages
 )
 
 lf2_default_params =: 0 0 0.95 0.0

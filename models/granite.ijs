@@ -755,22 +755,7 @@ NB. assistant generation prompt is '<|start_of_role|>assistant<|end_of_role|>'
 NB. (no trailing newline). No BOS (add_bos_token=false) and no trimming.
 granite_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  NB. Bespoke fallback (no GGUF template).
-  res =. '<|start_of_role|>system<|end_of_role|>'
-  res =. res , 'You are a helpful assistant. Please ensure responses are professional, accurate, and safe.'
-  res =. res , '<|end_of_text|>' , LF
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|start_of_role|>' , role , '<|end_of_role|>' , content , '<|end_of_text|>' , LF
-  end.
-  res =. res , '<|start_of_role|>assistant<|end_of_role|>'
-  res
+  chat_tmpl_render messages
 )
 
 granite_default_params =: 0 0 0.95 0.0

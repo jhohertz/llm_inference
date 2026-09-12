@@ -745,75 +745,11 @@ llama_generate_simple =: llama_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.
-NB. Dispatch by tokenizer pre (set at load): 'llama-bpe' (Llama-3.2) renders
-NB. the llama3 template (always-emitted system block + current date); else the
-NB. SmolLM2 <|im_start|> template.
+NB. Renders the real GGUF jinja chat_template (tokenizer.chat_template) via
+NB. chat_tmpl_render for both SmolLM2 and Llama-3.2 (the llama arch).
 llama_chat_prompt =: 3 : 0
   messages =. y
-  if. -. ('' -: ct_tmpl_g) do.
-    chat_tmpl_render messages
-    return.
-  end.
-  if. 'llama-bpe' -: llama_tokenizer_pre_g do.
-    llama32_chat_prompt messages
-  else.
-    smollm2_chat_prompt messages
-  end.
-)
-
-NB. ---- SmolLM2 chat template ----
-NB. Prepends the system message unless the first message is system; generation
-NB. prompt '<|im_start|>assistant' appended. No BOS (llama.cpp smollm2 chat
-NB. starts with <|im_start|>=1, no separate bos; gpt2 tokenize adds none).
-smollm2_chat_prompt =: 3 : 0
-  messages =. y
-  res =. ''
-  if. -. ('system' -: > 0 { > 0 { messages) do.
-    res =. '<|im_start|>system' , LF , 'You are a helpful AI assistant named SmolLM, trained by Hugging Face' , '<|im_end|>' , LF
-  end.
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|im_start|>' , role , LF , content , '<|im_end|>' , LF
-  end.
-  res =. res , '<|im_start|>assistant' , LF
-  res
-)
-
-NB. ---- Llama-3.2 (llama3) chat template ----
-NB. The llama3 template ALWAYS emits a system block (Cutting Knowledge Date /
-NB. Today Date) even with no system message, then <|eot_id|>, then the user
-NB. messages, then the assistant generation prompt. Date is dynamic
-NB. (llama-cpp-python injects strftime '%d %b %Y'); llama32_chat_date_g can pin
-NB. it for stable test oracles. The <|begin_of_text|> marker is OMITTED —
-NB. llama_tokenize prepends BOS for llama-bpe models, so the token stream
-NB. matches llama.cpp (bos exactly once).
-llama32_chat_date_g =: ''
-llama32_today_date =: 3 : 0
-  d =. 6!:0 'DD-MM-YYYY'
-  day =. 0 1 { d
-  mon =. 3 4 { d
-  yr =. 6 7 8 9 { d
-  months =. ;: 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'
-  (day , ' ' , (> months {~ (0 ". mon) - 1)) , ' ' , yr
-)
-llama32_chat_prompt =: 3 : 0
-  messages =. y
-  date =. llama32_chat_date_g
-  if. 0 = # date do. date =. llama32_today_date '' end.
-  res =. '<|start_header_id|>system<|end_header_id|>' , LF , LF
-  res =. res , 'Cutting Knowledge Date: December 2023' , LF
-  res =. res , 'Today Date: ' , date , LF , LF
-  res =. res , '<|eot_id|>'
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. strip_ws > 1 { msg
-    res =. res , '<|start_header_id|>' , role , '<|end_header_id|>' , LF , LF , content , '<|eot_id|>'
-  end.
-  res =. res , '<|start_header_id|>assistant<|end_header_id|>' , LF , LF
-  res
+  chat_tmpl_render messages
 )
 
 llama_default_params =: 0 0 0.95 0.0

@@ -163,6 +163,9 @@ days_from_civil =: 3 : 0
 
 chat_tmpl_render =: 3 : 0
   messages =. y
+  if. 0 = # ct_tmpl_g do.
+    throw. 'chat-template: model has no tokenizer.chat_template'
+  end.
   vals =. ''
   for_i. i. # messages do.
     msg =. > i { messages
