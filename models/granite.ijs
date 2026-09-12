@@ -17,6 +17,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_gpt2'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- KV helpers ----
 granite_kv_uint =: 4 : 0
@@ -580,6 +582,8 @@ granite_load =: 3 : 0
   logit_scale =. 'granite.logit_scale' granite_kv_float kvs_ctx
   attn_scale =. 'granite.attention.scale' granite_kv_float kvs_ctx
   mi =. mi , (<"0) embed_scale , resid_scale , logit_scale , attn_scale
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   all_tensors =. ''
   tensor_idx =. 0
@@ -751,17 +755,7 @@ NB. assistant generation prompt is '<|start_of_role|>assistant<|end_of_role|>'
 NB. (no trailing newline). No BOS (add_bos_token=false) and no trimming.
 granite_chat_prompt =: 3 : 0
   messages =. y
-  res =. '<|start_of_role|>system<|end_of_role|>'
-  res =. res , 'You are a helpful assistant. Please ensure responses are professional, accurate, and safe.'
-  res =. res , '<|end_of_text|>' , LF
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|start_of_role|>' , role , '<|end_of_role|>' , content , '<|end_of_text|>' , LF
-  end.
-  res =. res , '<|start_of_role|>assistant<|end_of_role|>'
-  res
+  chat_tmpl_render messages
 )
 
 granite_default_params =: 0 0 0.95 0.0

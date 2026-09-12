@@ -53,10 +53,16 @@ NB. The file is memory-mapped ONCE here (mmap_gguf); detect_arch and the
 NB. arch loader parse from the mapped raw. The mapping is unmap'd after
 NB. load (one model per load) — the llm noun never holds the mapped-raw ref,
 NB. so unmap frees it.
+NB. ---- Real GGUF chat-template (set per-load by arch loaders; '' = none) ----
+NB. ct_tmpl_g/ct_vars_g are initialized in util/chat.ijs (the chat layer,
+NB. loaded by inference.ijs and by the chat tests). Reset per load so loading
+NB. a non-chat-template model clears a stale template.
+
 load_gguf_to_llm =: 3 : 0
   NB. Accept a model spec (catalog id / HF path / URL / ~models path) or a
   NB. plain filesystem path; model_path downloads to ~user/models if needed.
   y =. model_path y
+  ct_tmpl_g =: ''
   raw =. mmap_gguf y
   arch =. detect_arch (y ; raw)
   select. arch

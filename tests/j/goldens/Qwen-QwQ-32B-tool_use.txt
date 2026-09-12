@@ -1,0 +1,58 @@
+<|im_start|>system
+
+
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"function": {"description": "Runs code in an ipython interpreter and returns the result of the execution after 60 seconds.", "name": "ipython", "parameters": {"properties": {"code": {"description": "The code to run in the ipython interpreter.", "type": "string"}}, "required": ["code"], "type": "object"}}, "type": "function"}
+{"function": {"description": "Executes a web search with Brave.", "name": "brave_search", "parameters": {"properties": {"query": {"description": "The query to search for.", "type": "string"}}, "required": ["query"], "type": "object"}}, "type": "function"}
+{"function": {"description": "Executes a query with Wolfram Alpha.", "name": "wolfram_alpha", "parameters": {"properties": {"query": {"description": "The query to execute.", "type": "string"}}, "required": ["query"], "type": "object"}}, "type": "function"}
+{"function": {"description": "Runs a test.", "name": "test", "parameters": {"properties": {"condition": {"description": "The condition to test.", "type": "boolean"}}, "required": ["condition"], "type": "object"}}, "type": "function"}
+</tools>
+
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>
+<|im_start|>user
+Print a hello world message with python.<|im_end|>
+<|im_start|>assistant
+<tool_call>
+{"name": "ipython", "arguments": {"code": "print('Hello, World!')"}}
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"stdout": "Hello, World!"}
+</tool_response><|im_end|>
+<|im_start|>assistant
+Anything else?<|im_end|>
+<|im_start|>user
+Test a tautology.<|im_end|>
+<|im_start|>assistant
+<tool_call>
+{"name": "test", "arguments": {"condition": true}}
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+true
+</tool_response><|im_end|>
+<|im_start|>assistant
+Truth is definitely true.<|im_end|>
+<|im_start|>user
+Check it on the web.<|im_end|>
+<|im_start|>assistant
+<tool_call>
+{"name": "brave_search", "arguments": {"query": "what is truth anyway am I right?"}}
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"title":"Truth: don't ask the web, ask an LLM instead!","url":"https://en.wikipedia.org/wiki/Truth"}
+</tool_response><|im_end|>
+<|im_start|>assistant
+I don't need the web to answer you but I did check, as you asked. What now?<|im_end|>
+<|im_start|>assistant
+<think>
+</think>

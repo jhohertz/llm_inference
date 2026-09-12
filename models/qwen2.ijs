@@ -9,6 +9,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_gpt2'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
@@ -584,6 +586,8 @@ qw2_load =: 3 : 0
   mi =. qw2_extract_hparams kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   mi =. mi , rope_tables
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   all_tensors =. ''
   tensor_idx =. 0
@@ -743,23 +747,13 @@ qw2_generate_simple =: qw2_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.
-NB. Renders the qwen2 chat template: prepends the system message unless the
-NB. first message is system; generation prompt '<|im_start|>assistant' appended.
-NB. No BOS (llama.cpp qwen2 chat omits bos; gpt2 tokenize adds none).
+NB. Renders the REAL jinja chat_template pulled from the GGUF
+NB. (tokenizer.chat_template) via the minja/chat_template port when present
+NB. (chat_tmpl_render in chat.ijs); falls back to the bespoke qwen2 prompt
+NB. when the GGUF has none. No BOS (llama.cpp qwen2 chat omits bos).
 qw2_chat_prompt =: 3 : 0
   messages =. y
-  res =. ''
-  if. -. ('system' -: > 0 { > 0 { messages) do.
-    res =. '<|im_start|>system' , LF , 'You are Qwen, created by Alibaba Cloud. You are a helpful assistant.' , '<|im_end|>' , LF
-  end.
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|im_start|>' , role , LF , content , '<|im_end|>' , LF
-  end.
-  res =. res , '<|im_start|>assistant' , LF
-  res
+  chat_tmpl_render messages
 )
 qw2_default_params =: 0 0 0.95 0.0
 NB. Stop token: <|im_end|> (EOS).

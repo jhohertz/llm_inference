@@ -1,0 +1,116 @@
+<|startoftext|><|start_header_id|>system<|end_header_id|>
+
+Environment: ipython
+Tools: wolfram_alpha, brave_search
+
+Cutting Knowledge Date: December 2023
+Today Date: 26 Jul 2024
+
+You have access to the following functions. To call a function, please respond with JSON for a function call.Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.Do not use variables.
+
+{
+    "function": {
+        "description": "Runs code in an ipython interpreter and returns the result of the execution after 60 seconds.",
+        "name": "ipython",
+        "parameters": {
+            "properties": {
+                "code": {
+                    "description": "The code to run in the ipython interpreter.",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "code"
+            ],
+            "type": "object"
+        }
+    },
+    "type": "function"
+}
+
+{
+    "function": {
+        "description": "Executes a web search with Brave.",
+        "name": "brave_search",
+        "parameters": {
+            "properties": {
+                "query": {
+                    "description": "The query to search for.",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "query"
+            ],
+            "type": "object"
+        }
+    },
+    "type": "function"
+}
+
+{
+    "function": {
+        "description": "Executes a query with Wolfram Alpha.",
+        "name": "wolfram_alpha",
+        "parameters": {
+            "properties": {
+                "query": {
+                    "description": "The query to execute.",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "query"
+            ],
+            "type": "object"
+        }
+    },
+    "type": "function"
+}
+
+{
+    "function": {
+        "description": "Runs a test.",
+        "name": "test",
+        "parameters": {
+            "properties": {
+                "condition": {
+                    "description": "The condition to test.",
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "condition"
+            ],
+            "type": "object"
+        }
+    },
+    "type": "function"
+}
+
+<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Print a hello world message with python.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{"name": "ipython", "parameters": {"code": "print('Hello, World!')"}}<|eom_id|><|start_header_id|>ipython<|end_header_id|>
+
+"{\"stdout\": \"Hello, World!\"}"<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Anything else?<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Test a tautology.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{"name": "test", "parameters": {"condition": true}}<|eom_id|><|start_header_id|>ipython<|end_header_id|>
+
+"true"<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Truth is definitely true.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Check it on the web.<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+<|python_tag|>brave_search.call(query="what is truth anyway am I right?")<|eom_id|><|start_header_id|>ipython<|end_header_id|>
+
+"{\"title\":\"Truth: don't ask the web, ask an LLM instead!\",\"url\":\"https://en.wikipedia.org/wiki/Truth\"}"<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+I don't need the web to answer you but I did check, as you asked. What now?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+

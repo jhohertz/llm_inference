@@ -10,6 +10,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_gpt2'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
@@ -579,6 +581,8 @@ qw3_load =: 3 : 0
   mi =. qw3_extract_hparams kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   mi =. mi , rope_tables
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   all_tensors =. ''
   tensor_idx =. 0
@@ -736,15 +740,7 @@ NB. '<|im_start|>assistant\n'. The qwen3 template adds NO default system
 NB. message (unlike qwen2). No BOS (gpt2 tokenize adds none).
 qw3_chat_prompt =: 3 : 0
   messages =. y
-  res =. ''
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    res =. res , '<|im_start|>' , role , LF , content , '<|im_end|>' , LF
-  end.
-  res =. res , '<|im_start|>assistant' , LF
-  res
+  chat_tmpl_render messages
 )
 qw3_default_params =: 0 0 0.95 0.0
 NB. Stop token: <|im_end|> (EOS).

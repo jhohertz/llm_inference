@@ -6,6 +6,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_llama3'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
@@ -688,6 +690,9 @@ gem3_load =: 3 : 0
   swa =. 'gemma3.attention.sliding_window' gem3_kv_uint kvs_ctx
   mi =. mi , <swa
   
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  
   tokenizer =. build_llama3_tokenizer kv_result
   
   all_tensors =. ''
@@ -878,16 +883,7 @@ NB. generation prompt '<start_of_turn>model' appended. BOS is added by the
 NB. llama3 tokenizer (llama.cpp also prepends bos for gemma chat).
 gem3_chat_prompt =: 3 : 0
   messages =. y
-  res =. ''
-  for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    if. role -: 'assistant' do. role =. 'model' end.
-    res =. res , '<start_of_turn>' , role , LF , (trim_ws content) , '<end_of_turn>' , LF
-  end.
-  res =. res , '<start_of_turn>model' , LF
-  res
+  chat_tmpl_render messages
 )
 gem3_default_params =: 1.0 64 0.95 0.001
 NB. Stop tokens: <end_of_turn> (EOS) and <eos> (token 1) — per gemma params file.

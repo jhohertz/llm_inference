@@ -21,9 +21,11 @@ test_llama32 =: 3 : 0
   llm =. load_gguf_to_llm sm_path
 
   NB. Pin the chat template date for a stable oracle (llama-cpp-python
-  NB. injects the current date; the test oracle uses 26 Jul 2024). Set
-  NB. AFTER the load — the dispatch require of models/llama.ijs resets it.
-  llama32_chat_date_g =: '26 Jul 2024'
+  NB. injects the current date; the test oracle uses 26 Jul 2024). The real
+  NB. GGUF jinja template renders Today Date via strftime_now; pin its `now`
+  NB. epoch (1721952000 = 26 Jul 2024) so the real render matches. Set AFTER
+  NB. the load — the dispatch require of models/llama.ijs resets ct_now_g.
+  ct_now_g =: 1721952000
 
   NB. --- architecture ---
   assert_test ('llama' -: llm_arch llm) ; 'arch = llama'

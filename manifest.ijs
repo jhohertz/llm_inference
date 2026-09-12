@@ -56,4 +56,6 @@ util/sampler.ijs
 util/chat.ijs
 util/models.ijs
 util/llmobj.ijs
+util/minja.ijs
+util/chat_template.ijs
 )

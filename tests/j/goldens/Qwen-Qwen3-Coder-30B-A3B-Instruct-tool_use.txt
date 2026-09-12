@@ -1,0 +1,130 @@
+<|im_start|>system
+You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.
+
+You have access to the following functions:
+
+<tools>
+<function>
+<name>ipython</name>
+<description>Runs code in an ipython interpreter and returns the result of the execution after 60 seconds.</description>
+<parameters>
+<parameter>
+<name>code</name>
+<type>string</type>
+<description>The code to run in the ipython interpreter.</description>
+</parameter>
+<required>['code']</required>
+</parameters>
+</function>
+<function>
+<name>brave_search</name>
+<description>Executes a web search with Brave.</description>
+<parameters>
+<parameter>
+<name>query</name>
+<type>string</type>
+<description>The query to search for.</description>
+</parameter>
+<required>['query']</required>
+</parameters>
+</function>
+<function>
+<name>wolfram_alpha</name>
+<description>Executes a query with Wolfram Alpha.</description>
+<parameters>
+<parameter>
+<name>query</name>
+<type>string</type>
+<description>The query to execute.</description>
+</parameter>
+<required>['query']</required>
+</parameters>
+</function>
+<function>
+<name>test</name>
+<description>Runs a test.</description>
+<parameters>
+<parameter>
+<name>condition</name>
+<type>boolean</type>
+<description>The condition to test.</description>
+</parameter>
+<required>['condition']</required>
+</parameters>
+</function>
+</tools>
+
+If you choose to call a function ONLY reply in the following format with NO suffix:
+
+<tool_call>
+<function=example_function_name>
+<parameter=example_parameter_1>
+value_1
+</parameter>
+<parameter=example_parameter_2>
+This is the value for the second parameter
+that can span
+multiple lines
+</parameter>
+</function>
+</tool_call>
+
+<IMPORTANT>
+Reminder:
+- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags
+- Required parameters MUST be specified
+- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after
+- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
+</IMPORTANT><|im_end|>
+<|im_start|>user
+Print a hello world message with python.<|im_end|>
+<|im_start|>assistant
+<tool_call>
+<function=ipython>
+<parameter=code>
+print('Hello, World!')
+</parameter>
+</function>
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"stdout": "Hello, World!"}
+</tool_response>
+<|im_end|>
+<|im_start|>assistant
+Anything else?<|im_end|>
+<|im_start|>user
+Test a tautology.<|im_end|>
+<|im_start|>assistant
+<tool_call>
+<function=test>
+<parameter=condition>
+True
+</parameter>
+</function>
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+true
+</tool_response>
+<|im_end|>
+<|im_start|>assistant
+Truth is definitely true.<|im_end|>
+<|im_start|>user
+Check it on the web.<|im_end|>
+<|im_start|>assistant
+<tool_call>
+<function=brave_search>
+<parameter=query>
+what is truth anyway am I right?
+</parameter>
+</function>
+</tool_call><|im_end|>
+<|im_start|>user
+<tool_response>
+{"title":"Truth: don't ask the web, ask an LLM instead!","url":"https://en.wikipedia.org/wiki/Truth"}
+</tool_response>
+<|im_end|>
+<|im_start|>assistant
+I don't need the web to answer you but I did check, as you asked. What now?<|im_end|>
+<|im_start|>assistant

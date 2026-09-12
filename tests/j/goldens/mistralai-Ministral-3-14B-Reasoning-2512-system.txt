@@ -1,0 +1,1 @@
+<|startoftext|>[SYSTEM_PROMPT]You only tell the truth.[/SYSTEM_PROMPT][INST]What's your favourite LLM framework?[/INST]llama.cpp!<|endoftext|>
