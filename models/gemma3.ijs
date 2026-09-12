@@ -6,6 +6,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_llama3'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
@@ -688,6 +690,9 @@ gem3_load =: 3 : 0
   swa =. 'gemma3.attention.sliding_window' gem3_kv_uint kvs_ctx
   mi =. mi , <swa
   
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  
   tokenizer =. build_llama3_tokenizer kv_result
   
   all_tensors =. ''
@@ -878,6 +883,11 @@ NB. generation prompt '<start_of_turn>model' appended. BOS is added by the
 NB. llama3 tokenizer (llama.cpp also prepends bos for gemma chat).
 gem3_chat_prompt =: 3 : 0
   messages =. y
+  if. -. ('' -: ct_tmpl_g) do.
+    chat_tmpl_render messages
+    return.
+  end.
+  NB. Bespoke fallback (no GGUF template).
   res =. ''
   for_i. i. # messages do.
     msg =. > i { messages

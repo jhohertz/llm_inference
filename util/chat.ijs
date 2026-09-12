@@ -22,6 +22,9 @@ NB. ct_vars_g: minja obj (Value) holding extra template variables
 NB. (enable_thinking etc.), passed as `extra` to ct_apply.
 ct_tmpl_g =: ''
 ct_vars_g =: ''
+NB. Optional epoch-seconds override for the `now` template variable (0 = use
+NB. current time). Lets tests pin a stable date (e.g. 1721952000 = 26 Jul 2024).
+ct_now_g =: 0
 
 NB. ---- Dispatch helpers (arch string -> arch verb) ----
 chat_prompt =: 4 : 0
@@ -171,7 +174,8 @@ chat_tmpl_render =: 3 : 0
   msgs =. mkarr_minja_ vals
   extra =. ct_vars_g
   if. '' -: extra do. extra =. mkobj_minja_ '' end.
-  now =. (days_from_civil (3 {. (6!:0 ''))) * 86400
+  now =. ct_now_g
+  if. 0 = now do. now =. (days_from_civil (3 {. (6!:0 ''))) * 86400 end.
   inputs =. ((<msgs) , (<(mknull_minja_ '')) , (<1) , (<extra) , (<now) , (<'') , (<''))
   src =. ct_tmpl_g
   caps =. ct_new_chatpl_ (src ; '' ; '')

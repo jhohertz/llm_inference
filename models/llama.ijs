@@ -12,6 +12,8 @@ NB. ================================================================
 coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_gpt2'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. Chat-template dispatch marker. '' = SmolLM2 template; llama_load sets it
 NB. to the tokenizer's pre ('llama-bpe' -> Llama-3.2 template). The default
@@ -565,6 +567,8 @@ llama_load =: 3 : 0
   mi =. llama_extract_hparams kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   mi =. mi , rope_tables
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   NB. Chat-template dispatch marker: llama_chat_prompt takes messages only
   NB. (chat.ijs contract), so the llama module remembers which tokenizer
@@ -746,6 +750,10 @@ NB. the llama3 template (always-emitted system block + current date); else the
 NB. SmolLM2 <|im_start|> template.
 llama_chat_prompt =: 3 : 0
   messages =. y
+  if. -. ('' -: ct_tmpl_g) do.
+    chat_tmpl_render messages
+    return.
+  end.
   if. 'llama-bpe' -: llama_tokenizer_pre_g do.
     llama32_chat_prompt messages
   else.

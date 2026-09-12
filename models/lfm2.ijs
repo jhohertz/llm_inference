@@ -20,6 +20,8 @@ require 'llm/inference/kernels/jfloat'
 require 'llm/inference/util/kv_cache'
 require 'llm/inference/util/sampler'
 require 'llm/inference/tokenizers/tokenizer_gpt2'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- KV helpers ----
 lf2_kv_uint =: 4 : 0
@@ -718,6 +720,8 @@ lf2_load =: 3 : 0
   mi =. lf2_extract_hparams kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   mi =. mi , rope_tables
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   all_tensors =. ''
   tensor_idx =. 0
@@ -901,6 +905,11 @@ NB. block. {{bos_token}} is rendered as '' — lf2_tokenize prepends BOS so the
 NB. token stream matches llama.cpp (bos once).
 lf2_chat_prompt =: 3 : 0
   messages =. y
+  if. -. ('' -: ct_tmpl_g) do.
+    chat_tmpl_render messages
+    return.
+  end.
+  NB. Bespoke fallback (no GGUF template).
   res =. ''
   for_i. i. # messages do.
     msg =. > i { messages

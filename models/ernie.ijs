@@ -19,6 +19,8 @@ coclass 'inference'
 require 'llm/inference/util/llm_core'
 require 'llm/inference/tokenizers/tokenizer_spm'
 require 'llm/inference/models/llama'
+require 'llm/inference/util/minja'
+require 'llm/inference/util/chat_template'
 
 NB. ---- KV helpers ----
 ernie_kv_uint =: 4 : 0
@@ -79,6 +81,8 @@ ernie_load =: 3 : 0
   dims =. ti_dims tok_info
   vocab_size =. 1 { dims
   mi =. (<vocab_size) 7} mi
+  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
+  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_spm_tokenizer kv_result
   all_tensors =. ''
   tensor_idx =. 0
@@ -250,6 +254,11 @@ NB. 'Assistant: <content><|end_of_sentence|>'; system '<content>\n'; then the
 NB. generation prompt 'Assistant: '. No BOS (add_bos_token=false) and no trim.
 ernie_chat_prompt =: 3 : 0
   messages =. y
+  if. -. ('' -: ct_tmpl_g) do.
+    chat_tmpl_render messages
+    return.
+  end.
+  NB. Bespoke fallback (no GGUF template).
   res =. '<|begin_of_sentence|>'
   for_i. i. # messages do.
     msg =. > i { messages
