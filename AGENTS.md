@@ -37,21 +37,21 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `util/kv_cache.ijs` | Persistent KV cache: pre-allocated flat arrays (`k_cache_g`/`v_cache_g` = `(n_layers*eff_seq, n_kv*hd)`, one per kind), in-place `kv_create`/`kv_write`/`kv_write_rows`/`kv_read`/`kv_reset` + `kv_meta`/`kv_pos_g`/`kv_max_seq_g` (low-memory context override); session-persistent (alloc once, reset between generations); monadic, no threading |
 | `util/llm_core.ijs` | Generic helpers: llm accessors (incl. `llm_arch`), `get_tensor_cached_d`, `embed_tokens`, `output_head`, `sample_from`, `infer_args`, `gen_args` |
 | `models/gemma3.ijs` | Gemma3 270M: attention+KV, FFN, blocks, `gem3_infer`/`gem3_generate`, `gem3_load` |
-| `models/llama.ijs` | **Generic llama arch** (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE, dims read from GGUF; tokenizer/chat dispatch on `tokenizer.ggml.pre` (`llama_load`/`llama_infer`/`llama_generate`) |
-| `models/granite.ijs` | Granite-4.0-350m (granite arch): standard decoder + Granite 4.0 scaling (embed*12, residual*0.263 on attn/ffn outputs, scores*0.015625, logits/4), tied embeddings, dbrx pre (= llama3 regex), granite chat template (`granite_load`/`granite_infer`/`granite_generate`) |
+| `models/llama.ijs` | **Generic llama arch** (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE, dims read from GGUF; tokenizer dispatch on `tokenizer.ggml.pre` (chat is pure GGUF jinja, no bespoke prompt) (`llama_load`/`llama_infer`/`llama_generate`) |
+| `models/granite.ijs` | Granite-4.0-350m (granite arch): standard decoder + Granite 4.0 scaling (embed*12, residual*0.263 on attn/ffn outputs, scores*0.015625, logits/4), tied embeddings, dbrx pre (= llama3 regex), chat via real GGUF `tokenizer.chat_template` (`granite_load`/`granite_infer`/`granite_generate`) |
 | `models/qwen2.ijs` | Qwen2.5-Coder (qwen2 arch): standard decoder, GQA, SwiGLU, NEOX RoPE, Q/K/V biases, `qw2_load` |
 | `models/qwen3.ijs` | Qwen3-0.6B (qwen3 arch): qwen2 + per-head Q/K RMSNorm before RoPE, NO QKV biases, `qw3_load` |
 | `models/qwen35.ijs` | Qwen3.5-0.8B (qwen35 arch): hybrid — 6 full-attention (il+1%4==0) + 18 gated-delta-net SSM layers; fused Q+GATE, sigmoid gate, conv1d, L2-norm q/k, sequential delta-net recurrence, `rs_*` recurrent-state cache, MTP blk.24 out of scope (block_count = block_count − nextn_predict_layers), `qw35_load` |
-| `models/ernie.ijs` | ERNIE-4.5-0.3B (ernie4_5 arch): standard decoder byte-for-byte the llama arch (GQA 16:2, SwiGLU, interleaved RoPE, 1/sqrt(hd), TIED embeddings, NO scaling KVs) — reuses llama.ijs forward verbs (`ernie_run_blocks`/`_b` aliases); SPM tokenizer, ERNIE chat template (`<|begin_of_sentence|>` cls, User:/Assistant:/system, `'Assistant: '` gen prompt), stop on `</s>`(2)+`<|end_of_sentence|>`(100272), `ernie_load` |
+| `models/ernie.ijs` | ERNIE-4.5-0.3B (ernie4_5 arch): standard decoder byte-for-byte the llama arch (GQA 16:2, SwiGLU, interleaved RoPE, 1/sqrt(hd), TIED embeddings, NO scaling KVs) — reuses llama.ijs forward verbs (`ernie_run_blocks`/`_b` aliases); SPM tokenizer, chat via real GGUF `tokenizer.chat_template`, stop on `</s>`(2)+`<|end_of_sentence|>`(100272), `ernie_load` |
 | `models/lfm2.ijs` | LFM2-350M/700M/1.2B (lfm2 arch): hybrid — 6 attention + 10 shortconv layers, new conv component + `lfm2` pre-tokenizer (`lfm2_load`/`lfm2_infer`) |
 | `tokenizers/tokenizer_llama3.ijs` / `tokenizers/tokenizer_gpt2.ijs` | BPE tokenizers (llama3-style; gpt2 byte-level) |
 | `tokenizers/tokenizer_spm.ijs` | **SentencePiece tokenizer** (llama.cpp `llm_tokenizer_spm` bigram-merge): max-heap over token scores, `▁`-escape, add_space_prefix prepend, `<0xXX>` byte fallback; used by ERNIE (model='llama' → SPM) |
 | `util/sampler.ijs` | Temperature / top-k / top-p / min-p sampling |
-| `util/chat.ijs` | **Chat-template inference**: per-arch dispatch, `chat_generate`, persistent console chat (`chat`/`chat_p` + `chat_session_g`), prompt-token stripping, `chat_msg` helper |
+| `util/chat.ijs` | **Chat-template inference**: real GGUF-jinja rendering (`chat_tmpl_render`, `ct_tmpl_g`/`ct_vars_g`/`ct_now_g`), `chat_generate`, persistent console chat (`chat`/`chat_p` + `chat_session_g`), prompt-token stripping, `chat_msg` helper |
 | `util/models.ijs` | **Model catalog + spec resolution + downloader**: `model_path`/`model_download`/`model_target`/`model_list`/`model_roles`/`model_file`; registers `~models` as `~user/models` (per-user, NOT the install dir); downloads via `web/gethttp` |
 | `util/llmobj.ijs` | OOP proof: wrap a loaded LLM in a J object (`conew 'llmobj'`, `infer__obj`) |
-| `util/minja.ijs` | **minja port (Phase 5A, exploration)**: Python-like Value model + Context, `coclass 'minja'` (self-contained, lift-out-able). Port of `reference/minja/include/minja/minja.hpp`. See PLAN.md Phase 5; oracle = minja test-syntax.cpp, cross-check = Python jinja2 via `scripts/minja_goldens.py` |
-| `util/chat_template.ijs` | **chat-template port (Phase 5G, exploration)**: HuggingFace messages/tools→prompt layer, `coclass 'chatpl'`, depends on `util/minja.ijs`. Port of `reference/minja/include/minja/chat-template.hpp`. Standalone (not wired to chat.ijs); `add_system`/`scan_has`/`polyfill_flags` work, `ct_apply`+`detect_caps` gate on engine Phase 5B/5C. See PLAN.md Phase 5G |
+| `util/minja.ijs` | **minja port (Phase 5, DONE)**: Python-like Value model + Context, `coclass 'minja'` (self-contained, lift-out-able). Port of `reference/minja/include/minja/minja.hpp`. Full test-syntax.cpp parity; oracle = minja test-syntax.cpp, cross-check = Python jinja2 via `scripts/minja_goldens.py` |
+| `util/chat_template.ijs` | **chat-template port (Phase 5G, DONE, wired into chat.ijs)**: HuggingFace messages/tools→prompt layer, `coclass 'chat_template'`, depends on `util/minja.ijs`. Port of `reference/minja/include/minja/chat-template.hpp`. `chat_tmpl_render` (util/chat.ijs) drives `ct_apply`; engine complete (capability detection, polyfills, strftime_now) |
 | `scripts/minja_goldens.py` | **minja golden generator**: batch Python-jinja2 oracle (adapted from reference/minja/scripts/render.py) — `cases.json goldens.json` |
 | `scripts/jfind.sh` | Discover the J runtime dir in `$HOME` (`~/j9.x`, e.g. `~/j9.7`); prints the install dir |
  | `scripts/install_local.sh` | Dev workflow: copy FILES into the discovered J runtime's addons dir (`$JINSTALL/addons/llm/inference/`, jlinter-style) |
@@ -112,7 +112,8 @@ carry the `_inference_` suffix (e.g. `infer_inference_`); inside the
  - `llm <name>_generate_simple (text ; max_steps)` → greedy defaults
 
 **Single-shot generation frames the prompt** — `*_generate` wraps the text in
-the arch's chat template (single user message) so instruct models emit their
+the arch's real GGUF `tokenizer.chat_template` (jinja, single user message,
+rendered by the minja/chat_template port) so instruct models emit their
 stop tokens, and stops on the arch's `*_stop_tokens` list (not raw EOS). It
 returns the answer only (prompt tokens dropped). `infer` stays raw (single
 forward pass, no template) for logits verification.
@@ -143,10 +144,20 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   ref would defeat the in-place amend). If the tokenizer round-trip drifts, it
   falls back to a full fresh re-render (correct, slower).
 - `llm chat_generate_simple (messages ; max_steps)` → per-arch default params.
+- **Real GGUF-jinja rendering**: each arch loader extracts its own
+  `tokenizer.chat_template` (a vt=8 string KV) into `ct_tmpl_g` once per load;
+  `chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` message boxes
+  to a minja Value array and drives `ct_apply` (util/chat_template.ijs) with
+  add_generation_prompt=1, tools=null, now=current epoch (or the `ct_now_g`
+  override for pinned test oracles), and extra template vars (`ct_vars_g` —
+  e.g. `enable_thinking`, settable per-call via the optional `tmpl_vars` arg
+  to `chat_generate`). If a model has no `tokenizer.chat_template`,
+  `chat_tmpl_render` throws a clear error.
 - Arch verbs: `gem3_chat_prompt` / `qw2_chat_prompt` / `llama_chat_prompt`
-  (render), `gem3_default_params` (`1.0 64 0.95 0.001`) / `qw2_default_params`
-  (`0 0 0.95 0.0`) / `llama_default_params`, `gem3_stop_tokens` (eos + 1) /
-  `qw2_stop_tokens` / `llama_stop_tokens`.
+  (thin wrappers over `chat_tmpl_render` — rendering is pure GGUF jinja via
+  util/chat.ijs, no bespoke templates), `gem3_default_params` (`1.0 64 0.95
+  0.001`) / `qw2_default_params` (`0 0 0.95 0.0`) / `llama_default_params`,
+  `gem3_stop_tokens` (eos + 1) / `qw2_stop_tokens` / `llama_stop_tokens`.
 - **Generation is ONE unified `gen_loop_core`** (llm_core.ijs), replacing the
   four `*_gen_loop` copies: dispatches scale (`%: emb_len` gemma3, else 1) +
   `*_run_blocks`/`*_run_blocks_b` by `llm_arch`. y = `<tokens; start_pos;
@@ -203,9 +214,8 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
 - **Llama-3.2 chat template ALWAYS emits a system block** even with no system
   message (`Cutting Knowledge Date: December 2023\nToday Date: <date>\n\n` +
   `<|eot_id|>`), and the date is dynamic — llama-cpp-python injects
-  `strftime('%d %b %Y')`. `llama32_chat_date_g` pins it for stable oracles;
-  `llama32_today_date` formats J's `6!:0 'DD-MM-YYYY'` via a month table.
-  `llama_chat_prompt` dispatches on `llama_tokenizer_pre_g` (set by `llama_load`).
+  `strftime('%d %b %Y')`. The real template's `strftime_now` callable renders it
+  (see §Real GGUF-jinja rendering); `ct_now_g` pins the epoch for stable oracles.
 - **Granite 4.0 scaling is data-driven, not llama-standard**: `granite.ijs`
   reads `embedding_scale` 12 (input embeddings *12), `residual_scale` 0.263
   (per layer: attn_out*0.263 + input, then ffn_out*0.263 + that), `attention.scale`

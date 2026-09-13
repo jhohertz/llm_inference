@@ -491,8 +491,9 @@ crude console chat. The session state `chat_session_g` =
   in-place amend; the cache stays in `kv_cache_g` (one active session).
 
 Each turn:
-1. Append the new user message and RE-RENDER the full history (per-arch
-   `*_chat_prompt`) — only to tokenize the new segment.
+1. Append the new user message and RE-RENDER the full history (through the
+   real GGUF jinja template — see §Chat-template rendering below) — only to
+   tokenize the new segment.
 2. Prefix-check: the re-render's token stream must start with the stored
    `total_tokens`. If it matches, `seg = cur_pos }. new_toks` and
    `gen_loop_core` resumes at `cur_pos` (ONE batched prefill of `seg`).
@@ -505,6 +506,40 @@ presentation AND persistence — the space-text re-tokenizes to the same
 ▁-pieces, so gemma's stored token stream and the re-render prefix agree and
 the cache can be resumed. Byte-level BPE (qwen2/smollm2) round-trips exactly
 without the conversion.
+
+## Chat-template rendering (real GGUF jinja)
+
+Every architecture renders chat through its own **real `tokenizer.chat_template`**
+pulled from the GGUF, parsed and rendered by the minja/chat_template port —
+there are no bespoke per-arch prompt verbs anymore.
+
+- **Load**: each arch loader extracts the template once —
+  `'tokenizer.chat_template' kv_string (0 1 { kv_result)` (gguf/gguf.ijs:455;
+  vt=8 string) into the `ct_tmpl_g` global (`''` if absent). `load_gguf_to_llm`
+  resets `ct_tmpl_g` per load. `ct_tmpl_g`/`ct_vars_g`/`ct_now_g` are initialized
+  in util/chat.ijs.
+- **Render**: `chat_prompt` (util/chat.ijs dispatch) calls each arch's
+  `*_chat_prompt`, which is a thin wrapper over `chat_tmpl_render`
+  (util/chat.ijs): convert the `<role ; content>` message boxes to a minja
+  Value array of `{role, content}` objs, `mkarr_minja_`, then
+  `ct_apply (source ; <msgs; tools=null; add_generation_prompt=1; extra;
+  now; ''; ''> ; caps ; tool_ex ; options)` → prompt string.
+  `add_generation_prompt=1` makes the template emit its own gen prompt
+  (`<start_of_turn>model`, `<|im_start|>assistant`, ...). If a model has no
+  `tokenizer.chat_template`, `chat_tmpl_render` throws a clear error.
+- **Template variables**: `ct_vars_g` (a minja obj) is passed as the `extra`
+  input — e.g. `enable_thinking` (qwen3: default no thinking block, false →
+  ` thinking\n\n response\n\n`; qwen3.5: undefined → ` thinking\n\n response\n\n`,
+  true → ` thinking\n`). Settable per-call via the optional 4th `tmpl_vars`
+  arg to `chat_generate` (`chat_vars_obj` builds the obj from `<key ; value>`).
+- **now**: `chat_tmpl_render` uses the current epoch (Hinnant `days_from_civil`
+  date→days inverse of the minja `civil_from_days`) unless `ct_now_g` is
+  non-zero (test oracle pinning, e.g. 1721952000 = 26 Jul 2024). The template's
+  `strftime_now` callable renders dates (Llama-3.2's "Today Date").
+- **BOS/EOS**: `mk_options` defaults keep `use_bos=0`/`use_eos=0` — BOS is
+  tokenizer-owned (llama3/gemma prepend bos; their templates omit the
+  `<|begin_of_text|>` marker), so the token stream matches llama.cpp exactly.
+- **Stop tokens stay per-arch** (from the vocab), untouched by the template.
 
 ## Per-Architecture Notes
 
@@ -540,8 +575,9 @@ interleaved RoPE (NORM), separate QKV/O weights, no q/k norm, no post-attention/
 norms, no embedding scale. Tokenizer: GPT-2 byte-level BPE. The llama module is
 generic: dims are read from the GGUF, and Llama-3.2-1B-Instruct shares it —
 llama-bpe tokenizer (llama3 regex pre + gpt2 BPE merges, `Ġ` space marker),
-BOS prepended by `llama_tokenize`, llama3 chat template with the always-emitted
-system block + dynamic date (`llama32_chat_date_g`). See PLAN.md item 6.
+BOS prepended by `llama_tokenize`. Chat is rendered from each model's real
+GGUF `tokenizer.chat_template` (SmolLM2's `<|im_start|>` or Llama-3.2's
+always-emitted system block + dynamic "Today Date" via `strftime_now`).
 
 ### Granite-4.0-350m (`granite.ijs`) — granite arch
 
@@ -553,8 +589,9 @@ per layer `attn_out*0.263 + input` then `ffn_out*0.263 + that`
 (`residual_scale`), Q*K^T scores *0.015625 (`attention.scale` — NOT
 1/sqrt(head_dim)), lm_head logits /4 (`logit_scale`). Tokenizer: gpt2
 byte-level BPE with `dbrx` pre (same regex as llama3), no BOS
-(bos=eos=100257). Granite 4.0 chat template (always-emitted default system
-message). See PLAN.md item 7.
+(bos=eos=100257). Chat is rendered from the real GGUF `tokenizer.chat_template`
+(granite `<|start_of_role|>` format with the always-emitted default system
+message).
 
 ### Qwen2.5-Coder 0.5B (`qwen2.ijs`) — qwen2 arch
 

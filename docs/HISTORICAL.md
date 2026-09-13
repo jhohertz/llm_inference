@@ -633,6 +633,99 @@ each. (Ordered by commit.)
   shifted + build lists + layout comments + test element-count asserts
   updated; all arch suites + test_chat/test_batched + lint green.
 
+## Phase 5 — minja Jinja port + chat-template layer + GGUF-jinja integration (DONE)
+
+A faithful J port of the C++ **minja** engine (`reference/minja/include/minja/`:
+`minja.hpp` 3099 LoC in one header, `chat-template.hpp` 569 LoC) — the Jinja
+engine llama.cpp uses for chat templates. NOT a Python-jinja port: our oracle
+is minja's own unit tests (`test-syntax.cpp` EXPECT_EQ strings); Python's
+jinja2 (`scripts/minja_goldens.py`) is the cross-check oracle for the cases
+minja deliberately matches. Kept independent of the inference addon:
+`util/minja.ijs` (`coclass 'minja'`) and `util/chat_template.ijs`
+(`coclass 'chat_template'`) are standalone and liftable.
+
+### Phase 5A-5F — the engine
+
+- **5A — Value model + Context** (foundation): Python-like values
+  (null/bool/int/float/str/array/object/callable) with Python `repr`/`dump`
+  (single-quote strings, `True`/`False`/`None` vs to_json `true`/`false`/`null`,
+  `, ` / `: ` separators matching nlohmann + jinja2), `to_str`/`to_bool`/`to_int`,
+  equality (numeric-tolerant), `in` membership, array/object accessors, scoped
+  Context with parent chain + builtins. J boxing gotcha: the flat-pair
+  representation (`('arr';<k0;p0;k1;p1;...)`, `('obj';<key;value;...)`) with
+  single-boxed items sidesteps `;`/`,<`/`>`-open rank gotchas; `{::` returns
+  unboxed scalars, so index uses `{.`.
+- **5B — Expression grammar (recursive descent)**: literals, variable refs
+  `a.b.c`, subscript `x[i]` + slices, method calls, binary ops (`+ - * / // % **
+  ~ == != < > <= >= and or not in is`), if-expr, unary, `|` filters.
+- **5C — Tokenizer + Template parser (two-phase)**: regex scanning `{{ }}`
+  `{% %}` `{# #}` with `-`/`~` whitespace markers; SequenceNode AST from
+  If/For/Set/Macro/Filter/Call/Generation tokens; unterminated-token errors.
+- **5D — Statements/controls**: IfNode (if/elif/else), ForNode (loop.* incl.
+  cycle, destructuring, recursive, if-condition, else), break/continue
+  (LoopControlException), SetNode (namespace + destructuring), MacroNode
+  (+ default args, fresh arrays per call), CallNode (`caller()`), FilterNode.
+- **5E — Whitespace + errors**: `trim_blocks`/`lstrip_blocks`/
+  `keep_trailing_newline`, `-`/`~` space-strip/newline handling, exact minja
+  error substrings ("Unterminated if", "break outside of a loop", "pop from
+  empty list").
+- **5F — Builtin globals/filters/tests**: raise_exception, tojson, items,
+  first/last, trim, capitalize, lower/upper, default, e/escape, joiner, count,
+  dictsort, join, namespace, equalto, length, safe, string, int, list, in,
+  unique, select/reject/selectattr/rejectattr, map, indent, range.
+
+### Phase 5G — the chat-template layer (chat_template.hpp port)
+
+The HuggingFace-standard `messages`/`tools` → prompt formatter wrapping a parsed
+template: `chat_template_caps` (10 flags: supports_tools/tool_calls/
+tool_responses/system_role/parallel_tool_calls/tool_call_id/
+object_arguments/non_null_content/non_empty_content/typed_content),
+`chat_template_inputs` (messages, tools, add_generation_prompt, extra_context,
+now), `chat_template_options` (apply_polyfills + use_bos/eos_token +
+define_strftime_now + per-polyfill toggles), capability detection via
+`try_raw_render` probes, `tool_call_example_` inference, and `apply`'s
+normalization: typed-content conversion, pending_system/flush (system-role
+polyfill), `add_system` (tools polyfill), tool_calls polyfill (string→obj
+arguments), tool_responses polyfill (role tool→user), then Context with
+messages/add_generation_prompt/bos/eos/strftime_now/tools/extra_context →
+`template_root_->render(context)`. `strftime_now` is a callable bound to the
+`now` input (Hinnant civil_from_days + seconds decomposition, UTC — a faithful
+J implementation of the C `std::put_time` formatting).
+
+### Phase 5H — GGUF-jinja chat integration (swap the bespoke prompts)
+
+`tokenizer.chat_template` is a STRING KV (vt=8) in the GGUF —
+`'tokenizer.chat_template' kv_string kv` (gguf/gguf.ijs:455). llama.cpp reads
+this same key and renders it with minja, so rendering it with our minja port
+reproduces llama.cpp exactly (the oracle guarantee — both run the same engine
+on the same source). Each arch loader now extracts it into `ct_tmpl_g` and
+`chat_prompt` renders messages through the chat-template layer. The bespoke
+per-arch prompt verbs (`gem3_chat_prompt`, `qw2_chat_prompt`,
+`smollm2_chat_prompt`/`llama32_chat_prompt`, `granite_chat_prompt`,
+`ernie_chat_prompt`, `lf2_chat_prompt`, `qw35_chat_prompt`) and their
+hand-copied templates were **removed** — chat rendering is pure jinja.
+`chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` boxes to a
+minja Value array, calls `ct_apply` with add_generation_prompt=1, tools=null,
+now=current epoch (or the `ct_now_g` override), and extra vars (`ct_vars_g`).
+Template variables like `enable_thinking` are settable via the optional
+`tmpl_vars` arg to `chat_generate`; `ct_now_g` pins the date for stable
+test oracles. Stop tokens stay per-arch (from the vocab); the persistent chat
+session (chat_session_g) is unaffected.
+
+**Notable engine fixes along the way** (the hard-won J gotchas):
+`find_close` skips closers inside terminated string literals (C++
+parseString-exact: terminated strings hide `}}`/`%}`, unterminated act as the
+terminator); loop-local frame merge compares keys via `to_str` (obj_keys
+returns `(str;key)` Value boxes); `tojson` reads only the 'indent' kwarg;
+`indent_s` trailing-LF scalar check; split trailing-empty loss
+(`''.split(sep)` → `['']`, C++-exact); Value rank/kind accessors; `ctrl_g`
+reset per loop iteration (break/continue regression). Full parity with
+test-syntax.cpp (121), test-polyfills.cpp (12 polyfill + 6 real-template
+ToolTest), test-capabilities.cpp (10-template detect_caps, 100), strftime_now,
+and test-supported-template.cpp (30 golden renders). Excluded from the C++
+suite: CommandR7b (HF-gated template), FirefunctionV2 (upstream marks
+BROKEN/TODO, not in CI), test-fuzz.cpp (fuzztest property fuzzing).
+
 ## Cross-cutting notes (recent learnings)
 
 ### Cross-cutting notes (recent learnings)

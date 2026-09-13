@@ -49,8 +49,12 @@ at interactive speed, running large models, or production workloads.
   oracles.
 - **Built-in BPE + SentencePiece tokenizers**, matching llama.cpp's
   pre-tokenization and merge logic.
-- **Chat templates** — per-architecture instruct chat rendering with a
-  persistent multi-turn session (KV-cache resume across turns).
+- **Chat templates from the model's own GGUF** — every architecture renders
+  chat through its real `tokenizer.chat_template` (jinja), parsed and rendered
+  by our faithful **minja port** (`util/minja.ijs` + `util/chat_template.ijs`,
+  the same engine llama.cpp uses). Template variables like `enable_thinking`
+  are settable per call; a persistent multi-turn session resumes the KV cache
+  across turns.
 - **Sampling** — temperature, top-k, top-p, min-p.
 - **Model catalog + downloader** — reference a model by id, Hugging Face path,
   or URL and it downloads to a per-user model folder.
@@ -285,12 +289,13 @@ which you should read when you start editing or investigating:
   infer/generate/chat interface, GGUF parser API, debug tips, and J gotchas.
 - **docs/ARCHITECTURE.md** — architecture & implementation: GGUF layout, weight
   format, quant decode, KV cache, RoPE variants, attention, generation loop,
-  chat sessions, per-architecture notes.
+  chat sessions, real GGUF-jinja chat-template rendering, per-architecture notes.
 - **docs/J-KNOWLEDGE.md** — the J language knowledge base (jforc idiom reviews +
   gotchas), project-agnostic and reusable in any J project. Load it before
   writing or editing J code.
 - **docs/HISTORICAL.md** — the origin story, resolved limitations, and the
-  performance pass — what was tried, measured, and why.
+  performance pass — what was tried, measured, and why (including the Phase 5
+  minja port + GGUF-jinja integration).
 - **PLAN.md** — roadmap and planned work.
 
 ---
@@ -308,7 +313,8 @@ models/              per-architecture forward passes (gemma3, llama, granite, ..
 tokenizers/          BPE + SentencePiece tokenizers
 kernels/             float kernels (jfloat.ijs)
 gguf/                GGUF parser + quant decoders
-util/                KV cache, llm core, sampler, chat, model catalog, llmobj
+util/                KV cache, llm core, sampler, chat, model catalog, llmobj,
+                     minja jinja engine + chat-template layer (minja.ijs, chat_template.ijs)
 tests/               test suites (run tests/j/run_all_tests.sh from the checkout)
 ```
 
