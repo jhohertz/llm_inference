@@ -18,6 +18,7 @@ ITEMS=(
   gguf_dump.ijs
   llm_cli.ijs
   chat_launch.ijs
+  chat_tui.ijs
   models/gemma3.ijs
   models/llama.ijs
   models/granite.ijs
@@ -41,6 +42,7 @@ ITEMS=(
   util/llmobj.ijs
   util/minja.ijs
   util/chat_template.ijs
+  util/vt.ijs
 )
 
 rm -rf "$DEST"

@@ -520,10 +520,16 @@ there are no bespoke per-arch prompt verbs anymore.
   in util/chat.ijs.
 - **Render**: `chat_prompt` (util/chat.ijs dispatch) calls each arch's
   `*_chat_prompt`, which is a thin wrapper over `chat_tmpl_render`
-  (util/chat.ijs): convert the `<role ; content>` message boxes to a minja
+  (util/chat.ijs): convert the `<role ; content>` message boxes (or pre-built
+  minja message Values carrying `tool_calls`/`tool_call_id`/typed content —
+  detected by the `'obj'` kind marker on the unboxed element) to a minja
   Value array of `{role, content}` objs, `mkarr_minja_`, then
-  `ct_apply (source ; <msgs; tools=null; add_generation_prompt=1; extra;
+  `ct_apply (source ; <msgs; tools; add_generation_prompt=1; extra;
   now; ''; ''> ; caps ; tool_ex ; options)` → prompt string.
+  `tools` comes from `ct_tools_g` — a JSON string of tool definitions parsed
+  by `ct_parse_json_chatpl_` (`''` → null). Tool-capable templates render the
+  tool dump + tool_calls; non-tool templates get the tools polyfill (system
+  message) automatically via the layer's `detect_caps`.
   `add_generation_prompt=1` makes the template emit its own gen prompt
   (`<start_of_turn>model`, `<|im_start|>assistant`, ...). If a model has no
   `tokenizer.chat_template`, `chat_tmpl_render` throws a clear error.
@@ -532,6 +538,12 @@ there are no bespoke per-arch prompt verbs anymore.
   ` thinking\n\n response\n\n`; qwen3.5: undefined → ` thinking\n\n response\n\n`,
   true → ` thinking\n`). Settable per-call via the optional 4th `tmpl_vars`
   arg to `chat_generate` (`chat_vars_obj` builds the obj from `<key ; value>`).
+- **Tools**: `chat_generate` accepts an optional 5th `tools` arg — a JSON
+  string of OpenAI-style function schemas, set into `ct_tools_g` per call
+  (mirroring `ct_vars_g`/`ct_now_g`, cleared by the persistent chat path and
+  reset on model load). `chat_tmpl_render` parses it to the template's `tools`
+  input, so tool-capable templates produce real function-calling prompts;
+  messages may be pre-built minja Values to express `tool_calls`/typed content.
 - **now**: `chat_tmpl_render` uses the current epoch (Hinnant `days_from_civil`
   date→days inverse of the minja `civil_from_days`) unless `ct_now_g` is
   non-zero (test oracle pinning, e.g. 1721952000 = 26 Jul 2024). The template's

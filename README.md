@@ -53,8 +53,10 @@ at interactive speed, running large models, or production workloads.
   chat through its real `tokenizer.chat_template` (jinja), parsed and rendered
   by our faithful **minja port** (`util/minja.ijs` + `util/chat_template.ijs`,
   the same engine llama.cpp uses). Template variables like `enable_thinking`
-  are settable per call; a persistent multi-turn session resumes the KV cache
-  across turns.
+  are settable per call; **tool/function-calling prompts** are supported
+  (`chat_generate` takes a `tools` JSON input, plus messages carrying
+  `tool_calls`/typed content); a persistent multi-turn session resumes the KV
+  cache across turns.
 - **Sampling** — temperature, top-k, top-p, min-p.
 - **Model catalog + downloader** — reference a model by id, Hugging Face path,
   or URL and it downloads to a per-user model folder.
@@ -189,6 +191,13 @@ Multi-turn chat via the chat template:
 ```j
 msgs =. (<'user') , <'What is the capital of France?'
 answer =. llm chat_generate_simple_inference_ (msgs ; 200)
+```
+
+Tool/function-calling prompts (5th arg = a JSON string of tool definitions):
+
+```j
+tools =. '["{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"...\",\"parameters\":{...}}}"]'
+answer =. llm chat_generate_inference_ (msgs ; 200 ; <params ; '' ; tools)
 ```
 
 You may also `cocurrent <'inference'` to use plain simple names inside the

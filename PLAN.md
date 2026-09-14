@@ -20,9 +20,15 @@ port (Phase 5), chat-template layer (Phase 5G), and the GGUF-jinja chat
 integration (Phase 5H) are DONE** — every architecture's chat rendering now
 uses its own `tokenizer.chat_template` from the GGUF, parsed and rendered by
 the minja/chat_template port; the bespoke per-arch prompt verbs are removed.
+**Tool/typed-content prompts are DONE** — `chat_generate` accepts a `tools`
+JSON input (threaded via `ct_tools_g` into the template's `tools` input) and
+pre-built message Values carrying `tool_calls`/`tool_call_id`/typed content,
+so tool-capable templates render real function-calling prompts (verified
+against the upstream llama-3.1 tool_use golden).
 Full done-work detail is recorded in **docs/HISTORICAL.md**; the remaining
-planned work is Phase 4 (engineering stretch, low priority) plus a few open
-items below.
+planned work is **Phase 6 (streaming OpenAI-compatible chat API + direct jpi
+fork, in progress)**, Phase 4 (engineering stretch, low priority), plus a few
+open items below.
 
 ## Roadmap — Planned Work
 
@@ -86,12 +92,70 @@ removed — chat rendering is pure jinja. Template variables (e.g.
 Details in **docs/ARCHITECTURE.md** §Chat-template rendering and
 **docs/HISTORICAL.md** §Phase 5.
 
+### Phase 6 — Streaming OpenAI-compatible chat API + own minimal chat TUI (in progress)
+
+**Motivation.** A tool-use loop can't cleanly stand on its own — it *is* a chat
+loop (intercept the model's tool-call message, execute, feed the result back,
+continue). The console TUI problem is solved with our **own minimal chat UI**
+built on **reference/j-kvm** (a J keyboard/video/mouse console library: `vt`
+escape-code + raw-mode key reads, `vid` video buffers, `loop` event adverb).
+We abandoned the jpi fork (2026-09): jpi carries too much baggage for a
+temporary path — its own TUI fd quirks, the HTTP/agent/provider machinery, and
+a vendored `vt` that read keys from stdout (fd 1) instead of stdin (fd 0),
+which silently broke input. The core formalization is the **streaming
+OpenAI-compatible chat-completion contract** on our side (streaming-first,
+faithful to the OpenAI shapes), so the same verb later serves a network OpenAI
+SSE server.
+
+**Decisions (2026-09).**
+- Target models for the first end-to-end proof: **qwen3 / qwen3.5** (their real
+  templates already express `tools` + `tool_calls`).
+- **Own minimal chat TUI (`chat_tui.ijs`) — stateless now, stateful as the end
+  goal.** Each turn re-renders the full history via the shared `chat_generate`;
+  the message list persists in-session. KV-cache resume (stateful) is the
+  end-goal, not yet built. No markdown/video buffers initially — plain text.
+- **HTTP server is deferred** — a separate agent is building J HTTP-server APIs
+  and will bring them to us; do not start the network layer until then.
+
+**Work items.**
+1. **Streaming-first `chat_completion` verb** (util/chat.ijs, OpenAI-shaped):
+   request `messages` + `tools` + params → response `content`/`tool_calls` +
+   `finish_reason`. Adds to `gen_loop_core` an optional **per-token callback**
+   (llm_core.ijs:326-341 samples token-by-token; currently returns the full list
+   at the end with no hook). The callback serves the TUI (per-delta print) and
+   the future SSE server (per-delta `data:` lines).
+2. **Incremental text detokenizer** — the genuinely new piece. The TUI/SSE want
+   *text* deltas (not raw tokens); `chat_detokenize` decodes the whole stream at
+   once. Port llama.cpp's streaming detokenizer (accumulate bytes, emit a full
+   UTF-8 char at a time).
+3. **Stop at message/tool-call terminator + classification** — the generation-side
+   "chat loop" gap: stop on the arch's end-of-message marker (not just EOS),
+   then classify the message as text vs tool call to set `finish_reason`
+   (`'stop'` vs `'tool_calls'`) and extract `tool_calls`.
+4. **Stateful TUI** — reuse `chat_core`/`chat_session_g` (KV-cache resume) in
+   `chat_tui.ijs` instead of stateless `chat_generate` re-render.
+
+**Progress (2026-09).**
+- **jpi checkouts removed** (`reference/jpi`, `jpi_local/`); the fd-fixed
+  `vt.ijs` is vendored at `util/vt.ijs` (read stdin fd 0, write stdout fd 1).
+- **`chat_tui.ijs` + `scripts/chat_tui.sh`** — a minimal terminal chat UI in a
+  `coclass 'chatu'` locale (globals must use `=:`, not local `=.`, to be visible
+  across definitions — a J gotcha hit here). Loads the addon + catalog model
+  (qwen3-0.6b default), drives the j-kvm `vt` raw loop, calls
+  `chat_generate_simple` per turn, prints the reply, and quits on Ctrl-C or
+  `exit`. **Stateless text-chat proof works** (pty-verified: input → generation
+  → reply → redraw). Added to the addon manifest.
+- The streaming/`tool_calls` wiring (items 1-3) remains.
+
+**Open items (Phase 6).**
+- **Tool-use loop** — prompt rendering + the chat-completion API are the base;
+  our side produces a `tool_calls`-shaped response (item 3); the loop/execution
+  is a follow-up.
+- **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
+  the same `chat_completion` verb behind an OpenAI SSE endpoint.
+
 ## Open items
 
-- **Tool/typed-content prompts** — the real templates already express tools
-  (qwen2/qwen3/qwen35), but the chat path currently renders `tools=null`; wiring
-  tool definitions through `chat_generate` (tools as a template input) unlocks
-  function-calling prompts.
 - **Excluded ToolTest cases** — CommandR7b (HF-gated template), FirefunctionV2
   (upstream marks BROKEN/TODO, not in CI), and test-fuzz.cpp (fuzztest property
   fuzzing, no J equivalent). All are upstream-gated/known-broken/fuzz-only.

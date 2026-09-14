@@ -704,13 +704,32 @@ per-arch prompt verbs (`gem3_chat_prompt`, `qw2_chat_prompt`,
 `smollm2_chat_prompt`/`llama32_chat_prompt`, `granite_chat_prompt`,
 `ernie_chat_prompt`, `lf2_chat_prompt`, `qw35_chat_prompt`) and their
 hand-copied templates were **removed** — chat rendering is pure jinja.
-`chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` boxes to a
-minja Value array, calls `ct_apply` with add_generation_prompt=1, tools=null,
-now=current epoch (or the `ct_now_g` override), and extra vars (`ct_vars_g`).
+`chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` boxes (or
+pre-built minja message Values carrying `tool_calls`/`tool_call_id`/typed
+content, detected by the `'obj'` kind marker) to a minja Value array, calls
+`ct_apply` with add_generation_prompt=1, tools=null (or a `ct_tools_g` JSON
+parsed to the template's `tools` input), now=current epoch (or the `ct_now_g`
+override), and extra vars (`ct_vars_g`).
 Template variables like `enable_thinking` are settable via the optional
 `tmpl_vars` arg to `chat_generate`; `ct_now_g` pins the date for stable
 test oracles. Stop tokens stay per-arch (from the vocab); the persistent chat
 session (chat_session_g) is unaffected.
+
+**Tool/typed-content prompts (Phase 5H addendum, DONE)** — the chat-template
+layer already fully handled `tools` + tool-bearing messages (ct_normalize:
+tools polyfill, tool_calls polyfill, tool_responses polyfill, typed-content
+conversion via `ct_add_message`); the gap was the chat.ijs wiring. Now
+`chat_generate` accepts an optional `tools` JSON arg (5th arg), set into the
+`ct_tools_g` global read by `chat_tmpl_render` (mirroring `ct_vars_g`/`ct_now_g`)
+— the 8 arch `*_chat_prompt` thin wrappers are unchanged, the wiring is
+centralized. `chat_tmpl_render` builds the message array from either simple
+`<role ; content>` boxes or pre-built minja Values (a message Value is
+detected by its `'obj'` kind marker — the `#`-of-boxes check was unreliable
+because `<role ; content>` is itself a single-boxed element). `ct_tools_g` is
+cleared per persistent-chat turn and reset on model load. Verified: the shared
+renderer reproduces the upstream llama-3.1 `tool_use` golden exactly (modulo
+the pre-existing `''` bos/eos), with the tool dump present when `tools` is set
+and absent when null (tests/j/test_chat.ijs `test_tools_render`).
 
 **Notable engine fixes along the way** (the hard-won J gotchas):
 `find_close` skips closers inside terminated string literals (C++

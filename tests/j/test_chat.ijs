@@ -63,6 +63,46 @@ test_arch_prompt =: 3 : 0
   ''
 )
 
+NB. ---- chat_tmpl_render tools wiring (upstream tool_use golden) ----
+NB. Feeds the real llama-3.1 tool template a tool_use context through the
+NB. shared renderer (ct_tools_g JSON -> template `tools` input, pre-built
+NB. message Values for tool_calls/typed content), and checks the output
+NB. matches the upstream golden exactly (chat_tmpl_render uses '' bos/eos,
+NB. so the <|startoftext|> marker is prepended to the render for the oracle).
+test_tools_render =: 3 : 0
+  tmpl =. 1!:1 < 'tests/j/templates/meta-llama-Llama-3.1-8B-Instruct.jinja'
+  ct_tmpl_g =: tmpl
+  ct_now_g =: 1721952000
+  c =. ct_parse_json_chatpl_ (1!:1 < 'reference/minja/tests/contexts/tool_use.json')
+  msgs =. 'messages' obj_get_minja_ c
+  tools =. 'tools' obj_get_minja_ c
+  messages =. arr_items_minja_ msgs
+  ks =. obj_keys_minja_ c
+  drop =. ;: 'messages tools add_generation_prompt bos_token eos_token'
+  extra =. mkobj_minja_ ''
+  for_i. i. # ks do.
+    k =. > (i { ks)
+    if. -. ((<k) e. drop) do.
+      extra =. ((<k) , <(k obj_get_minja_ c)) obj_set_minja_ extra
+    end.
+  end.
+  ct_vars_g =: extra
+  ct_tools_g =: dumpc_minja_ ((<tools) , (<_1) , (<0) , (<1))
+  out =. chat_tmpl_render messages
+  gold =. 1!:1 < 'tests/j/goldens/meta-llama-Llama-3.1-8B-Instruct-tool_use.txt'
+  assert_test (((('<|startoftext|>') , out) -: gold)) ; 'chat_tmpl_render tools wiring == upstream tool_use golden'
+
+  NB. regression: no tools -> the tool-dump section is skipped
+  ct_tools_g =: ''
+  out0 =. chat_tmpl_render messages
+  assert_test ((-. ('You have access to the following functions' e. out0))) ; 'chat_tmpl_render no-tools drops tool dump'
+  assert_test (('You have access to the following functions' e. out)) ; 'chat_tmpl_render tools adds tool dump'
+  ct_tools_g =: ''
+  ct_vars_g =: ''
+  ct_tmpl_g =: ''
+  ''
+)
+
 test_chat_prompt =: 3 : 0
   init_counters ''
   echo '========================================'
@@ -80,6 +120,10 @@ test_chat_prompt =: 3 : 0
   test_arch_prompt ('qwen2' ; qwen2_path ; qwen2_ref)
   test_arch_prompt ('llama' ; smollm2_path ; smollm2_ref)
   test_arch_prompt ('qwen35' ; qwen35_path ; qwen35_ref)
+
+  echo ''
+  echo '--- chat_tmpl_render tools wiring (upstream llama-3.1 tool_use golden) ---'
+  test_tools_render ''
 
   echo ''
   show_summary 1

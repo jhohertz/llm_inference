@@ -22,6 +22,10 @@ NB. ct_vars_g: minja obj (Value) holding extra template variables
 NB. (enable_thinking etc.), passed as `extra` to ct_apply.
 ct_tmpl_g =: ''
 ct_vars_g =: ''
+NB. ct_tools_g: JSON string of tool definitions (OpenAI-style function schemas),
+NB. passed to the template as the `tools` input. '' = no tools (renders null).
+NB. Reset per call (chat_generate) / per load (inference.ijs).
+ct_tools_g =: ''
 NB. Optional epoch-seconds override for the `now` template variable (0 = use
 NB. current time). Lets tests pin a stable date (e.g. 1721952000 = 26 Jul 2024).
 ct_now_g =: 0
@@ -102,8 +106,8 @@ chat_stop_tokens =: 3 : 0
 )
 
 NB. ---- Chat arg parsing ----
-NB. y = <messages ; max_steps ; <params> ; <tmpl_vars?>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
-NB. Returns <messages; max_steps; temp; k; p; min_p; tmpl_vars>
+NB. y = <messages ; max_steps ; <params> ; <tmpl_vars?> ; <tools?>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
+NB. Returns <messages; max_steps; temp; k; p; min_p; tmpl_vars; tools>
 chat_args =: 3 : 0
   messages =. > 0 { y
   max_steps =. > 1 { y
@@ -119,7 +123,9 @@ chat_args =: 3 : 0
   min_p =. 3 { flat
   tmpl_vars =. ''
   if. 3 < # y do. tmpl_vars =. > 3 { y end.
-  (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<tmpl_vars)
+  tools =. ''
+  if. 4 < # y do. tools =. > 4 { y end.
+  (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<tmpl_vars) , (<tools)
 )
 
 NB. ---- Template variables: boxed list of (<key) ; <value -> minja obj ----
@@ -168,10 +174,17 @@ chat_tmpl_render =: 3 : 0
   end.
   vals =. ''
   for_i. i. # messages do.
-    msg =. > i { messages
-    role =. > 0 { msg
-    content =. > 1 { msg
-    mv =. mkobj_minja_ ((('role') pair_minja_ (mkstr_minja_ role)) , (('content') pair_minja_ (mkstr_minja_ content)))
+    elem =. i { messages
+    msg =. > elem
+    if. ('obj') -: 0 {:: msg do.
+      NB. pre-built minja message Value (tool_calls / tool_call_id / typed content)
+      mv =. msg
+    else.
+      NB. <role ; content> simple message
+      role =. 0 { msg
+      content =. 1 { msg
+      mv =. mkobj_minja_ ((('role') pair_minja_ (mkstr_minja_ role)) , (('content') pair_minja_ (mkstr_minja_ content)))
+    end.
     vals =. vals , < mv
   end.
   msgs =. mkarr_minja_ vals
@@ -179,17 +192,20 @@ chat_tmpl_render =: 3 : 0
   if. '' -: extra do. extra =. mkobj_minja_ '' end.
   now =. ct_now_g
   if. 0 = now do. now =. (days_from_civil (3 {. (6!:0 ''))) * 86400 end.
-  inputs =. ((<msgs) , (<(mknull_minja_ '')) , (<1) , (<extra) , (<now) , (<'') , (<''))
+  tools =. ct_tools_g
+  if. '' -: tools do. tools =. mknull_minja_ '' else. tools =. ct_parse_json_chatpl_ tools end.
+  inputs =. ((<msgs) , (<tools) , (<1) , (<extra) , (<now) , (<'') , (<''))
   src =. ct_tmpl_g
   caps =. ct_new_chatpl_ (src ; '' ; '')
   ct_apply_chatpl_ ((<src) , (<inputs) , (<caps) , (<ct_tool_ex_g_chatpl_) , (<(mk_options_chatpl_ '')))
 )
 
 NB. ---- Chat generation ----
-NB. llm chat_generate (messages ; max_steps ; <temp;k;p;min_p> ; <tmpl_vars>) -> answer text.
+NB. llm chat_generate (messages ; max_steps ; <temp;k;p;min_p> ; <tmpl_vars?> ; <tools?>) -> answer text.
 NB. tmpl_vars = boxed list of (<key) ; <value — extra jinja template variables
-NB. (e.g. enable_thinking). Renders the full message history (multi-turn), adds
-NB. the generation prompt, and generates until the arch's stop tokens.
+NB. (e.g. enable_thinking). tools = JSON string of tool definitions (the
+NB. template's `tools` input). Renders the full message history (multi-turn),
+NB. adds the generation prompt, and generates until the arch's stop tokens.
 chat_generate =: 4 : 0
   llm =. x
   args =. chat_args y
@@ -200,7 +216,9 @@ chat_generate =: 4 : 0
   p =. > 4 { args
   min_p =. > 5 { args
   tmpl_vars =. > 6 { args
+  tools =. > 7 { args
   ct_vars_g =: chat_vars_obj tmpl_vars
+  ct_tools_g =: tools
 
   arch =. llm_arch llm
   prompt =. arch chat_prompt messages
@@ -302,8 +320,9 @@ chat_core =: 4 : 0
   k =. 1 { flat
   p =. 2 { flat
   min_p =. 3 { flat
-  NB. persistent chat takes no tmpl_vars — clear any from chat_generate.
+  NB. persistent chat takes no tmpl_vars/tools — clear any from chat_generate.
   ct_vars_g =: ''
+  ct_tools_g =: ''
   arch =. llm_arch llm
 
   if. 0 = # chat_session_g do.
