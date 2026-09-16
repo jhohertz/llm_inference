@@ -20,6 +20,14 @@ NB. full ctx — kv_create zero-allocates it every fresh infer/generate, ~8.5s
 NB. each). The low-memory override keeps eff_seq small; prompts here are short.
 kv_max_seq_g =: 2048
 
+NB. ---- Streaming text-delta collector (Phase 6: chat_stream_cb) ----
+NB. chat_stream_cb reads arch/llm/stop from globals; chat_cb_g consumes each
+NB. delta. st_acc accumulates them for the stream==batch assertion.
+st_acc =: ''
+chat_cb_g =: 3 : 0
+  st_acc =: st_acc , y
+)
+
 NB. ---- Helpers for timing & memory ----
 fmt_bytes =: 3 : 0
   b =. y
@@ -330,6 +338,56 @@ test_qwen35 =: 3 : 0
   else. fc =. fc + 1
     fl =. fl , 'greedy generate non-empty', LF
     echo 'FAIL: greedy generate non-empty, no stop-token leak'; echo '  got: [' , g , ']' end.
+
+  NB. ================================================================
+  echo '--- Section 6: Streaming + tool-call classification (Phase 6) ---'
+  echo ''
+
+  NB. streaming text deltas == batch detokenize (greedy, deterministic)
+  tc =. tc + 1
+  st_acc =: ''
+  gen_cb_on_g =: 1
+  gen_cb_g =: chat_stream_cb
+  chat_cb_arch_g =: llm_arch llm
+  chat_cb_llm_g =: llm
+  msgs_plain =. <('user') ; 'What is the capital of France?'
+  res_sd =. llm chat_completion (msgs_plain ; '' ; 60 ; 1 ; <(0 0 0.95 0.0))
+  gen_cb_on_g =: 0
+  gen_cb_g =: ]
+  if. st_acc -: > 0 { res_sd do. pc =. pc + 1
+    echo 'PASS: streaming deltas == batch content (' , (": # st_acc) , ' chars)'
+  else. fc =. fc + 1
+    fl =. fl , 'streaming==batch', LF
+    echo 'FAIL: streaming deltas != batch content' end.
+
+  NB. tool-call classification: a <tool_call> region => finish 'tool_calls',
+  NB. content nulled, tool_calls extracted (qwen35 <function=> format).
+  tc =. tc + 1
+  tool =. '{' , LF , '  "type": "function",' , LF , '  "function": {' , LF , '    "name": "get_weather",' , LF , '    "description": "Get the weather for a city",' , LF , '    "parameters": {' , LF , '      "type": "object",' , LF , '      "properties": {' , LF , '        "city": {"type": "string"}' , LF , '      },' , LF , '      "required": ["city"]' , LF , '    }' , LF , '  }' , LF , '}'
+  tools =. '[' , tool , ']'
+  msgs_tool =. <('user') ; 'What is the weather in Paris? Use the get_weather tool.'
+  res_tc =. llm chat_completion (msgs_tool ; tools ; 200 ; 0 ; <(0 0 0.95 0.0))
+  if. 'tool_calls' -: > 1 { res_tc do. pc =. pc + 1
+    echo 'PASS: finish_reason = tool_calls on tool use'
+  else. fc =. fc + 1
+    fl =. fl , 'finish_reason tool_calls', LF
+    echo 'FAIL: finish_reason = tool_calls'; echo '  got: ' , > 1 { res_tc end.
+  tc =. tc + 1
+  tcs =. > 2 { res_tc
+  nm0 =. 'get_weather'
+  if. (1 = # tcs) *. (nm0 -: 1 {:: ('name' obj_get_minja_ ('function' obj_get_minja_ (> 0 { tcs)))) do. pc =. pc + 1
+    echo 'PASS: tool_calls extracted (name get_weather)'
+  else. fc =. fc + 1
+    fl =. fl , 'tool_calls extraction', LF
+    echo 'FAIL: tool_calls extracted'; echo '  count: ' , ": # tcs end.
+  tc =. tc + 1
+  tc0 =. > 0 { tcs
+  args =. 1 {:: ('arguments' obj_get_minja_ ('function' obj_get_minja_ tc0))
+  if. (1 e. '"city":"Paris"' E. args) do. pc =. pc + 1
+    echo 'PASS: tool arguments JSON carries city Paris'
+  else. fc =. fc + 1
+    fl =. fl , 'tool arguments JSON', LF
+    echo 'FAIL: tool arguments JSON'; echo '  args: [' , args , ']' end.
 
   echo ''
   echo '=============================================================='

@@ -145,7 +145,57 @@ SSE server.
   `chat_generate_simple` per turn, prints the reply, and quits on Ctrl-C or
   `exit`. **Stateless text-chat proof works** (pty-verified: input → generation
   → reply → redraw). Added to the addon manifest.
-- The streaming/`tool_calls` wiring (items 1-3) remains.
+- **Streaming-first `chat_completion` verb (item 1, DONE)** — `chat_completion`
+  (util/chat.ijs) renders messages+tools via the shared renderer, generates,
+  and returns an OpenAI-shaped `<content ; finish_reason ; tool_calls>`
+  response. Streaming is driven by a **per-token callback** added to
+  `gen_loop_core` (llm_core.ijs): the monadic verb `gen_cb_g` (gated by the
+  noun flag `gen_cb_on_g`) is called on each generated token and may return a
+  (possibly replaced) token id — returning a stop token forces a stop
+  (interception). Verbs can't be boxed into a list (noun-verb syntax error) and
+  can't be distinguished from a noun by `-:`/`3!:0`, so a global verb + noun
+  flag gates it. `chat_completion` takes
+  `(messages ; tools ; max_steps ; stream ; <params>)` — `<params>` MUST be the
+  last operand (a pre-boxed `;` operand that isn't trailing nests). Verified in
+  test_qwen3.ijs: 3-element response, finish_reason 'stop'/'length',
+  per-token streaming (callback count), non-streaming skip, and interception
+  forcing stop (eos read from the GGUF-built tokenizer). finish_reason
+  `'tool_calls'` classification is item 3.
+- **Streaming text deltas (item 2, DONE)** — `chat_stream_piece` (util/chat.ijs)
+  is a port of llama.cpp's streaming incremental detokenizer: it appends each
+  token's raw bytes to `st_buf_g`, holds any incomplete trailing UTF-8 sequence
+  (`utf8_tail`), and emits only complete characters. `chat_stream_cb` is the
+  per-token callback the caller installs as `gen_cb_g` (with `gen_cb_on_g=1`);
+  it reads arch/llm from `chat_cb_arch_g`/`chat_cb_llm_g` (set by
+  `chat_completion`) and forwards each text delta to `chat_cb_g` (a monadic verb
+  on the delta string), returning the token unchanged so the delta never leaks
+  into the token stream. Verified streaming == batch detokenize on all tokenizer
+  families (greedy; e.g. qwen3 170/170 chars, gemma3 32/32, ernie 31/31); a
+  streaming==batch test is in test_qwen3.ijs. **Gotcha:** do NOT capture a
+  caller verb via `x =: gen_cb_g` then reassign `gen_cb_g` — J verb assignment
+  is a dynamic ALIAS to the name, so rebinding makes the "capture" track the new
+  value (infinite recursion). `chat_completion` never overwrites the caller's
+  callback.
+- **Terminator/tool-call classification (item 3, DONE)** — `chat_completion`
+  (util/chat.ijs) classifies the generated content: if it carries a
+  `<tool_call>...</tool_call>` region, `finish_reason` becomes `'tool_calls'`,
+  the text `content` is nulled (OpenAI convention), and `tool_calls` are
+  extracted (OpenAI-shaped minja Values `{type; function:<name; arguments>;
+  id}`, `id` = `'call_' , name`). `chat_extract_tool_calls`/`chat_parse_tool_call`
+  handle both generation formats: qwen3.5's
+  `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>`
+  (parsed into a pjson key/value table, `enc`'d to a JSON string) and qwen3's
+  `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` (parsed with
+  pjson `dec`, arguments re-`enc`'d). The JSON dependency is `convert/pjson`
+  (added to DEPENDS — it preserves numbers/bools, unlike convert/json's 0/1-as-bool).
+  Verified end-to-end on qwen3.5-0.8b (greedy): `finish_reason='tool_calls'`,
+  `content=''`, one call `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs
+  Section 6. Also fixed a latent **gpt2 byte-table bug** (see ARCHITECTURE.md):
+  the tables followed OpenAI's bytes_to_unicode (codepoints 0..321) but llama.cpp
+  treats bytes 160/173 as control -> codepoints 322/323; qwen3.5 vocab tokens like
+  `ł`/`Ń` decode to 0xA0/0xAD. Streaming stop tokens are now suppressed too
+  (`chat_cb_stop_g`) so stream==batch holds (qwen3.5 <|im_end|> has a non-empty
+  byte-encoded vocab string).
 
 **Open items (Phase 6).**
 - **Tool-use loop** — prompt rendering + the chat-completion API are the base;

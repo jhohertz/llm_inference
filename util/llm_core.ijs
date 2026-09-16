@@ -18,6 +18,15 @@ NB. chunked prefill's peak is (n_heads, chunk, context). Set at runtime:
 NB.   prefill_chunk_sz =: 64   NB. smaller = less peak, more (slower) chunks
 prefill_chunk_sz =: 256
 
+NB. ---- Optional per-token generation callback (streaming hook) ----
+NB. Set gen_cb_on_g = 1 and gen_cb_g to a monadic verb to stream each generated
+NB. token; gen_loop_core calls `gen_cb_g pred` after sampling. The callback may
+NB. return a (possibly replaced) token id — returning a stop-token id forces a
+NB. stop. Verbs can't be boxed into a list (noun-verb syntax error) and can't
+NB. be distinguished from a noun by `-:`/`3!:0`, so a noun flag gates it.
+gen_cb_on_g =: 0
+gen_cb_g =: ]
+
 NB. ---- llm noun layout (shared across architectures) ----
 NB. llm = <path; ti; _; tokenizer; mi; kv_cache; tds; all_tensors; block_data; arch>
 llm_path        =: >@(0&{)
@@ -160,6 +169,13 @@ NB.   start_pos = ''      -> FRESH: kv_create + batched prefill at position 0
 NB.             = <number> -> RESUME: cache exists; prefill tokens incrementally
 NB.                            at positions start_pos .. start_pos+#tokens-1
 NB.   max_steps = generation cap; stop_list = stop-token ids (not appended).
+NB.   Optional per-token callback: set the global verb gen_cb_g ('' = none) to a
+NB.   monadic verb called on each GENERATED token (after sampling, before the
+NB.   stop check). It may return a (possibly replaced) token id — returning a
+NB.   stop-token id forces a stop — so it serves both as a streaming hook
+NB.   (per-delta emit) and an interception point. Called for every token it
+NB.   samples, including ones that would be dropped by stop_list. Verbs can't
+NB.   be boxed into the y list (noun-verb syntax error), so it's a global.
 NB. Returns the boxed token list: prompt tokens + generated (stops before stop).
 
 NB. ---- Timing report ----
@@ -199,6 +215,8 @@ gen_loop_core =: 4 : 0
   p =. > 5 { y
   min_p =. > 6 { y
   stop_list =. > 7 { y
+  cb =. ''
+  if. gen_cb_on_g do. cb =. gen_cb_g end.
 
   arch =. llm_arch llm
   mi =. llm_mi llm
@@ -337,9 +355,9 @@ gen_loop_core =: 4 : 0
       logits =. logits % logit_div
       cur_pos =. cur_pos + 1
     end.
-    pred =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-    if. (stop_list i. pred) < # stop_list do. break. end.
-    output =. output , <pred
+        pred =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
+    if. gen_cb_on_g do. pred =. cb pred end.
+    if. (stop_list i. pred) < # stop_list do. break. end.    output =. output , <pred
     gen_step =. gen_step + 1
   end.
   (pre_s , gen_s) report_timing (L , gen_step)

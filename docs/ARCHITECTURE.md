@@ -441,9 +441,66 @@ verbs) are dispatched by `llm_arch`. The arg list is
   Verified: persisted turn-by-turn chat == stateless full re-render (12/12
   Chat Session suite), SWA Boundary 16/16, full suite 374/374/0. qwen2
   29-token resume prefill: 0.115s vs 4.81s serial per-token (~42x).
-   NB: `kv_write_rows`' base must be `((a * max_seq) + start)` — `a * max_seq
-  + start` is `a * (max_seq + start)` (no precedence), harmless at start=0
-  (pre-resume callers) but clobbers the cache prefix at start>0.
+    NB: `kv_write_rows`' base must be `((a * max_seq) + start)` — `a * max_seq
+   + start` is `a * (max_seq + start)` (no precedence), harmless at start=0
+   (pre-resume callers) but clobbers the cache prefix at start>0.
+
+**PER-TOKEN STREAMING CALLBACK (Phase 6 item 1)** — `gen_loop_core` calls the
+monadic verb `gen_cb_g` (gated by the noun flag `gen_cb_on_g`) on each generated
+token after sampling, before the stop check. The callback may return a
+(possibly replaced) token id — returning a stop-token id forces a stop — so it
+serves both as a streaming hook (per-delta emit) and an interception point.
+Verbs can't be boxed into the y list (noun-verb syntax error) and can't be
+distinguished from a noun by `-:`/`3!:0`, so it's a global verb + noun flag
+rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
+ verb that uses it: `llm chat_completion (messages ; tools ; max_steps ; stream ;
+ <params>)` → `<content ; finish_reason ; tool_calls>`. `stream=1` uses the
+ caller's `gen_cb_g`; `stream=0` skips it. `<params>` MUST be the last `;`
+ operand — a pre-boxed `;` operand that isn't trailing nests (J gotcha). 
+`finish_reason` is `'stop'`/`'length'`/`'tool_calls'` (classification: Phase 6
+  item 3, see below).
+
+**STREAMING TEXT DELTAS (Phase 6 item 2)** — `chat_stream_piece` (util/chat.ijs)
+ is a port of llama.cpp's streaming incremental detokenizer: it appends each
+ token's raw bytes to `st_buf_g`, holds any incomplete trailing UTF-8 sequence
+ (`utf8_tail`), and emits only complete characters. `chat_stream_cb` is the
+ per-token callback the caller installs as `gen_cb_g` (with `gen_cb_on_g=1`);
+ it reads arch/llm from `chat_cb_arch_g`/`chat_cb_llm_g` (set by
+ `chat_completion`) and forwards each text delta to `chat_cb_g` (a monadic verb
+ on the delta string), returning the token unchanged so the delta never leaks
+ into the token stream. Streaming == batch detokenize on all tokenizer families
+ (greedy, e.g. qwen3 170/170 chars); a streaming==batch test is in
+  test_qwen3.ijs. Gotcha: J verb assignment `a =. b` is a dynamic ALIAS to the
+  name `b`, not a copy — so `x =: gen_cb_g` then `gen_cb_g =: chat_stream_cb`
+  would make the "capture" track the new value (infinite recursion). 
+`chat_completion` never overwrites the caller's callback. Stop tokens are
+  suppressed from the delta stream via `chat_cb_stop_g`: `gen_loop_core` breaks
+  WITHOUT appending a stop token to `output`, so the batch detokenize excludes it
+  — the streaming callback sees it (it fires before the stop check) and would
+  leak its text. qwen3.5's `<|im_end|>` (151645) has a NON-EMPTY byte-encoded
+  vocab string, so this is required for stream==batch there (verified 216/216).
+
+**TOOL-CALL CLASSIFICATION (Phase 6 item 3)** — `chat_completion` detects a
+  `<tool_call>...</tool_call>` region in the generated content: `finish_reason`
+  becomes `'tool_calls'`, `content` is nulled, and `tool_calls` are extracted as
+  OpenAI-shaped minja Values (`{type:'function'; function:<name; arguments>;
+  id}` with `id = 'call_' , name`, arguments a JSON string). 
+  `chat_extract_tool_calls`/`chat_parse_tool_call` handle the two generation
+  formats:
+  - qwen3.5: `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>` — parsed into a pjson key/value table and `enc`'d to a JSON string.
+  - qwen3 (JSON): `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` — parsed with `dec_pjson_` (convert/pjson, added to DEPENDS; it preserves numbers/bools, unlike convert/json which coerces 0/1 to bool), arguments re-`enc`'d.
+  Verified end-to-end on qwen3.5-0.8b (greedy): `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs Section 6.
+
+**GPT2 BYTE TABLES (llama.cpp vs OpenAI)** — `gpt2_build_tables`
+  (tokenizer_gpt2.ijs) originally followed OpenAI's `bytes_to_unicode`
+  (identity 33..126 + 160..255, control 0..32 + 127..159 -> codepoints 256..321).
+  llama.cpp's `unicode_utf8_to_byte_map` (unicode.cpp:172) treats byte 160 (0xA0)
+  and 173 (0xAD) as CONTROL (not identity): identity 33..126 + 161..172 +
+  174..255, control 0..32 -> 256..288, 127..160 -> 289..322, 173 -> 323. So the
+  byte-encoded codepoints run 0..323 (not 0..321). The old table broke qwen3.5
+  detokenize on tokens whose piece contains codepoints 322/323 (e.g. `ł`/`Ń`
+  decode to bytes 0xA0/0xAD — `index error: 323 > 322`). Fixed to match llama.cpp
+  (byte_tab length 324); verified tokenize/detokenize vs llama-cpp-python oracle.
 
 **BATCHED DECODE (`gen_loop_batch`)** — the way off the M=1 matvec floor:
 one forward per decode step over B independent sequences. The KV cache gets a

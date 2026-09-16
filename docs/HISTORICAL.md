@@ -761,3 +761,32 @@ BROKEN/TODO, not in CI), test-fuzz.cpp (fuzztest property fuzzing).
   fixed to `>@(N&{)`. Runtime after conversions ~8% faster (full suite 612s vs
   665s). The `>@(N&{})` gotcha itself is general and lives in J-KNOWLEDGE.md.
 
+
+## Phase 6 item 1 — streaming-first chat_completion verb + per-token callback (2026-09)
+
+The streaming-first `chat_completion` verb (util/chat.ijs) is the core
+formalization of Phase 6: `llm chat_completion (messages ; tools ; max_steps ;
+stream ; <params>)` → OpenAI-shaped `<content ; finish_reason ; tool_calls>`.
+`gen_loop_core` (llm_core.ijs) gained an optional **per-token callback**: the
+monadic verb `gen_cb_g` (gated by the noun flag `gen_cb_on_g`) is called on each
+generated token after sampling and may return a replaced token id — returning a
+stop-token id forces a stop (interception). `stream=1` uses the caller's
+`gen_cb_g`; `stream=0` skips it.
+
+J gotchas surfaced:
+- Verbs can't be boxed into a list (`noun-verb` syntax error) and can't be
+  distinguished from a noun by `-:`/`3!:0` (both error or mis-report), so the
+  callback is a global verb + noun flag, not an argument.
+- `chat_completion`'s `<params>` must be the LAST `;` operand: a pre-boxed `;`
+  operand that isn't trailing nests (`<(1.0...) ; 1` merges), so the shape is
+  `(messages ; tools ; max_steps ; stream ; <params>)`.
+- Defining a callback verb via `3 : 0` INSIDE another explicit verb body breaks
+  access to that verb's prior locals (nested-explicit-def gotcha) — the test
+  defines `stream_cb`/`force_eos` at top level instead.
+- `tokenizer_eos_g` is a tacit verb (`>@(2&{)`), not a noun; read the eos value
+  via `tokenizer_eos_g (llm_tokenizer llm)` for interception tests.
+
+Verified in test_qwen3.ijs Section 6 (6 new tests, suite 32/32): 3-element
+response, finish_reason `'stop'`/`'length'`, per-token streaming (callback
+count), non-streaming skip, interception forcing stop (eos from the GGUF-built
+tokenizer). finish_reason `'tool_calls'` classification is item 3.

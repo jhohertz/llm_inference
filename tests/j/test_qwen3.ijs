@@ -33,6 +33,29 @@ fmt_time =: 3 : 0
 NB. ---- Argmax of a logits vector ----
 argmax =: 3 : '>./ I. y = >./ y'
 
+NB. ---- Streaming-callback globals (Phase 6 item 1) ----
+NB. Callbacks must be TOP-LEVEL globals: defining a verb via `3 : 0` inside
+NB. another explicit verb body breaks access to that verb's prior locals (J
+NB. nested-explicit-def gotcha). cc_n is the shared per-test counter.
+cc_n =: 0
+stream_cb =: 3 : 0
+  cc_n =: cc_n + 1
+  y
+)
+force_eos =: 3 : 0
+  cc_n =: cc_n + 1
+  if. cc_n >: 3 do.
+    qw3_eos_g   NB. qwen3 <|im_end|> read from the GGUF-built tokenizer
+  else.
+    y
+  end.
+)
+NB. text-delta consumer for chat_stream_cb (streaming chat_completion)
+st_acc =: ''
+chat_cb_g =: 3 : 0
+  st_acc =: st_acc , y
+)
+
 test_qwen3 =: 3 : 0
   tc =. 0
   pc =. 0
@@ -279,13 +302,103 @@ test_qwen3 =: 3 : 0
   NB. block ("thinking\nOkay, ..."). Verify generate returns non-empty
   NB. answer-only text and does not leak the <|im_end|> stop token.
   tc =. tc + 1
-  g =. llm qw3_generate ('The capital of France is' ; 8 ; <<0 ; 0 ; 0.95 ; 0.0)
+  g =. llm qw3_generate ('The capital of France is' ; 8 ; <(0 0 0.95 0.0))
   if. (0 < # g) *. -. +./ 'im_end' E. g do.
     pc =. pc + 1
     echo 'PASS: greedy generate non-empty, no stop-token leak'
   else. fc =. fc + 1
     fl =. fl , 'greedy generate non-empty', LF
     echo 'FAIL: greedy generate non-empty, no stop-token leak'; echo '  got: [' , g , ']' end.
+
+  NB. ================================================================
+  echo '--- Section 6: Streaming chat_completion (Phase 6 item 1) ---'
+  echo ''
+
+  NB. chat_completion returns <content; finish_reason; tool_calls> (3 elements)
+  tc =. tc + 1
+  msgs =. (<('user') ; 'What is the capital of France?')
+  res =. llm chat_completion (msgs ; '' ; 200 ; 0 ; <(0 0 0.95 0.0))
+  if. 3 = # res do.
+    pc =. pc + 1
+    echo 'PASS: chat_completion returns 3-element response'
+  else. fc =. fc + 1
+    fl =. fl , 'chat_completion 3-element response', LF
+    echo 'FAIL: chat_completion returns 3-element response'; echo '  got: '; echo # res end.
+
+  NB. greedy completion -> finish_reason 'stop' (model emits <|im_end|>)
+  tc =. tc + 1
+  if. 'stop' -: > 1 { res do.
+    pc =. pc + 1
+    echo 'PASS: finish_reason = stop on natural completion'
+  else. fc =. fc + 1
+    fl =. fl , 'finish_reason stop', LF
+    echo 'FAIL: finish_reason = stop'; echo '  got: ' , > 1 { res end.
+
+  NB. content is the answer-only text (non-empty)
+  tc =. tc + 1
+  if. 0 < # > 0 { res do.
+    pc =. pc + 1
+    echo 'PASS: content non-empty'
+  else. fc =. fc + 1
+    fl =. fl , 'content non-empty', LF
+    echo 'FAIL: content non-empty' end.
+
+  NB. streaming callback fires per generated token (gen_cb_on_g gate)
+  tc =. tc + 1
+  cc_n =: 0
+  gen_cb_on_g =: 1
+  gen_cb_g =: stream_cb
+  res_s =. llm chat_completion (msgs ; '' ; 10 ; 1 ; <(1.0 0 0.95 0.0))
+  gen_cb_on_g =: 0
+  if. 0 < cc_n do.
+    pc =. pc + 1
+    echo 'PASS: streaming callback fired ' , (": cc_n) , ' times'
+  else. fc =. fc + 1
+    fl =. fl , 'streaming callback', LF
+    echo 'FAIL: streaming callback fired 0 times' end.
+
+  NB. non-streaming path skips the callback
+  tc =. tc + 1
+  cc_n =: 0
+  res_n =. llm chat_completion (msgs ; '' ; 10 ; 0 ; <(1.0 0 0.95 0.0))
+  if. 0 = cc_n do.
+    pc =. pc + 1
+    echo 'PASS: non-streaming skips callback'
+  else. fc =. fc + 1
+    fl =. fl , 'non-streaming skip', LF
+    echo 'FAIL: non-streaming callback fired' end.
+
+  NB. interception: callback returns eos -> generation stops, finish 'stop'
+  tc =. tc + 1
+  cc_n =: 0
+  qw3_eos_g =: tokenizer_eos_g (llm_tokenizer llm)   NB. eos from GGUF tokenizer
+  gen_cb_on_g =: 1
+  gen_cb_g =: force_eos
+  res_i =. llm chat_completion (msgs ; '' ; 50 ; 1 ; <(0 0 0.95 0.0))
+  gen_cb_on_g =: 0
+  if. 'stop' -: > 1 { res_i do.
+    pc =. pc + 1
+    echo 'PASS: interception forces stop (finish_reason stop)'
+  else. fc =. fc + 1
+    fl =. fl , 'interception stop', LF
+    echo 'FAIL: interception did not force stop'; echo '  got: ' , > 1 { res_i end.
+
+  NB. streaming detokenize == batch detokenize (greedy, deterministic)
+  tc =. tc + 1
+  st_acc =: ''
+  gen_cb_on_g =: 1
+  gen_cb_g =: chat_stream_cb
+  chat_cb_arch_g =: llm_arch llm
+  chat_cb_llm_g =: llm
+  res_sd =. llm chat_completion (msgs ; '' ; 40 ; 1 ; <(0 0 0.95 0.0))
+  gen_cb_on_g =: 0
+  gen_cb_g =: ]
+  if. st_acc -: > 0 { res_sd do.
+    pc =. pc + 1
+    echo 'PASS: streaming deltas == batch content (' , (": # st_acc) , ' chars)'
+  else. fc =. fc + 1
+    fl =. fl , 'streaming==batch', LF
+    echo 'FAIL: streaming deltas != batch content' end.
 
   echo ''
   echo '=============================================================='

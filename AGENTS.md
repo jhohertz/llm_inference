@@ -144,6 +144,31 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   ref would defeat the in-place amend). If the tokenizer round-trip drifts, it
   falls back to a full fresh re-render (correct, slower).
 - `llm chat_generate_simple (messages ; max_steps)` → per-arch default params.
+- **OpenAI-shaped completion + streaming (Phase 6)**: `llm chat_completion
+  (messages ; tools ; max_steps ; stream ; <params>)` → `<content ;
+  finish_reason ; tool_calls>` (`util/chat.ijs`). Streaming: the CALLER sets
+  `gen_cb_on_g =: 1` and `gen_cb_g =: chat_stream_cb` (with `chat_cb_g` as a
+  monadic verb consuming each text delta) before calling — `chat_completion`
+  provides the `chat_cb_arch_g`/`chat_cb_llm_g` globals and NEVER overwrites the
+  caller's callback (J verb assignment `a =. b` is a dynamic ALIAS to the name,
+  not a copy — rebinding `gen_cb_g` after a `chat_cb_inner_g =: gen_cb_g`
+  "capture" makes the capture track the new value: infinite recursion).
+  `chat_stream_piece` (port of llama.cpp's streaming detokenizer) accumulates
+  each token's bytes and emits only complete UTF-8 chars; streaming == batch
+  detokenize on all tokenizer families (test_qwen3.ijs). Stop tokens are
+  suppressed from the delta stream (`chat_cb_stop_g`) — `gen_loop_core` excludes
+  them from `output` but the callback fires before the stop check; qwen3.5's
+  `<|im_end|>` has a non-empty byte-encoded vocab string, so this is required for
+  stream==batch there (test_qwen35.ijs Section 6).
+- **Tool-call classification (Phase 6 item 3, DONE)**: a `<tool_call>` region in
+  the generated content → `finish_reason='tool_calls'`, `content` nulled,
+  `tool_calls` extracted (OpenAI-shaped minja Values `{type; function:<name;
+  arguments-JSON>; id}`). `chat_extract_tool_calls`/`chat_parse_tool_call` handle
+  qwen3.5's `<function=>` format and qwen3's JSON-in-`<tool_call>` format, using
+  `convert/pjson` (added to DEPENDS — it preserves numbers/bools, unlike
+  convert/json's 0/1-as-bool). Verified on qwen3.5 (get_weather, args
+  `{"city":"Paris"}`); test_qwen35.ijs Section 6. J gotcha: `if.` with a boolean
+  LIST reduces with `*./` (all-true required) — `E.` results need `1 e.` guard.
 - **Real GGUF-jinja rendering**: each arch loader extracts its own
   `tokenizer.chat_template` (a vt=8 string KV) into `ct_tmpl_g` once per load;
   `chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` message boxes

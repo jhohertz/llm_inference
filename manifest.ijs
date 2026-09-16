@@ -27,6 +27,7 @@ PLATFORMS=: 'linux'
 
 DEPENDS=: 0 : 0
 web/gethttp
+convert/pjson
 )
 
 FILES=: 0 : 0

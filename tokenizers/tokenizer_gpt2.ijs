@@ -13,21 +13,31 @@ ap =: 39 { a.   NB. apostrophe char (avoids single-quote literal escaping fragil
 gpt2_regex =: ap , 's|' , ap , 't|' , ap , 're|' , ap , 've|' , ap , 'm|' , ap , 'll|' , ap , 'd| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)'
 
 NB. ---- bytes<->unicode tables (GPT-2 byte encoding) ----
-NB. byte b -> codepoint cpt:
-NB.   b in 33..126 or 160..255 -> cpt = b
-NB.   b in 0..32            -> cpt = 256 + b
-NB.   b in 127..159         -> cpt = 256 + 33 + (b-127)
+NB. Match llama.cpp's unicode_utf8_to_byte_map (unicode.cpp:172), NOT OpenAI's
+NB. bytes_to_unicode. llama.cpp treats byte 160 (0xA0) and 173 (0xAD) as CONTROL
+NB. bytes (not identity), so the byte-encoded codepoints run 0..323 (not 0..321):
+NB.   identity bytes 33..126, 161..172, 174..255 -> cpt = b
+NB.   control bytes 0..32             -> cpt = 256 + b
+NB.   control bytes 127..160          -> cpt = 289 + (b-127)   (289..322)
+NB.   control byte 173                -> cpt = 323
+NB. The OpenAI scheme maps 160..255 identity and 127..159 control, which breaks
+NB. vocab tokens whose byte-encoded piece contains codepoints 322/323 (e.g.
+NB. qwen3.5 tokens like `ł`/`Ń` decode to bytes 0xA0/0xAD).
 gpt2_build_tables =: 3 : 0
   cpt_tab =. 256 $ 0
   cpt_tab =. (33 + i. 94) (33 + i. 94)} cpt_tab
-  cpt_tab =. (160 + i. 96) (160 + i. 96)} cpt_tab
+  cpt_tab =. (161 + i. 12) (161 + i. 12)} cpt_tab
+  cpt_tab =. (174 + i. 82) (174 + i. 82)} cpt_tab
   cpt_tab =. (256 + i. 33) (i. 33)} cpt_tab
-  cpt_tab =. (289 + i. 33) (127 + i. 33)} cpt_tab
-  byte_tab =. 322 $ _1
+  cpt_tab =. (289 + i. 34) (127 + i. 34)} cpt_tab
+  cpt_tab =. 323 (173)} cpt_tab
+  byte_tab =. 324 $ _1
   byte_tab =. (33 + i. 94) (33 + i. 94)} byte_tab
-  byte_tab =. (160 + i. 96) (160 + i. 96)} byte_tab
+  byte_tab =. (161 + i. 12) (161 + i. 12)} byte_tab
+  byte_tab =. (174 + i. 82) (174 + i. 82)} byte_tab
   byte_tab =. (i. 33) (256 + i. 33)} byte_tab
-  byte_tab =. (127 + i. 33) (289 + i. 33)} byte_tab
+  byte_tab =. (127 + i. 34) (289 + i. 34)} byte_tab
+  byte_tab =. 173 (323)} byte_tab
   (<cpt_tab) , (<byte_tab)
 )
 

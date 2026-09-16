@@ -46,6 +46,11 @@ monad `u~ y = y u y` (reflex, e.g. `/:~ y` sorts ascending). Reductions
 (`+/`, `>./`, `*/`, `+/"1`, `>./"1`), sort/grade reflex (`\:`, `/:~`, `\:~`),
 revoke indexing (`{~`), AND-reduce `*./`.
 
+**`if.`/`while.` conditions with a boolean LIST reduce via `*./` (all-true
+required)** — `E.` (match) returns a boolean list, so `if. pat E. text do.` is
+FALSE unless every char matches. Use `1 e. pat E. text` (any) for substring
+presence. Hit twice in the tool-call path (chat_parse_tool_call, test_qwen35).
+
 Greedy-max selection: `y i. >./ y` (index-of first max) replaces
 `{. I. y = >./ y`.
 
