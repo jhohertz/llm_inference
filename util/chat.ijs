@@ -95,6 +95,25 @@ chat_stream_reset =: 3 : 0
   ''
 )
 
+NB. ---- Stream arming helpers (external-locale callers, e.g. the chat TUI) ----
+NB. The callback globals gen_cb_on_g (noun) / gen_cb_g (verb) live in llm_core;
+NB. the addon exports VERBS only (not nouns), so an external locale cannot set
+NB. gen_cb_on_g via the _inference_ suffix. These verbs arm/disarm the globals.
+NB. chat_stream_start sets gen_cb_on_g=1 + gen_cb_g=chat_stream_cb; the caller
+NB. sets chat_cb_g (its delta consumer) separately — chat_stream_start never
+NB. touches chat_cb_g (verb-alias: rebinding it would clobber the caller's).
+chat_stream_start =: 3 : 0
+  gen_cb_on_g =: 1
+  gen_cb_g =: chat_stream_cb
+  ''
+)
+chat_stream_stop =: 3 : 0
+  gen_cb_on_g =: 0
+  gen_cb_g =: ]
+  chat_cb_g =: ]
+  ''
+)
+
 NB. ---- Per-arch token -> raw bytes (presentation: ▁ -> space) ----
 NB. gpt2 family (qwen2/qwen3/qwen35/llama/granite/lfm2): byte_tab decode.
 gpt2_tok_bytes =: 3 : 0

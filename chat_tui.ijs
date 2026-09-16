@@ -5,17 +5,22 @@ NB. Usage:
 NB.   jconsole chat_tui.ijs [MODEL]        (default mdl qwen3-0.6b)
 NB.
 NB. Stateless chat: each turn re-renders the full message history through
-NB. the shared chat_generate verb. The message list persists for the
-NB. session (stateful KV-cache resume is the end goal, not yet).
+NB. the shared chat_completion verb (streaming: the reply appears live,
+NB. token by token, via the chat_stream_cb per-token callback). The message
+NB. list persists for the session (stateful KV-cache resume is the end
+NB. goal, not yet).
 NB.
 NB. Controls: type a message + Enter to send; Backspace to edit;
 NB. Ctrl-C or type `exit` to quit.
 NB. ================================================================
 
-coclass 'chatu'
-
+NB. Run the TUI in the inference locale itself (not a separate chatu locale):
+NB. the streaming consumer chat_cb_g is rebound to stream_delta, and J verb
+NB. assignment aliases the NAME (resolved in the locale where it's CALLED, i.e.
+NB. inference) — so the consumer + TUI state + drawing must share inference's
+NB. locale, or chat_stream_cb's `chat_cb_g delta` can't resolve stream_delta.
 load 'llm/inference'            NB. addon (must be installed)
-cocurrent <'chatu'
+cocurrent <'inference'
 
 NB. Model: first ARGV arg or default catalog id.
 get_model =: 3 : 0
@@ -33,10 +38,10 @@ MAX_STEPS =: 100000
 RUNNING =: 1
 MSGS =: 0 $ <''                 NB. boxed list of <role ; content>
 IN =: ''                        NB. current input line
+STREAM =: ''                    NB. accumulating assistant text during streaming
 
 NB. Terminal driver (fd-fixed j-kvm vt: read stdin fd 0, write stdout fd 1).
 require 'llm/inference/util/vt'
-cocurrent <'chatu'
 coinsert 'vt'
 
 NB. ---- Rendering ----
@@ -112,6 +117,12 @@ draw_conv =: monad define
     rows =. rows , rs
     cols =. cols , (c #~ # rs)
   end.
+  NB. live streaming assistant row (grows as deltas arrive)
+  if. 0 < # STREAM do.
+    rs =. w wrap ('[assistant] ' , STREAM)
+    rows =. rows , rs
+    cols =. cols , (2 #~ # rs)
+  end.
   NB. tail-window: only render rows that fit above the input line
   avail =. in_row - 1                 NB. row 0 is the header
   if. avail < # rows do.
@@ -141,6 +152,17 @@ draw_input =: monad define
   ''
 )
 
+NB. ---- Streaming delta consumer ----
+NB. Installed as chat_cb_g (the inference-locale delta verb); each text delta
+NB. appends to STREAM and redraws the conversation live. chat_stream_cb calls
+NB. this per generated token with only the complete UTF-8 text emitted.
+stream_delta =: monad define
+  STREAM =: STREAM , y
+  draw_conv ''
+  draw_input ''
+  ''
+)
+
 NB. ---- Main loop ----
 run =: monad define
   raw 1
@@ -158,14 +180,19 @@ run =: monad define
         if. 0 < # IN do.
           MSGS =: MSGS , < ('user') ; IN
           IN =: ''
+          STREAM =: ''
           draw_conv ''
-          goxy 0 , (<: {. gethw '') - 1
-          ceol ''
-          fgc 5
-          puts '  ...thinking...'
-          reset ''
-          reply =. LLM chat_generate_simple_inference_ (MSGS ; MAX_STEPS)
-          MSGS =: MSGS , < ('assistant') ; reply
+          draw_input ''
+          NB. streaming reply: install the per-token callback, generate live.
+          NB. We run in the inference locale, so use simple names. chat_stream_start
+          NB. arms gen_cb_on_g/gen_cb_g; chat_cb_g (rebound to our stream_delta,
+          NB. also in inference) is the per-delta consumer.
+          chat_stream_start ''
+          chat_cb_g =: stream_delta
+          res =. LLM chat_completion (MSGS ; '' ; MAX_STEPS ; 1 ; <(0 0 0.95 0.0))
+          chat_stream_stop ''
+          MSGS =: MSGS , < ('assistant') ; (> 0 { res)
+          STREAM =: ''
           draw_conv ''
         end.
         draw_input ''
