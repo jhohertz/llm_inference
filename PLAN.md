@@ -198,9 +198,20 @@ SSE server.
   byte-encoded vocab string).
 
 **Open items (Phase 6).**
-- **Tool-use loop** — prompt rendering + the chat-completion API are the base;
-  our side produces a `tool_calls`-shaped response (item 3); the loop/execution
-  is a follow-up.
+- **Tool-use loop (item 4, DONE)** — `chat_tool_loop` (util/chat.ijs):
+  `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;
+  <params>)` calls `chat_completion`; on `finish_reason='tool_calls'` it
+  executes each tool via the global verb `chat_tool_fn_g` (y = `<name ;
+  args-JSON>`, returns the result string; mirrors the gen_cb_g global-verb
+  pattern), appends the assistant tool_calls message + one `tool` role message
+  per result (minja Values), and re-calls until the model stops (cap
+  max_rounds). Returns `<content ; finish_reason ; tool_calls_made>`. Verified
+  on qwen3.5: model calls get_weather args `{"city":"Paris"}`, the loop executes
+  it, feeds back `"The weather in Paris is sunny and 22C."`, and the model then
+  answers `"The weather in Paris is sunny and 22°C."` (finish 'stop').
+  Streaming re-arms `gen_cb_on_g`/`gen_cb_g` each round, so stream==batch holds
+  across rounds. test_qwen35.ijs Section 6. J gotcha: `max_rounds` must come
+  BEFORE `<params>` (a pre-boxed `;` operand that isn't trailing nests).
 - **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
   the same `chat_completion` verb behind an OpenAI SSE endpoint.
 

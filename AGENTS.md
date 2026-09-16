@@ -169,6 +169,19 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   convert/json's 0/1-as-bool). Verified on qwen3.5 (get_weather, args
   `{"city":"Paris"}`); test_qwen35.ijs Section 6. J gotcha: `if.` with a boolean
   LIST reduces with `*./` (all-true required) — `E.` results need `1 e.` guard.
+- **Tool-use loop (Phase 6 item 4, DONE)**: `llm chat_tool_loop
+  (messages ; tools ; max_steps ; stream ; max_rounds ; <params>)` → `<content ;
+  finish_reason ; tool_calls_made>` (util/chat.ijs). Calls `chat_completion`;
+  on `finish_reason='tool_calls'` it executes each tool via the global verb
+  `chat_tool_fn_g` (y = `<name ; args-JSON>`, returns the result string;
+  mirrors the gen_cb_g global-verb pattern), appends the assistant tool_calls +
+  `tool` role result messages (minja Values: `chat_build_tool_call_msg`/
+  `chat_build_tool_msg`/`chat_exec_tool`), and re-calls until the model stops
+  (cap `max_rounds`). Streaming re-arms `gen_cb_on_g`/`gen_cb_g` each round so
+  stream==batch holds across rounds. Verified on qwen3.5 (get_weather →
+  `"The weather in Paris is sunny and 22C."` → final answer finish 'stop');
+  test_qwen35.ijs Section 6. Gotcha: `max_rounds` must come BEFORE `<params>`
+  (a pre-boxed `;` operand that isn't trailing nests).
 - **Real GGUF-jinja rendering**: each arch loader extracts its own
   `tokenizer.chat_template` (a vt=8 string KV) into `ct_tmpl_g` once per load;
   `chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` message boxes

@@ -491,6 +491,26 @@ rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
   - qwen3 (JSON): `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` — parsed with `dec_pjson_` (convert/pjson, added to DEPENDS; it preserves numbers/bools, unlike convert/json which coerces 0/1 to bool), arguments re-`enc`'d.
   Verified end-to-end on qwen3.5-0.8b (greedy): `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs Section 6.
 
+**TOOL-USE LOOP (Phase 6 item 4)** — `chat_tool_loop` (util/chat.ijs):
+  `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;
+  <params>)` drives the execute-and-recall cycle. It calls `chat_completion`;
+  on `finish_reason='tool_calls'` it executes each extracted tool via the
+  global verb `chat_tool_fn_g` (y = `<name ; args-JSON-string>`, returns the
+  result STRING), builds an assistant message Value carrying the model's
+  `tool_calls` (`{role:'assistant'; content:null; tool_calls:[...]}`) plus one
+  `tool` role message Value per result (`{role:'tool'; content:result;
+  tool_call_id:id}`), appends them to the history, and re-renders/re-calls
+  until the model stops calling tools (cap `max_rounds`). Returns
+  `<content ; finish_reason ; tool_calls_made>`. `chat_build_tool_call_msg`,
+  `chat_build_tool_msg`, `chat_exec_tool` are the builders; `chat_tool_fn_g`
+  mirrors the gen_cb_g global-verb pattern (verbs can't be boxed). Streaming
+  re-arms `gen_cb_on_g`/`gen_cb_g`/`chat_cb_*_g` each round, so stream==batch
+  holds across rounds. Verified on qwen3.5-0.8b: model calls get_weather, the
+  loop executes it (`"The weather in Paris is sunny and 22C."`), and the model
+  then answers `"The weather in Paris is sunny and 22°C."` (finish 'stop');
+  test_qwen35.ijs Section 6. Gotcha: `max_rounds` must come BEFORE `<params>`
+  (a pre-boxed `;` operand that isn't trailing nests).
+
 **GPT2 BYTE TABLES (llama.cpp vs OpenAI)** — `gpt2_build_tables`
   (tokenizer_gpt2.ijs) originally followed OpenAI's `bytes_to_unicode`
   (identity 33..126 + 160..255, control 0..32 + 127..159 -> codepoints 256..321).

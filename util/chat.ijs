@@ -550,6 +550,106 @@ chat_completion =: 4 : 0
   (<content) , (<finish) , (<tcs)
 )
 
+NB. ---- Tool dispatch registry (Phase 6 item 4) ----
+NB. chat_tool_fn_g is the global verb executed for each tool call. y = <name ;
+NB. args-JSON-string>. Returns the result STRING (fed back as a 'tool' message
+NB. content). Mirrors the gen_cb_g global-verb pattern: verbs can't be boxed
+NB. into a list (noun-verb syntax error) and can't be distinguished from a noun
+NB. by -:/3!:0, so a global verb gates the dispatch. Caller sets
+NB. chat_tool_fn_g =: my_verb (monadic, y = <name ; args>). Default returns an
+NB. error string (the model sees it and may correct the call).
+chat_tool_fn_g =: 3 : 0
+  'tool not registered: ' , > 0 { y
+)
+
+NB. Build an assistant message Value carrying the model's tool_calls.
+NB. y = boxed list of tool_call minja Values (from chat_extract_tool_calls).
+chat_build_tool_call_msg =: 3 : 0
+  tcs =. y
+  tcarr =. mkarr_minja_ tcs
+  mkobj_minja_ ((('role') pair_minja_ (mkstr_minja_ 'assistant')) , (('content') pair_minja_ (mknull_minja_ '')) , (('tool_calls') pair_minja_ tcarr))
+)
+
+NB. Build a 'tool' role message Value carrying one tool result.
+NB. y = <tool_call_id ; result-string>.
+chat_build_tool_msg =: 3 : 0
+  id =. > 0 { y
+  res =. > 1 { y
+  mkobj_minja_ ((('role') pair_minja_ (mkstr_minja_ 'tool')) , (('content') pair_minja_ (mkstr_minja_ res)) , (('tool_call_id') pair_minja_ (mkstr_minja_ id)))
+)
+
+NB. Execute one tool_call minja Value via chat_tool_fn_g -> <id ; result-string>.
+chat_exec_tool =: 3 : 0
+  tc =. y
+  fn =. ('function') obj_get_minja_ tc
+  name =. payload_minja_ ('name') obj_get_minja_ fn
+  args =. payload_minja_ ('arguments') obj_get_minja_ fn
+  id =. payload_minja_ ('id') obj_get_minja_ tc
+  res =. chat_tool_fn_g (name ; args)
+  (<id) , <res
+)
+
+NB. ---- Tool-use loop (Phase 6 item 4) ----
+NB. llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ; <params>)
+NB.   messages   = boxed list of <role ; content> (or pre-built minja Values)
+NB.   tools      = JSON string of tool definitions ('' = none)
+NB.   max_steps  = generation cap per round (token count)
+NB.   stream     = as chat_completion (re-arms the streaming globals each round)
+NB.   max_rounds = cap on tool-use rounds (executes tools, then re-generates)
+NB.   <params>   = <temp;k;p;min_p> (MUST be last; a pre-boxed `;` operand that
+NB.                isn't trailing nests — see chat_completion, so max_rounds
+NB.                comes BEFORE <params>)
+NB. Calls chat_completion; if finish_reason == 'tool_calls', executes each tool
+NB. via chat_tool_fn_g, appends the assistant tool_calls + tool result messages,
+NB. and re-calls until the model stops calling tools (cap max_rounds).
+NB. Returns <content ; finish_reason ; tool_calls_made> — content is the FINAL
+NB. text answer, finish_reason the final 'stop'/'length' (or 'tool_calls' if
+NB. max_rounds was hit mid-call), tool_calls_made the accumulated boxed list of
+NB. tool_call Values the model requested across rounds.
+chat_tool_loop =: 4 : 0
+  llm =. x
+  messages =. > 0 { y
+  tools =. > 1 { y
+  max_steps =. > 2 { y
+  stream =. > 3 { y
+  max_rounds =. > 4 { y
+  params =. > 5 { y
+  hist =. messages
+  all_tcs =. ''
+  round =. 0
+  res =. ''
+  while. 1 do.
+    round =. round + 1
+    if. stream do.
+      gen_cb_on_g =: 1
+      gen_cb_g =: chat_stream_cb
+      chat_cb_arch_g =: llm_arch llm
+      chat_cb_llm_g =: llm
+    end.
+    res =. llm chat_completion (hist ; tools ; max_steps ; stream ; <params)
+    finish =. > 1 { res
+    if. finish -: 'tool_calls' do.
+      tcs =. > 2 { res
+      if. round < max_rounds do.
+        all_tcs =. all_tcs , tcs
+        hist =. hist , <(chat_build_tool_call_msg tcs)
+        for_i. i. # tcs do.
+          exec =. chat_exec_tool (> (i { tcs))
+          hist =. hist , <(chat_build_tool_msg (> exec))
+        end.
+        continue.
+      else.
+        NB. max_rounds hit with a pending tool call — record it and stop
+        all_tcs =. all_tcs , tcs
+        break.
+      end.
+    end.
+    break.
+  end.
+  content =. > 0 { res
+  (<content) , (<finish) , (<all_tcs)
+)
+
 NB. ---- Simple wrapper (per-arch default params) ----
 NB. llm chat_completion_simple (messages ; tools ; max_steps ; stream)
 NB. Streaming callback via gen_cb_g (set before calling).

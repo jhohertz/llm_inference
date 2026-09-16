@@ -28,6 +28,19 @@ chat_cb_g =: 3 : 0
   st_acc =: st_acc , y
 )
 
+NB. ---- Tool-use loop dispatch verb (Phase 6 item 4) ----
+NB. Must be TOP-LEVEL: defining a verb via `3 : 0` inside another explicit verb
+NB. body breaks access to that verb's prior locals (nested-explicit-def gotcha).
+NB. get_weather_fn -> <name ; args-JSON> ; returns the weather result string.
+get_weather_fn =: 3 : 0
+  args =. > 1 { y
+  r =. dec_pjson_ args
+  keys =. 0 {"1 r
+  vals =. 1 {"1 r
+  city =. > (keys i. <'city') { vals
+  'The weather in ' , city , ' is sunny and 22C.'
+)
+
 NB. ---- Helpers for timing & memory ----
 fmt_bytes =: 3 : 0
   b =. y
@@ -388,6 +401,31 @@ test_qwen35 =: 3 : 0
   else. fc =. fc + 1
     fl =. fl , 'tool arguments JSON', LF
     echo 'FAIL: tool arguments JSON'; echo '  args: [' , args , ']' end.
+
+  NB. ---- tool-use loop (Phase 6 item 4): execute tools, re-generate ----
+  NB. Register a get_weather verb (defined top-level); chat_tool_loop should
+  NB. call it, feed the result back, and return a final text answer ('stop').
+  chat_tool_fn_g =: get_weather_fn
+  tc =. tc + 1
+  res_loop =. llm chat_tool_loop (msgs_tool ; tools ; 200 ; 0 ; 3 ; <(0 0 0.95 0.0))
+  if. ('stop' -: > 1 { res_loop) *. (0 < # > 0 { res_loop) do. pc =. pc + 1
+    echo 'PASS: tool-use loop returns final answer (finish stop)'
+  else. fc =. fc + 1
+    fl =. fl , 'tool-use loop final answer', LF
+    echo 'FAIL: tool-use loop final answer'; echo '  finish: ' , > 1 { res_loop end.
+  tc =. tc + 1
+  tcs_loop =. > 2 { res_loop
+  if. 1 = # tcs_loop do. pc =. pc + 1
+    echo 'PASS: tool-use loop made 1 tool call'
+  else. fc =. fc + 1
+    fl =. fl , 'tool-use loop call count', LF
+    echo 'FAIL: tool-use loop made ' , ": # tcs_loop , ' calls' end.
+  tc =. tc + 1
+  if. (1 e. 'weather' E. > 0 { res_loop) do. pc =. pc + 1
+    echo 'PASS: final answer reflects the tool result'
+  else. fc =. fc + 1
+    fl =. fl , 'tool-use loop result reflected', LF
+    echo 'FAIL: final answer reflects the tool result'; echo '  got: [' , > 0 { res_loop , ']' end.
 
   echo ''
   echo '=============================================================='
