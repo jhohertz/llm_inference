@@ -790,3 +790,27 @@ Verified in test_qwen3.ijs Section 6 (6 new tests, suite 32/32): 3-element
 response, finish_reason `'stop'`/`'length'`, per-token streaming (callback
 count), non-streaming skip, interception forcing stop (eos from the GGUF-built
 tokenizer). finish_reason `'tool_calls'` classification is item 3.
+
+## Chat TUI streams the reply live (Phase 6 ui, 2026-09)
+
+`chat_tui.ijs` now renders the assistant reply token-by-token instead of
+showing '...thinking...' then blocking: on Enter it arms streaming
+(`chat_stream_start`), rebinds `chat_cb_g` to a `stream_delta` consumer that
+appends each delta to STREAM and redraws the conversation live, calls
+`chat_completion` with stream=1, then disarms (`chat_stream_stop`). The final
+answer is stored in MSGS and re-rendered. pty-verified on qwen3-0.6b: "What is
+the capital of France?" streams live, `[user]/[assistant]` rows render, the
+answer mentions Paris.
+
+Two J gotchas surfaced:
+- **Cross-locale verb rebinding is a dynamic alias to the NAME, resolved where
+  the verb is CALLED.** The TUI originally ran in a separate `chatu` locale;
+  rebinding `chat_cb_g_inference_ =: stream_delta` made inference's `chat_cb_g`
+  alias the unqualified name `stream_delta`, and `chat_stream_cb`'s
+  `chat_cb_g delta` looked it up in inference — `value error: stream_delta`.
+  `name__locale` verb access (`bar__chatu`) also fails for verbs. Fix: run the
+  TUI in the inference locale so the consumer + TUI state + drawing share it.
+- **The addon exports VERBS to base but not NOUNS.** `gen_cb_on_g_inference_`
+  does NOT exist (it's a noun in llm_core), so an external locale can't arm
+  streaming via the suffix. Added exported helper verbs `chat_stream_start`/
+  `chat_stream_stop` that set the `gen_cb_on_g`/`gen_cb_g` globals internally.

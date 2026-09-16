@@ -31,6 +31,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `gguf_dump.ijs` | **Utility**: pretty-print GGUF file info. `load 'gguf_dump.ijs'; gguf_dump_inference_ 'path.gguf'` (shell helper `scripts/gguf_dump.sh`) |
 | `llm_cli.ijs` | **CLI**: one-shot generate from the command line. `jconsole llm_cli.ijs MODEL "PROMPT" [MAX_STEPS] [CHAT]` — if PROMPT starts with `@`, the rest is read as a prompt FILE (curl-style). (shell helper `scripts/llm.sh`, which forwards the 4th arg as chat mode) |
 | `chat_launch.ijs` | **Chat console**: load a model and stay in an interactive J REPL (`llm_z_`, `chat_z_`, `chat_p_z_`, `chat_reset_z_` exposed in the GLOBAL/base locale so `llm chat 'msg'` works as-is at the prompt — a script-file `cocurrent` does NOT persist to the REPL). `jconsole chat_launch.ijs MODEL` (shell helper `scripts/chat.sh`) |
+| `chat_tui.ijs` | **Chat TUI**: raw-mode terminal chat (j-kvm `vt`, fd-fixed) that STREAMS the reply live via `chat_stream_cb`. Runs in the **inference locale** (not a separate chatu locale): J verb assignment aliases the NAME (resolved where the verb is CALLED), so rebinding `chat_cb_g` from an external locale makes `chat_stream_cb`'s `chat_cb_g delta` look up an unresolvable name. `jconsole chat_tui.ijs [MODEL]` (shell helper `scripts/chat_tui.sh`) |
 | `gguf/gguf.ijs` | GGUF parser, tensor loading (F32/F16/BF16), KV pair extraction |
 | `gguf/quant.ijs` / `gguf/quant_tables.ijs` | Quant decoders + block tables — aligned with the loader (packed-quant handling is part of gguf today) |
 | `kernels/jfloat.ijs` | Float kernels: matmul, `linear`, gelu, silu, swiglu, rms_norm, rope (`rope_apply2`/`rope_apply2_neox`/`rope_apply2_t`), softcap |
@@ -153,6 +154,10 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   caller's callback (J verb assignment `a =. b` is a dynamic ALIAS to the name,
   not a copy — rebinding `gen_cb_g` after a `chat_cb_inner_g =: gen_cb_g`
   "capture" makes the capture track the new value: infinite recursion).
+  External locales arm streaming via `chat_stream_start`/`chat_stream_stop`
+  (util/chat.ijs): the `gen_cb_on_g` noun / `gen_cb_g` verb live in llm_core and
+  the addon exports VERBS only (not nouns), so `gen_cb_on_g_inference_` does NOT
+  exist — a suffixed assignment would create a shadow, not arm the global.
   `chat_stream_piece` (port of llama.cpp's streaming detokenizer) accumulates
   each token's bytes and emits only complete UTF-8 chars; streaming == batch
   detokenize on all tokenizer families (test_qwen3.ijs). Stop tokens are

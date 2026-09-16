@@ -212,6 +212,19 @@ SSE server.
   Streaming re-arms `gen_cb_on_g`/`gen_cb_g` each round, so stream==batch holds
   across rounds. test_qwen35.ijs Section 6. J gotcha: `max_rounds` must come
   BEFORE `<params>` (a pre-boxed `;` operand that isn't trailing nests).
+- **Chat TUI streams (ui) — DONE** — `chat_tui.ijs` renders the reply
+  token-by-token via `chat_stream_cb` (no more '...thinking...' block): on Enter
+  it arms streaming (`chat_stream_start`), rebinds `chat_cb_g` to a `stream_delta`
+  consumer that appends each delta to STREAM and redraws live, calls
+  `chat_completion` with stream=1, then disarms (`chat_stream_stop`). Locale
+  fix: the TUI runs in the inference locale (not a separate chatu locale) — J
+  verb assignment aliases the NAME (resolved where the verb is CALLED), so
+  rebinding `chat_cb_g` from an external locale made `chat_stream_cb`'s
+  `chat_cb_g delta` look up an unresolvable name. pty-verified: qwen3-0.6b
+  answers "What is the capital of France?" streamed live, `[user]/[assistant]`
+  rows rendered, answer mentions Paris. util/chat.ijs gains
+  `chat_stream_start`/`chat_stream_stop` (the gen_cb_on_g/gen_cb_g globals are
+  NOUNS/verbs llm_core doesn't export, so external locales can't arm streaming).
 - **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
   the same `chat_completion` verb behind an OpenAI SSE endpoint.
 
