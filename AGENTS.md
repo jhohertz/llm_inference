@@ -169,11 +169,16 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   the generated content → `finish_reason='tool_calls'`, `content` nulled,
   `tool_calls` extracted (OpenAI-shaped minja Values `{type; function:<name;
   arguments-JSON>; id}`). `chat_extract_tool_calls`/`chat_parse_tool_call` handle
-  qwen3.5's `<function=>` format and qwen3's JSON-in-`<tool_call>` format, using
-  `convert/pjson` (added to DEPENDS — it preserves numbers/bools, unlike
-  convert/json's 0/1-as-bool). Verified on qwen3.5 (get_weather, args
-  `{"city":"Paris"}`); test_qwen35.ijs Section 6. J gotcha: `if.` with a boolean
-  LIST reduces with `*./` (all-true required) — `E.` results need `1 e.` guard.
+  qwen3.5's `<function=>` format and qwen3/granite's JSON-in-`<tool_call>`
+  format, using `convert/pjson` (added to DEPENDS — it preserves numbers/bools,
+  unlike convert/json's 0/1-as-bool). Also handles a **bare OpenAI-style JSON
+  tool call**: qwen2.5-coder emits `{"name":..., "arguments":{...}}` WITHOUT the
+  `<tool_call>` wrapper its template asks for — if the whole content is a JSON
+  object carrying `name`+`arguments` keys, it's classified as one tool call
+  (chat_parse_tool_call's JSON branch parses this same shape). Verified on
+  qwen3.5 + qwen2.5-coder + granite (get_weather, args `{"city":"Paris"}`);
+  test_qwen35.ijs Section 6. J gotcha: `if.` with a boolean LIST reduces with
+  `*./` (all-true required) — `E.` results need `1 e.` guard.
 - **Tool-use loop (Phase 6 item 4, DONE)**: `llm chat_tool_loop
   (messages ; tools ; max_steps ; stream ; max_rounds ; <params>)` → `<content ;
   finish_reason ; tool_calls_made>` (util/chat.ijs). Calls `chat_completion`;

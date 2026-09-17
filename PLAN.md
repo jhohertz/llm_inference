@@ -182,15 +182,19 @@ SSE server.
   the text `content` is nulled (OpenAI convention), and `tool_calls` are
   extracted (OpenAI-shaped minja Values `{type; function:<name; arguments>;
   id}`, `id` = `'call_' , name`). `chat_extract_tool_calls`/`chat_parse_tool_call`
-  handle both generation formats: qwen3.5's
+  handle the generation formats: qwen3.5's
   `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>`
-  (parsed into a pjson key/value table, `enc`'d to a JSON string) and qwen3's
+  (parsed into a pjson key/value table, `enc`'d to a JSON string), qwen3/granite's
   `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` (parsed with
-  pjson `dec`, arguments re-`enc`'d). The JSON dependency is `convert/pjson`
-  (added to DEPENDS — it preserves numbers/bools, unlike convert/json's 0/1-as-bool).
-  Verified end-to-end on qwen3.5-0.8b (greedy): `finish_reason='tool_calls'`,
-  `content=''`, one call `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs
-  Section 6. Also fixed a latent **gpt2 byte-table bug** (see ARCHITECTURE.md):
+  pjson `dec`, arguments re-`enc`'d), and a **bare OpenAI-style JSON** tool call
+  (qwen2.5-coder emits `{"name":..., "arguments":{...}}` without the
+  `<tool_call>` wrapper) — `chat_extract_tool_calls` falls back to parsing the
+  whole content if it carries `name`+`arguments` keys. The JSON dependency is
+  `convert/pjson` (added to DEPENDS — it preserves numbers/bools, unlike
+  convert/json's 0/1-as-bool).
+  Verified end-to-end (greedy): qwen3.5, qwen2.5-coder-0.5b/1.5b, granite-4.0 —
+  `finish_reason='tool_calls'`, `content=''`, one call `get_weather` args
+  `{"city":"Paris"}`; test_qwen35.ijs Section 6. Also fixed a latent **gpt2 byte-table bug** (see ARCHITECTURE.md):
   the tables followed OpenAI's bytes_to_unicode (codepoints 0..321) but llama.cpp
   treats bytes 160/173 as control -> codepoints 322/323; qwen3.5 vocab tokens like
   `ł`/`Ń` decode to 0xA0/0xAD. Streaming stop tokens are now suppressed too

@@ -488,8 +488,9 @@ rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
   `chat_extract_tool_calls`/`chat_parse_tool_call` handle the two generation
   formats:
   - qwen3.5: `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>` — parsed into a pjson key/value table and `enc`'d to a JSON string.
-  - qwen3 (JSON): `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` — parsed with `dec_pjson_` (convert/pjson, added to DEPENDS; it preserves numbers/bools, unlike convert/json which coerces 0/1 to bool), arguments re-`enc`'d.
-  Verified end-to-end on qwen3.5-0.8b (greedy): `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs Section 6.
+  - qwen3/granite (JSON): `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` — parsed with `dec_pjson_` (convert/pjson, added to DEPENDS; it preserves numbers/bools, unlike convert/json which coerces 0/1 to bool), arguments re-`enc`'d.
+  - bare OpenAI-style JSON: qwen2.5-coder emits `{"name":..., "arguments":{...}}` WITHOUT the `<tool_call>` wrapper its template asks for — `chat_extract_tool_calls` falls back to parsing the whole content as JSON if it carries `name`+`arguments` keys (one tool call).
+  Verified end-to-end (greedy): qwen3.5, qwen2.5-coder-0.5b/1.5b, granite-4.0 — `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs Section 6.
 
 **TOOL-USE LOOP (Phase 6 item 4)** — `chat_tool_loop` (util/chat.ijs):
   `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;

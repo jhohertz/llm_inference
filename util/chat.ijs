@@ -468,17 +468,35 @@ chat_parse_tool_call =: 3 : 0
 chat_extract_tool_calls =: 3 : 0
   content =. y
   opens =. content I.@:E.~ '<tool_call>'
-  if. 0 = # opens do. '' return. end.
-  closes =. content I.@:E.~ '</tool_call>'
-  res =. ''
-  for_i. i. # opens do.
-    o =. i { opens
-    c =. i { closes
-    body =. ((c - (o + 11)) {. ((o + 11) }. content))   NB. '<tool_call>' is 11 chars
-    tc =. chat_parse_tool_call body
-    res =. res , < tc
+  if. 0 < # opens do.
+    closes =. content I.@:E.~ '</tool_call>'
+    res =. ''
+    for_i. i. # opens do.
+      o =. i { opens
+      c =. i { closes
+      body =. ((c - (o + 11)) {. ((o + 11) }. content))   NB. '<tool_call>' is 11 chars
+      tc =. chat_parse_tool_call body
+      res =. res , < tc
+    end.
+    res
+  else.
+    NB. No <tool_call> markers: try a BARE OpenAI-style JSON tool call. Some
+    NB. models (qwen2.5-coder) emit {"name":..., "arguments":{...}} WITHOUT the
+    NB. <tool_call></tool_call> wrapper their template asks for. If the whole
+    NB. content is a JSON object carrying name + arguments keys, treat it as one
+    NB. tool call (chat_parse_tool_call's JSON branch parses this same shape).
+    if. (0 < # content) *. ('{' = {. content) do.
+      r =. dec_pjson_ content
+      keys =. 0 {"1 r
+      if. ((<'name') e. keys) *. ((<'arguments') e. keys) do.
+        < chat_parse_tool_call content
+      else.
+        ''
+      end.
+    else.
+      ''
+    end.
   end.
-  res
 )
 
 NB. ================================================================

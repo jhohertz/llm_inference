@@ -29,6 +29,18 @@ fmt_time =: 3 : 0
 NB. ---- Argmax of a logits vector ----
 argmax =: 3 : '>./ I. y = >./ y'
 
+NB. ---- Tool-use loop dispatch verb (Phase 6 item 4) ----
+NB. Must be TOP-LEVEL: defining a verb via `3 : 0` inside another explicit verb
+NB. body breaks access to that verb's prior locals (nested-explicit-def gotcha).
+get_weather_fn =: 3 : 0
+  args =. > 1 { y
+  r =. dec_pjson_ args
+  keys =. 0 {"1 r
+  vals =. 1 {"1 r
+  city =. > (keys i. <'city') { vals
+  'The weather in ' , city , ' is sunny and 22C.'
+)
+
 test_qwen2 =: 3 : 0
   tc =. 0
   pc =. 0
@@ -292,6 +304,50 @@ test_qwen2 =: 3 : 0
     echo 'FAIL: generation chat answer'
     echo '  got: ' ; echo got_gen
   end.
+
+  NB. ================================================================
+  echo '--- Section 6: Tool-call classification (bare JSON) ---'
+  echo ''
+
+  NB. qwen2.5-coder emits {"name":..., "arguments":{...}} WITHOUT the
+  NB. <tool_call> wrapper its template asks for. chat_extract_tool_calls falls
+  NB. back to parsing the whole content as JSON carrying name+arguments keys.
+  tool =. '{' , LF , '  "type": "function",' , LF , '  "function": {' , LF , '    "name": "get_weather",' , LF , '    "description": "Get the weather for a city",' , LF , '    "parameters": {' , LF , '      "type": "object",' , LF , '      "properties": {' , LF , '        "city": {"type": "string"}' , LF , '      },' , LF , '      "required": ["city"]' , LF , '    }' , LF , '  }' , LF , '}'
+  tools =. '[' , tool , ']'
+  msgs_tool =. <('user') ; 'What is the weather in Paris? Use the get_weather tool.'
+  tc =. tc + 1
+  res_tc =. llm chat_completion (msgs_tool ; tools ; 200 ; 0 ; <(0 0 0.95 0.0))
+  if. ('tool_calls' -: > 1 { res_tc) *. ('' -: > 0 { res_tc) do. pc =. pc + 1
+    echo 'PASS: bare-JSON tool call -> finish tool_calls, content nulled'
+  else. fc =. fc + 1
+    fl =. fl , 'bare-JSON tool_calls', LF
+    echo 'FAIL: bare-JSON tool call -> tool_calls'; echo '  finish: ' , > 1 { res_tc end.
+  tc =. tc + 1
+  tcs =. > 2 { res_tc
+  if. 1 = # tcs do. pc =. pc + 1
+    echo 'PASS: 1 tool_call extracted'
+  else. fc =. fc + 1
+    fl =. fl , 'tool_calls extracted', LF
+    echo 'FAIL: tool_calls extracted'; echo '  count: ' , ": # tcs end.
+  tc =. tc + 1
+  tc0 =. > 0 { tcs
+  fn0 =. ('function') obj_get_minja_ tc0
+  args0 =. payload_minja_ ('arguments') obj_get_minja_ fn0
+  if. ('get_weather' -: payload_minja_ ('name') obj_get_minja_ fn0) *. (1 e. '"city":"Paris"' E. args0) do. pc =. pc + 1
+    echo 'PASS: extracted get_weather args {"city":"Paris"}'
+  else. fc =. fc + 1
+    fl =. fl , 'extracted get_weather', LF
+    echo 'FAIL: extracted get_weather'; echo '  args: [' , args0 , ']' end.
+
+  NB. ---- tool-use loop executes + re-calls (capped by max_rounds) ----
+  tc =. tc + 1
+  chat_tool_fn_g =. get_weather_fn
+  res_loop =. llm chat_tool_loop (msgs_tool ; tools ; 200 ; 0 ; 5 ; <(0 0 0.95 0.0))
+  if. (0 < # > 2 { res_loop) *. ((('stop') -: > 1 { res_loop) +. (('tool_calls') -: > 1 { res_loop)) do. pc =. pc + 1
+    echo 'PASS: tool-use loop executed (' , (": # > 2 { res_loop) , ' calls, finish ' , (> 1 { res_loop) , ')'
+  else. fc =. fc + 1
+    fl =. fl , 'tool-use loop', LF
+    echo 'FAIL: tool-use loop'; echo '  finish: ' , > 1 { res_loop end.
 
   echo ''
   echo '=============================================================='
