@@ -232,11 +232,20 @@ SSE server.
 - **Cross-arch streaming/tools verification — DONE** — `chat_completion`
   (stream=1, stream==batch) verified on all 8 arches (gemma3/qwen2/llama/
   granite/ernie4_5/lfm2 + qwen3/qwen35): "The capital of France is Paris."
-  with finish `stop` on each. `chat_tool_loop` runs cleanly on all arches
-  (models may or may not emit tool_calls; granite-4.0-350m emits + executes
-  get_weather; others return a plain answer). No arch-specific streaming
-  bugs — `chat_tok_bytes` covers gemma3 (llama3), qwen2/qwen3/qwen35/llama/
-  granite/lfm2 (gpt2), ernie4_5 (spm).
+  with finish `stop` on each. `chat_tool_loop` runs cleanly on all arches.
+  No arch-specific streaming bugs — `chat_tok_bytes` covers gemma3 (llama3),
+  qwen2/qwen3/qwen35/llama/granite/lfm2 (gpt2), ernie4_5 (spm).
+- **Tool-call formats by model — DONE** — capability detection
+  (`ct_new_chatpl_`) shows tools supported ONLY in qwen3/qwen3.5/granite/qwen2
+  (smollm2/llama, gemma3, ernie, lfm2 templates don't support tools — they just
+  answer). The supported models emit three formats, all handled by
+  `chat_extract_tool_calls`: qwen3.5 `<function=>`, qwen3/granite
+  JSON-in-`<tool_call>`, qwen2.5-coder bare `{"name":...,"arguments":{...}}`
+  JSON (no wrapper). Streaming during tool-call generation emits the markers
+  for each format (verified: qwen3.5 `<function=get_weather>`, granite
+  `<tool_call>{"name"...}</tool_call>`, qwen2 bare JSON). Tool-use loop
+  executes + re-calls for all 4 (qwen2.5-coder loops calls, capped by
+  max_rounds; granite-4.2/4.0 emit + execute).
 - **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
   the same `chat_completion` verb behind an OpenAI SSE endpoint.
 
