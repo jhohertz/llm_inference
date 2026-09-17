@@ -492,7 +492,7 @@ rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
   - bare OpenAI-style JSON: qwen2.5-coder emits `{"name":..., "arguments":{...}}` WITHOUT the `<tool_call>` wrapper its template asks for — `chat_extract_tool_calls` falls back to parsing the whole content as JSON if it carries `name`+`arguments` keys (one tool call).
   Verified end-to-end (greedy): qwen3.5, qwen2.5-coder-0.5b/1.5b, granite-4.0 — `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs Section 6.
 
-**TOOL-USE LOOP (Phase 6 item 4)** — `chat_tool_loop` (util/chat.ijs):
+**TOOL-USE LOOP** — `chat_tool_loop` (util/chat.ijs):
   `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;
   <params>)` drives the execute-and-recall cycle. It calls `chat_completion`;
   on `finish_reason='tool_calls'` it executes each extracted tool via the
@@ -522,6 +522,23 @@ rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
   detokenize on tokens whose piece contains codepoints 322/323 (e.g. `ł`/`Ń`
   decode to bytes 0xA0/0xAD — `index error: 323 > 322`). Fixed to match llama.cpp
   (byte_tab length 324); verified tokenize/detokenize vs llama-cpp-python oracle.
+
+**STATEFUL CHAT + STREAMING (`chat_core_stream`)** — `chat_completion` streams
+but re-renders the full history each turn; the console `chat`/`chat_p` resumes
+the KV cache but never streams. `chat_core_stream` (util/chat.ijs) combines
+both: it takes `<msg ; max_steps ; <params>` (msg = the NEW user message only,
+the session holds the history), re-renders the history ONLY to tokenize the new
+segment, verifies the prefix matches the stored token stream, then **resumes
+from the KV cache** (ONE batched prefill of the new segment through
+`*_run_blocks_b`) AND arms the per-token streaming callback (mirrors
+`chat_completion`'s stream mode). Shared helpers `chat_gen_stream`/
+`chat_fresh_stream` do generate+stream+flush+reset. The stateful TUI
+(`chat_tui.ijs`) calls it per turn, renders from the session's messages
+(`get_msgs`), and `/reset` calls `chat_reset` (clears session + KV cache).
+J gotchas: a `;` chain with a boxed operand in the middle nests
+(`(messages ; max_steps ; <flat) ; <stop` → length-2) — append the trailing box
+with `, <stop`; `chat_stream_stop` rebinds `chat_cb_g` to `]`, so the caller
+must re-set its delta consumer each turn.
 
 **BATCHED DECODE (`gen_loop_batch`)** — the way off the M=1 matvec floor:
 one forward per decode step over B independent sequences. The KV cache gets a

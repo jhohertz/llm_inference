@@ -60,8 +60,8 @@ at interactive speed, running large models, or production workloads.
 - **Sampling** — temperature, top-k, top-p, min-p.
 - **Model catalog + downloader** — reference a model by id, Hugging Face path,
   or URL and it downloads to a per-user model folder.
-- **Three ways to run it** — one-shot CLI, interactive chat console, or the
-  J API — plus a GGUF inspector.
+- **Four ways to run it** — one-shot CLI, interactive chat console, a raw-mode
+  chat TUI, or the J API — plus a GGUF inspector.
 - **An OOP wrapper** (`conew`) if you prefer objects over box-of-boxes.
 
 ---
@@ -144,6 +144,19 @@ exit ''                              NB. leave the console
 ```
 
 The session persists across turns until `chat_reset_inference_ ''` (or `exit`).
+
+### Raw-mode chat TUI
+
+```bash
+./scripts/chat_tui.sh 'qwen3-0.6b'
+```
+
+A minimal terminal chat UI driven directly by the addon (j-kvm `vt` raw-mode +
+key reads). It is **stateful** — the session (`chat_session_g`) + KV cache
+carry across turns via `chat_core_stream` (one batched prefill of the new
+segment), and the reply **streams live**, token by token. Controls: type a
+message + Enter to send; `/reset` clears the session + KV cache; Backspace to
+edit; Ctrl-C or type `exit` to quit.
 
 ### GGUF inspector
 

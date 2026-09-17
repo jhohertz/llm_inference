@@ -215,7 +215,7 @@ SSE server.
   byte-encoded vocab string).
 
 **Open items (Phase 6).**
-- **Tool-use loop (item 4, DONE)** — `chat_tool_loop` (util/chat.ijs):
+- **Tool-use loop (DONE)** — `chat_tool_loop` (util/chat.ijs):
   `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;
   <params>)` calls `chat_completion`; on `finish_reason='tool_calls'` it
   executes each tool via the global verb `chat_tool_fn_g` (y = `<name ;

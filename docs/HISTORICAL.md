@@ -814,3 +814,102 @@ Two J gotchas surfaced:
   does NOT exist (it's a noun in llm_core), so an external locale can't arm
   streaming via the suffix. Added exported helper verbs `chat_stream_start`/
   `chat_stream_stop` that set the `gen_cb_on_g`/`gen_cb_g` globals internally.
+
+## Phase 6 item 2 — incremental text detokenizer (2026-09)
+
+`chat_stream_piece` (util/chat.ijs) is a port of llama.cpp's streaming
+detokenizer: it appends each token's raw bytes to `st_buf_g`, holds any
+incomplete trailing UTF-8 sequence (`utf8_tail`), and emits only complete
+characters — so the TUI/SSE get *text* deltas, not raw tokens. `chat_stream_cb`
+is the per-token callback the caller installs as `gen_cb_g` (with
+`gen_cb_on_g=1`); it reads arch/llm from `chat_cb_arch_g`/`chat_cb_llm_g`
+(set by `chat_completion`), forwards each delta to `chat_cb_g`, and returns the
+token unchanged so the delta never leaks into the token stream. Stop tokens are
+suppressed (`chat_cb_stop_g`) so stream==batch holds — qwen3.5's `<|im_end|>`
+has a non-empty byte-encoded vocab string that would leak into the delta tail.
+Verified stream==batch on all tokenizer families (gemma3 llama3, qwen/granite
+gpt2, ernie spm). Gotcha: do NOT capture a caller verb via `x =: gen_cb_g`
+then rebind `gen_cb_g` — J verb assignment is a dynamic ALIAS to the name, so
+rebinding makes the "capture" track the new value (infinite recursion).
+
+## Phase 6 item 3 — terminator/tool-call classification (2026-09)
+
+`chat_completion` classifies the generated content: if it carries a
+`<tool_call>...</tool_call>` region, `finish_reason` becomes `'tool_calls'`,
+the text `content` is nulled (OpenAI convention), and `tool_calls` are
+extracted as OpenAI-shaped minja Values (`{type; function:<name; arguments>;
+id}`, `id = 'call_', name`). `chat_extract_tool_calls`/`chat_parse_tool_call`
+handle three generation formats: qwen3.5's `<tool_call>\n<function=NAME>...
+</function>\n</tool_call>` (parsed into a pjson key/value table, `enc`'d to
+JSON), qwen3/granite's `<tool_call>\n{"name":..., "arguments":{...}}\n</tool_call>`
+(pjson `dec`, arguments re-`enc`'d), and a **bare OpenAI-style JSON** call
+(qwen2.5-coder emits `{"name":..., "arguments":{...}}` WITHOUT the
+`<tool_call>` wrapper) — `chat_extract_tool_calls` falls back to parsing the
+whole content as JSON if it carries `name`+`arguments` keys. The JSON
+dependency is `convert/pjson` (added to DEPENDS — it preserves numbers/bools,
+unlike convert/json's 0/1-as-bool). Also fixed a latent **gpt2 byte-table bug**
+(ARCHITECTURE.md): the tables followed OpenAI's bytes_to_unicode (0..321) but
+llama.cpp treats bytes 160/173 as control -> codepoints 322/323; qwen3.5 vocab
+tokens like `ł`/`Ń` decode to 0xA0/0xAD. Verified end-to-end (greedy) on
+qwen3.5, qwen2.5-coder-0.5b/1.5b, granite-4.0: `finish_reason='tool_calls'`,
+`content=''`, one call `get_weather` args `{"city":"Paris"}`.
+
+## Phase 6 — tool-use loop (chat_tool_loop, 2026-09)
+
+`chat_tool_loop` (util/chat.ijs): `llm chat_tool_loop (messages ; tools ;
+max_steps ; stream ; max_rounds ; <params>)` calls `chat_completion`; on
+`finish_reason='tool_calls'` it executes each tool via the global verb
+`chat_tool_fn_g` (y = `<name ; args-JSON>`, returns the result string; mirrors
+the gen_cb_g global-verb pattern), appends the assistant tool_calls message +
+one `tool` role message per result (minja Values), and re-calls until the model
+stops (cap `max_rounds`). Returns `<content ; finish_reason ; tool_calls_made>`.
+Streaming re-arms `gen_cb_on_g`/`gen_cb_g` each round, so stream==batch holds
+across rounds. Verified on qwen3.5: model calls get_weather args
+`{"city":"Paris"}`, the loop executes it, feeds back `"The weather in Paris is
+sunny and 22C."`, and the model answers `"The weather in Paris is sunny and
+22°C."` (finish 'stop'). Gotcha: `max_rounds` must come BEFORE `<params>` (a
+pre-boxed `;` operand that isn't trailing nests).
+
+## Phase 6 — cross-arch streaming/tools verification + tool-call formats (2026-09)
+
+`chat_completion` (stream=1, stream==batch) verified on all 8 arches
+(gemma3/qwen2/llama/granite/ernie4_5/lfm2 + qwen3/qwen35): "The capital of
+France is Paris." with finish `stop` on each. `chat_tool_loop` runs cleanly on
+all arches. No arch-specific streaming bugs — `chat_tok_bytes` covers gemma3
+(llama3), qwen2/qwen3/qwen35/llama/granite/lfm2 (gpt2), ernie4_5 (spm).
+Capability detection (`ct_new_chatpl_`) shows tools supported ONLY in
+qwen3/qwen3.5/granite/qwen2 (smollm2/llama, gemma3, ernie, lfm2 templates don't
+support tools — they just answer). Streaming during tool-call generation emits
+the format markers per model. granite-4.2-3b supports tools (same extraction
+path as 4.0) but doesn't reliably emit a call on the get_weather prompt — it
+asks the user for the city name despite Paris being given (model behavior).
+
+## Phase 6 item 4 — stateful TUI (chat_core_stream, 2026-09)
+
+`chat_core_stream` (util/chat.ijs) combines the console resume path
+(`chat_core`/`chat_session_g`) with streaming: it resumes the KV cache (ONE
+batched prefill of the new segment, prefix verified) AND arms the per-token
+streaming callback (mirrors `chat_completion`'s stream mode). Shared helpers
+`chat_gen_stream`/`chat_fresh_stream` avoid triplicating the
+generate+stream+flush+reset logic. `chat_tui.ijs` now calls `chat_core_stream`
+with just the NEW user message (the session holds the history), renders from
+the session's messages (`get_msgs`), and adds a `/reset` command (`chat_reset`
+clears session + KV cache). Verified: qwen3 + gemma3 stateful resume
+(`chat_resume_count` increments, `chat_fallback_count` 0), stream==batch on
+fresh AND resume, 2-turn context-aware TUI via pty, /reset clears.
+test_chat_session.ijs Section 3. Phase 6 is complete except the deferred HTTP
+server.
+
+J gotchas surfaced:
+- **A `;` chain with a boxed operand in the middle nests.** `(messages ;
+  max_steps ; <flat) ; <stop` produces a length-2 nested list (Link boxes the
+  left list), so `chat_fresh_stream`/`chat_gen_stream` got a 2-element operand
+  and `> 2 { y` indexed past the end. Fix: append the trailing box with `, <stop`
+  instead of `; <stop`.
+- **`chat_stream_stop` rebinds `chat_cb_g` to `]`.** The caller must re-set its
+  delta consumer each turn (the TUI does `chat_cb_g =: stream_delta` before each
+  `chat_core_stream`); forgetting it makes the resume turn silently emit no
+  deltas (stream==batch fails).
+- **Test-design: the shared `ct_tmpl_g` global is clobbered per arch load.** A
+  Section that re-renders a previously-loaded arch after another was loaded uses
+  the wrong template — test_chat_session.ijs Section 3 uses gemma3 (loaded last).
