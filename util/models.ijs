@@ -53,6 +53,7 @@ catalog =: catalog , 'smollm2-1.7b';'llama';'unsloth/SmolLM2-1.7B-Instruct-GGUF'
 catalog =: catalog , 'llama-3.2-1b';'llama';'unsloth/Llama-3.2-1B-Instruct-GGUF';'Llama-3.2-1B-Instruct-BF16.gguf';0$0
 catalog =: catalog , 'granite-4.0-350m';'granite';'unsloth/granite-4.0-350m-GGUF';'granite-4.0-350m-BF16.gguf';0$0
 catalog =: catalog , 'granite-4.0-h-350m';'';'unsloth/granite-4.0-h-350m-GGUF';'granite-4.0-h-350m-BF16.gguf';0$0
+catalog =: catalog , 'granite-4.1-3b';'granite';'unsloth/granite-4.1-3b-GGUF';'granite-4.1-3b-BF16.gguf';0$0
 catalog =: catalog , 'granite-4.2-3b';'granite';'ibm-granite/granite-4.2-3b-GGUF';'granite-4.2-3b-bf16.gguf';0$0
 catalog =: catalog , 'ernie-4.5-0.3b';'ernie4_5';'unsloth/ERNIE-4.5-0.3B-PT-GGUF';'ERNIE-4.5-0.3B-PT-F16.gguf';0$0
 catalog =: catalog , 'lfm2-350m';'lfm2';'unsloth/LFM2-350M-GGUF';'LFM2-350M-F16.gguf';0$0

@@ -28,7 +28,7 @@ inference.ijs (entry point)   — all code lives in the 'inference' locale
  ├── util/llm_core.ijs   — llm accessors, get_tensor_cached_d, embed_tokens, output_head, sample_from, infer_args, gen_args
  ├── models/gemma3.ijs     — Gemma 3 270M: attention+KV, FFN, blocks, gem3_infer/gem3_generate
  ├── models/llama.ijs      — generic llama arch (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE
- ├── models/granite.ijs    — Granite-4.0-350m: standard decoder + Granite 4.0 scaling (embed*12, residual*0.263, scores*0.015625, logits/4), tied embeddings
+  ├── models/granite.ijs    — Granite 4.0/4.1/4.2: standard decoder + Granite scaling (data-driven: embed*12, residual*resid, scores*0.015625, logits/logit_scale), tied embeddings
  ├── models/ernie.ijs      — ERNIE-4.5-0.3B: standard decoder byte-for-byte the llama arch (tied embeddings), reuses llama.ijs forward verbs, SPM tokenizer
  ├── models/qwen2.ijs      — Qwen2.5-Coder: standard decoder, GQA, SwiGLU, NEOX RoPE, Q/K/V biases
 ├── util/llmobj.ijs     — OOP wrapper: conew 'llmobj', infer__obj/generate__obj/destroy__obj
@@ -673,12 +673,14 @@ always-emitted system block + dynamic "Today Date" via `strftime_now`).
 
 Standard decoder, GQA (16→4), SwiGLU, interleaved RoPE (NORM, full head_dim
 rotary, freq_base 1e7), separate QKV/O weights, no q/k norm, **tied
-embeddings** (no `output.weight`). The Granite 4.0 scaling scheme (read from
-KVs, stored in mi at indices 12..15): input embeddings *12 (`embedding_scale`),
-per layer `attn_out*0.263 + input` then `ffn_out*0.263 + that`
-(`residual_scale`), Q*K^T scores *0.015625 (`attention.scale` — NOT
-1/sqrt(head_dim)), lm_head logits /4 (`logit_scale`). Tokenizer: gpt2
-byte-level BPE with `dbrx` pre (same regex as llama3), no BOS
+  embeddings** (no `output.weight`). The Granite scaling scheme (read from
+  KVs, stored in mi at indices 12..15, data-driven per model — 4.0/4.1/4.2):
+  input embeddings *12 (`embedding_scale`),
+  per layer `attn_out*resid + input` then `ffn_out*resid + that`
+  (`residual_scale`; 0.263 on 4.0, 0.22 on 4.1), Q*K^T scores *0.015625
+  (`attention.scale` — NOT 1/sqrt(head_dim)), lm_head logits /`logit_scale`
+  (4 on 4.0, 10 on 4.1). Tokenizer: gpt2
+  byte-level BPE with `dbrx` pre (same regex as llama3), no BOS
 (bos=eos=100257). Chat is rendered from the real GGUF `tokenizer.chat_template`
 (granite `<|start_of_role|>` format with the always-emitted default system
 message).

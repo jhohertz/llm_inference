@@ -39,7 +39,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `util/llm_core.ijs` | Generic helpers: llm accessors (incl. `llm_arch`), `get_tensor_cached_d`, `embed_tokens`, `output_head`, `sample_from`, `infer_args`, `gen_args` |
 | `models/gemma3.ijs` | Gemma3 270M: attention+KV, FFN, blocks, `gem3_infer`/`gem3_generate`, `gem3_load` |
 | `models/llama.ijs` | **Generic llama arch** (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE, dims read from GGUF; tokenizer dispatch on `tokenizer.ggml.pre` (chat is pure GGUF jinja, no bespoke prompt) (`llama_load`/`llama_infer`/`llama_generate`) |
-| `models/granite.ijs` | Granite-4.0-350m (granite arch): standard decoder + Granite 4.0 scaling (embed*12, residual*0.263 on attn/ffn outputs, scores*0.015625, logits/4), tied embeddings, dbrx pre (= llama3 regex), chat via real GGUF `tokenizer.chat_template` (`granite_load`/`granite_infer`/`granite_generate`) |
+| `models/granite.ijs` | Granite 4.0/4.1/4.2 (granite arch): standard decoder + Granite scaling (data-driven: embed*12, residual*resid on attn/ffn outputs, scores*0.015625, logits/logit_scale), tied embeddings, dbrx pre (= llama3 regex), chat via real GGUF `tokenizer.chat_template` (`granite_load`/`granite_infer`/`granite_generate`) |
 | `models/qwen2.ijs` | Qwen2.5-Coder (qwen2 arch): standard decoder, GQA, SwiGLU, NEOX RoPE, Q/K/V biases, `qw2_load` |
 | `models/qwen3.ijs` | Qwen3-0.6B (qwen3 arch): qwen2 + per-head Q/K RMSNorm before RoPE, NO QKV biases, `qw3_load` |
 | `models/qwen35.ijs` | Qwen3.5-0.8B (qwen35 arch): hybrid — 6 full-attention (il+1%4==0) + 18 gated-delta-net SSM layers; fused Q+GATE, sigmoid gate, conv1d, L2-norm q/k, sequential delta-net recurrence, `rs_*` recurrent-state cache, MTP blk.24 out of scope (block_count = block_count − nextn_predict_layers), `qw35_load` |
@@ -264,14 +264,16 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   `<|eot_id|>`), and the date is dynamic — llama-cpp-python injects
   `strftime('%d %b %Y')`. The real template's `strftime_now` callable renders it
   (see §Real GGUF-jinja rendering); `ct_now_g` pins the epoch for stable oracles.
-- **Granite 4.0 scaling is data-driven, not llama-standard**: `granite.ijs`
-  reads `embedding_scale` 12 (input embeddings *12), `residual_scale` 0.263
-  (per layer: attn_out*0.263 + input, then ffn_out*0.263 + that), `attention.scale`
-  0.015625 (scores, NOT 1/sqrt(hd)), `logit_scale` 4 (lm_head logits /4 — so
+- **Granite scaling is data-driven, not llama-standard** (covers granite-4.0,
+  4.1, 4.2 — all `granite` arch): `granite.ijs`
+  reads `embedding_scale` 12 (input embeddings *12), `residual_scale` (per layer:
+  attn_out*resid + input, then ffn_out*resid + that; 0.263 on 4.0, 0.22 on 4.1),
+  `attention.scale` 0.015625 (scores, NOT 1/sqrt(hd)), `logit_scale` (lm_head
+  logits /scale; 4 on 4.0, 10 on 4.1 — so
   `gen_loop_core` has a per-arch `logit_div` applied after `output_head`).
   Stored in mi at indices 12..15 (`granite_mi_*`). `head_count_kv` is an ARRAY
-  KV (all 4s) on granite-4.0 — take `{.` of `kv_array`; but granite-4.2+ stores
-  it as a scalar UINT (vt=4), so `kv_array` is empty and we fall back to
+  KV (all 4s) on granite-4.0 — take `{.` of `kv_array`; but granite-4.1/4.2+
+  stores it as a scalar UINT (vt=4), so `kv_array` is empty and we fall back to
   `kv_uint` (the loader handles both). Tied
   embeddings: the GGUF has NO `output.weight`; lm_head = `token_embd.weight`.
   `granite.rope.freq_base` is 1e7 = 10,000,000 (not 1e8 — a 1e7/1e8 confusion
