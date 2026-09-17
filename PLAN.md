@@ -15,9 +15,22 @@ architectures. An educational inference engine; simplicity over speed.
 The suite is green (all arch + kv-cache suites bit-exact vs `llama-cpp-python`).
 The **performance pass (Phase 3) is DONE** — prefill memory is bounded, the
 long-context generation overhead is cut, and every Phase-3 review candidate has
-been implemented or closed with measured reasons (below). Full done-work detail
-is recorded in **docs/HISTORICAL.md**; the remaining planned work is Phase 4
-(engineering stretch, low priority).
+been implemented or closed with measured reasons (below). The **minja Jinja
+port (Phase 5), chat-template layer (Phase 5G), and the GGUF-jinja chat
+integration (Phase 5H) are DONE** — every architecture's chat rendering now
+uses its own `tokenizer.chat_template` from the GGUF, parsed and rendered by
+the minja/chat_template port; the bespoke per-arch prompt verbs are removed.
+**Tool/typed-content prompts are DONE** — `chat_generate` accepts a `tools`
+JSON input (threaded via `ct_tools_g` into the template's `tools` input) and
+pre-built message Values carrying `tool_calls`/`tool_call_id`/typed content,
+so tool-capable templates render real function-calling prompts (verified
+against the upstream llama-3.1 tool_use golden).
+Full done-work detail is recorded in **docs/HISTORICAL.md**; the remaining
+planned work is **Phase 6 (streaming OpenAI-compatible chat API + our own chat
+TUI)** — items 1-4 + tool-use loop are DONE, including the **stateful TUI
+(item 4: KV-cache-resume chat loop)**; the network HTTP server is deferred
+(separate agent). Phase 4 (engineering stretch, low priority) plus a few open
+items below. The jpi fork was abandoned (2026-09).
 
 ## Roadmap — Planned Work
 
@@ -58,198 +71,208 @@ was picked off (implemented or closed with measured reasons); all recorded in
 13. **Tokenizer encode/decode mutual obverse** (`u&.:v`) — future.
     (Item 14 batched decode moved to Phase 3.)
 
-### Phase 5 — Real Jinja template engine (minja port) — NEW (exploration)
+### Phase 5 — Real Jinja template engine (minja port) — DONE
 
 A faithful J port of **minja.hpp** (reference/minja/, the C++ Jinja engine
-llama.cpp uses for chat templates). NOT a Python-jinja port: we port minja's
-own two-header implementation, so our oracle is minja's unit tests
-(tests/test-syntax.cpp EXPECT_EQ strings); Python's jinja2
-(scripts/minja_goldens.py) is the cross-check oracle for the cases minja
-deliberately matches. Kept **independent** of the inference addon — `util/minja.ijs`
-uses its own `coclass 'minja'` so it can be lifted out into its own repo.
-Chat-template layer comes later (`util/chat_template.ijs`).
+llama.cpp uses for chat templates), plus the chat-template layer
+(`chat-template.hpp`) — `util/minja.ijs` (`coclass 'minja'`) and
+`util/chat_template.ijs` (`coclass 'chat_template'`), both standalone and
+liftable. The full phasing (5A-5F engine, 5Ga-5Gc chat-template layer, 5H
+GGUF-jinja integration) and every completion detail are recorded in
+**docs/HISTORICAL.md** §Phase 5. The suite wires in test_minja.ijs,
+test_minja_render.ijs, test_chat_template.ijs, and test_chat_template_goldens.ijs.
 
-**Reference:** `reference/minja/include/minja/minja.hpp` (3099 LoC, the whole
-jinja engine in ONE header) + `chat-template.hpp` (569 LoC). Unit tests:
-`tests/test-syntax.cpp` (668 LoC, the core render cases), `test-polyfills.cpp`,
-`test-capabilities.cpp`, `test-supported-template.cpp`. Golden oracle:
-`scripts/render.py` (Python jinja2) — we adapted it to batch mode in
-`scripts/minja_goldens.py`.
+### Phase 5H — GGUF-fetched jinja chat templates — DONE
 
-**Deliverables so far:** `util/minja.ijs` (Phase-A foundation: Python-like
-Value model + Context), `scripts/minja_goldens.py`, and the test-case files
-`tests/j/test_minja.ijs` + `tests/j/test_minja_render.ijs` (NOT yet wired into
-run_all_tests.sh — see note below).
+Replaced the per-arch hardcoded chat-prompt verbs with ONE GGUF-driven jinja
+renderer: each arch loader reads `tokenizer.chat_template` from the GGUF and
+renders messages through the minja/chat_template port (`chat_tmpl_render` in
+util/chat.ijs). The bespoke per-arch prompt verbs and their helpers were
+removed — chat rendering is pure jinja. Template variables (e.g.
+`enable_thinking`) are settable via an optional `tmpl_vars` arg to
+`chat_generate`; `now` can be pinned via `ct_now_g` for stable test oracles.
+Details in **docs/ARCHITECTURE.md** §Chat-template rendering and
+**docs/HISTORICAL.md** §Phase 5.
 
-**Phasing** (each phase independently testable; wire test files into
-run_all_tests.sh as each phase lands and its cases pass):
+### Phase 6 — Streaming OpenAI-compatible chat API + own minimal chat TUI (in progress)
 
-- **5A — Value model + Context** (foundation, ~done in util/minja.ijs):
-  Python-like values (null/bool/int/float/str/array/object/callable) with
-  Python `repr`/`dump` (single-quote strings, `True`/`False`/`None` vs to_json
-  `true`/`false`/`null`, `, ` / `: ` separators matching nlohmann + jinja2),
-  `to_str`/`to_bool`/`to_int`, equality (numeric-tolerant), `in` membership,
-  array/object accessors, scoped Context with parent chain + builtins.
-  Validation: Value dump + Context get/set cases in test_minja.ijs.
-  NOTE (J boxing): the flat-pair representation (`('arr';<k0;p0;k1;p1;...)`,
-  `('obj';<key;value;...>)` with single-boxed items) sidesteps the `;`/`,<`/
-  `>`-open rank gotchas (AGENTS.md/J-KNOWLEDGE gotchas 21, 26, 4). `{::` (fetch)
-  returns unboxed scalars; numeric payloads come back as 1-lists, so index uses
-  `{.` — see the TODO list at the end of util/minja.ijs.
-- **5B — Expression grammar (recursive descent)** — port `parseExpression`
-  and its helpers (`parseLogicalOr/And/Not/Compare`, `parseMathPow/
-  PlusMinus/MulDiv/Unary`, `parseValueExpression`, `parseCallArgs`,
-  `parseDictionary`, `parseIdentifier`, filter-expr): literals (numbers,
-  strings, true/false/none, arrays, dicts), variable refs `a.b.c`, subscript
-  `x[i]` + slices (incl. negative/step), method calls, binary ops (`+ - * / //
-  % ** ~ == != < > <= >= and or not in is`), if-expr, unary, `|` filters.
-  Validation: the full SimpleCases render set in test_minja_render.ijs.
-- **5C — Tokenizer + Template parser (two-phase)** — port `tokenize()`
-  (regex scanning `{{ }}` `{% %}` `{# #}` with `-`/`~` whitespace markers,
-  comment/expression/block keyword tokens) and `parseTemplate()` (build
-  SequenceNode AST from If/For/Set/Macro/Filter/Call/Generation tokens,
-  unterminated-token errors). Validation: syntax + error-substring cases.
-- **5D — Statements/controls** — IfNode (if/elif/else), ForNode (loop.* incl.
-  cycle, destructuring, recursive, if-condition, else), break/continue
-  (LoopControlException), SetNode (namespace + destructuring), MacroNode
-  (+ default args, fresh arrays per call), CallNode (`caller()`), FilterNode.
-- **5E — Whitespace + errors** — `trim_blocks`/`lstrip_blocks`/
-  `keep_trailing_newline`, `-`/`~` space-strip/newline handling, the exact
-  error message substrings minja throws (e.g. "Unterminated if",
-  "break outside of a loop", "pop from empty list").
-- **5F — Builtin globals/filters/tests** — port `Context::builtins()`:
-  raise_exception, tojson, items, first/last, trim, capitalize, lower/upper,
-  default, e/escape, joiner, count, dictsort, join, namespace, equalto,
-  length, safe, string, int, list, in, unique, select/reject/selectattr/
-  rejectattr, map, indent, range. (SimpleCases exercises nearly all.)
+**Motivation.** A tool-use loop can't cleanly stand on its own — it *is* a chat
+loop (intercept the model's tool-call message, execute, feed the result back,
+continue). The console TUI problem is solved with our **own minimal chat UI**
+built on **reference/j-kvm** (a J keyboard/video/mouse console library: `vt`
+escape-code + raw-mode key reads, `vid` video buffers, `loop` event adverb).
+We abandoned the jpi fork (2026-09): jpi carries too much baggage for a
+temporary path — its own TUI fd quirks, the HTTP/agent/provider machinery, and
+a vendored `vt` that read keys from stdout (fd 1) instead of stdin (fd 0),
+which silently broke input. The core formalization is the **streaming
+OpenAI-compatible chat-completion contract** on our side (streaming-first,
+faithful to the OpenAI shapes), so the same verb later serves a network OpenAI
+SSE server.
 
-### Phase 5G — Chat-template layer (chat_template.hpp port) — NEW (standalone)
+**Decisions (2026-09).**
+- Target models for the first end-to-end proof: **qwen3 / qwen3.5** (their real
+  templates already express `tools` + `tool_calls`).
+- **Own minimal chat TUI (`chat_tui.ijs`) — stateless now, stateful as the end
+  goal.** Each turn re-renders the full history via the shared `chat_generate`;
+  the message list persists in-session. KV-cache resume (stateful) is the
+  end-goal, not yet built. No markdown/video buffers initially — plain text.
+- **HTTP server is deferred** — a separate agent is building J HTTP-server APIs
+  and will bring them to us; do not start the network layer until then.
 
-A faithful J port of **reference/minja/include/minja/chat-template.hpp**
-(569 LoC) into **`util/chat_template.ijs`** (`coclass 'chat_template'`,
-depends on util/minja.ijs's Value model). The HuggingFace-standard
-`messages`/`tools` → prompt formatter that wraps a parsed template. It is
-**standalone** (not wired into inference.ijs/chat.ijs) and only integrates
-with the larger project after Phase 5 (engine) + 5G (this layer) land.
-Oracle: minja's own tests — `tests/test-polyfills.cpp` (per-capability
-goldens) + `tests/test-capabilities.cpp` (caps flags) +
-`tests/test-supported-template.cpp` (e2e goldens via Python-rendered files).
+**Work items.**
+1. **Streaming-first `chat_completion` verb** (util/chat.ijs, OpenAI-shaped):
+   request `messages` + `tools` + params → response `content`/`tool_calls` +
+   `finish_reason`. Adds to `gen_loop_core` an optional **per-token callback**
+   (llm_core.ijs:326-341 samples token-by-token; currently returns the full list
+   at the end with no hook). The callback serves the TUI (per-delta print) and
+   the future SSE server (per-delta `data:` lines).
+2. **Incremental text detokenizer** — the genuinely new piece. The TUI/SSE want
+   *text* deltas (not raw tokens); `chat_detokenize` decodes the whole stream at
+   once. Port llama.cpp's streaming detokenizer (accumulate bytes, emit a full
+   UTF-8 char at a time).
+3. **Stop at message/tool-call terminator + classification** — the generation-side
+   "chat loop" gap: stop on the arch's end-of-message marker (not just EOS),
+   then classify the message as text vs tool call to set `finish_reason`
+   (`'stop'` vs `'tool_calls'`) and extract `tool_calls`.
+4. **Stateful TUI (DONE)** — `chat_core_stream` (util/chat.ijs) combines the
+   stateful console resume path (`chat_core`/`chat_session_g`) with streaming:
+   it resumes the KV cache (ONE batched prefill of the new segment, prefix
+   verified) AND arms the per-token streaming callback (mirrors
+   `chat_completion`'s stream mode). `chat_tui.ijs` now calls
+   `chat_core_stream (msg ; MAX_STEPS ; <params>)` with just the NEW user
+   message (the session holds the history), renders from the session's
+   messages (`get_msgs`), and adds a `/reset` command (`chat_reset` clears
+   session + KV cache). Verified: qwen3-0.6b + gemma3 stateful resume
+   (`chat_resume_count` increments, `chat_fallback_count` 0), stream==batch on
+   resume AND fresh, 2-turn context-aware TUI via pty, /reset clears.
+   test_chat_session.ijs Section 3 (chat_core_stream pin/resume/stream/reset).
+   Phase 6 is now COMPLETE except the deferred HTTP server.
 
-**Reference layout** (chat-template.hpp):
-- `chat_template_caps` — 10 flags: supports_tools, supports_tool_calls,
-  supports_tool_responses, supports_system_role, supports_parallel_tool_calls,
-  supports_tool_call_id, requires_object_arguments, requires_non_null_content,
-  requires_non_empty_content, requires_typed_content.
-- `chat_template_inputs` — messages, tools, add_generation_prompt,
-  extra_context, now (time).
-- `chat_template_options` — apply_polyfills + use_bos/eos_token +
-  define_strftime_now + per-polyfill toggles.
-- `chat_template` class:
-  - constructor: `Parser::parse(source, {trim, lstrip, no-keep-newline})`
-    (needs engine Phase 5C), then **capability detection** via `try_raw_render`
-    probes (rendering dummy messages with `apply_polyfills=false`, fixed date)
-    — needs engine Phase 5B+; plus `tool_call_example_` inference from a
-    prefix/full render pair.
-  - `try_raw_render(messages, tools, add_gen, extra)` — apply w/ no polyfills,
-    fixed `now=0`.
-  - `apply(inputs, opts)` — compute has_tools/has_tool_calls/has_tool_responses/
-    has_string_content; derive polyfill_* flags; if needs_polyfills, normalize
-    messages: typed-content conversion, pending_system/flush (system-role
-    polyfill), `add_system` (tools polyfill), tool_calls polyfill (string→obj
-    arguments, content=dump of {tool_calls:...}), tool_responses polyfill
-    (role tool→user, content=dump of {tool_response:...}); build Context with
-    messages/add_generation_prompt/bos/eos/strftime_now/tools/extra_context;
-    `template_root_->render(context)`.
-  - static `add_system(messages, prompt)` — prepend/inject system message.
+**Progress (2026-09).**
+- **jpi checkouts removed** (`reference/jpi`, `jpi_local/`); the fd-fixed
+  `vt.ijs` is vendored at `util/vt.ijs` (read stdin fd 0, write stdout fd 1).
+- **`chat_tui.ijs` + `scripts/chat_tui.sh`** — a minimal terminal chat UI in a
+  `coclass 'chatu'` locale (globals must use `=:`, not local `=.`, to be visible
+  across definitions — a J gotcha hit here). Loads the addon + catalog model
+  (qwen3-0.6b default), drives the j-kvm `vt` raw loop, calls
+  `chat_generate_simple` per turn, prints the reply, and quits on Ctrl-C or
+  `exit`. **Stateless text-chat proof works** (pty-verified: input → generation
+  → reply → redraw). Added to the addon manifest.
+- **Streaming-first `chat_completion` verb (item 1, DONE)** — `chat_completion`
+  (util/chat.ijs) renders messages+tools via the shared renderer, generates,
+  and returns an OpenAI-shaped `<content ; finish_reason ; tool_calls>`
+  response. Streaming is driven by a **per-token callback** added to
+  `gen_loop_core` (llm_core.ijs): the monadic verb `gen_cb_g` (gated by the
+  noun flag `gen_cb_on_g`) is called on each generated token and may return a
+  (possibly replaced) token id — returning a stop token forces a stop
+  (interception). Verbs can't be boxed into a list (noun-verb syntax error) and
+  can't be distinguished from a noun by `-:`/`3!:0`, so a global verb + noun
+  flag gates it. `chat_completion` takes
+  `(messages ; tools ; max_steps ; stream ; <params>)` — `<params>` MUST be the
+  last operand (a pre-boxed `;` operand that isn't trailing nests). Verified in
+  test_qwen3.ijs: 3-element response, finish_reason 'stop'/'length',
+  per-token streaming (callback count), non-streaming skip, and interception
+  forcing stop (eos read from the GGUF-built tokenizer). finish_reason
+  `'tool_calls'` classification is item 3.
+- **Streaming text deltas (item 2, DONE)** — `chat_stream_piece` (util/chat.ijs)
+  is a port of llama.cpp's streaming incremental detokenizer: it appends each
+  token's raw bytes to `st_buf_g`, holds any incomplete trailing UTF-8 sequence
+  (`utf8_tail`), and emits only complete characters. `chat_stream_cb` is the
+  per-token callback the caller installs as `gen_cb_g` (with `gen_cb_on_g=1`);
+  it reads arch/llm from `chat_cb_arch_g`/`chat_cb_llm_g` (set by
+  `chat_completion`) and forwards each text delta to `chat_cb_g` (a monadic verb
+  on the delta string), returning the token unchanged so the delta never leaks
+  into the token stream. Verified streaming == batch detokenize on all tokenizer
+  families (greedy; e.g. qwen3 170/170 chars, gemma3 32/32, ernie 31/31); a
+  streaming==batch test is in test_qwen3.ijs. **Gotcha:** do NOT capture a
+  caller verb via `x =: gen_cb_g` then reassign `gen_cb_g` — J verb assignment
+  is a dynamic ALIAS to the name, so rebinding makes the "capture" track the new
+  value (infinite recursion). `chat_completion` never overwrites the caller's
+  callback.
+- **Terminator/tool-call classification (item 3, DONE)** — `chat_completion`
+  (util/chat.ijs) classifies the generated content: if it carries a
+  `<tool_call>...</tool_call>` region, `finish_reason` becomes `'tool_calls'`,
+  the text `content` is nulled (OpenAI convention), and `tool_calls` are
+  extracted (OpenAI-shaped minja Values `{type; function:<name; arguments>;
+  id}`, `id` = `'call_' , name`). `chat_extract_tool_calls`/`chat_parse_tool_call`
+  handle the generation formats: qwen3.5's
+  `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>`
+  (parsed into a pjson key/value table, `enc`'d to a JSON string), qwen3/granite's
+  `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` (parsed with
+  pjson `dec`, arguments re-`enc`'d), and a **bare OpenAI-style JSON** tool call
+  (qwen2.5-coder emits `{"name":..., "arguments":{...}}` without the
+  `<tool_call>` wrapper) — `chat_extract_tool_calls` falls back to parsing the
+  whole content if it carries `name`+`arguments` keys. The JSON dependency is
+  `convert/pjson` (added to DEPENDS — it preserves numbers/bools, unlike
+  convert/json's 0/1-as-bool).
+  Verified end-to-end (greedy): qwen3.5, qwen2.5-coder-0.5b/1.5b, granite-4.0 —
+  `finish_reason='tool_calls'`, `content=''`, one call `get_weather` args
+  `{"city":"Paris"}`; test_qwen35.ijs Section 6. Also fixed a latent **gpt2 byte-table bug** (see ARCHITECTURE.md):
+  the tables followed OpenAI's bytes_to_unicode (codepoints 0..321) but llama.cpp
+  treats bytes 160/173 as control -> codepoints 322/323; qwen3.5 vocab tokens like
+  `ł`/`Ń` decode to 0xA0/0xAD. Streaming stop tokens are now suppressed too
+  (`chat_cb_stop_g`) so stream==batch holds (qwen3.5 <|im_end|> has a non-empty
+  byte-encoded vocab string).
 
-**Phasing** (standalone; render-dependent parts land with the engine):
-- **5Ga — data structures + standalone normalization** (do now): caps/inputs/
-  options as boxed structs; `add_system` (prepend/inject system); the
-  has_* message-scan and polyfill-flag computation; `add_message` typed-content
-  conversion; pending_system/flush_sys accumulation. These operate purely on
-  the Value model — no renderer needed. Testable against the polyfill test
-  message shapes.
-- **5Gb — render-dependent**: capability detection (try_raw_render probes for
-  typed_content/system_role/tools/tool_calls/object_arguments/parallel/
-  tool_responses/tool_call_id), tool_call_example inference, and `apply`'s
-  final `template_root_->render(context)` — gated on engine Phase 5B+5C.
-- **5Gc — context binding**: `strftime_now` callable (needs Value::callable,
-  Phase 5A callable support), bos/eos token binding, tools/extra_context into
-  Context.
+**Open items (Phase 6).**
+- **Tool-use loop (DONE)** — `chat_tool_loop` (util/chat.ijs):
+  `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;
+  <params>)` calls `chat_completion`; on `finish_reason='tool_calls'` it
+  executes each tool via the global verb `chat_tool_fn_g` (y = `<name ;
+  args-JSON>`, returns the result string; mirrors the gen_cb_g global-verb
+  pattern), appends the assistant tool_calls message + one `tool` role message
+  per result (minja Values), and re-calls until the model stops (cap
+  max_rounds). Returns `<content ; finish_reason ; tool_calls_made>`. Verified
+  on qwen3.5: model calls get_weather args `{"city":"Paris"}`, the loop executes
+  it, feeds back `"The weather in Paris is sunny and 22C."`, and the model then
+  answers `"The weather in Paris is sunny and 22°C."` (finish 'stop').
+  Streaming re-arms `gen_cb_on_g`/`gen_cb_g` each round, so stream==batch holds
+  across rounds. test_qwen35.ijs Section 6. J gotcha: `max_rounds` must come
+  BEFORE `<params>` (a pre-boxed `;` operand that isn't trailing nests).
+- **Chat TUI streams (ui) — DONE** — `chat_tui.ijs` renders the reply
+  token-by-token via `chat_stream_cb` (no more '...thinking...' block): on Enter
+  it arms streaming (`chat_stream_start`), rebinds `chat_cb_g` to a `stream_delta`
+  consumer that appends each delta to STREAM and redraws live, calls
+  `chat_completion` with stream=1, then disarms (`chat_stream_stop`). Locale
+  fix: the TUI runs in the inference locale (not a separate chatu locale) — J
+  verb assignment aliases the NAME (resolved where the verb is CALLED), so
+  rebinding `chat_cb_g` from an external locale made `chat_stream_cb`'s
+  `chat_cb_g delta` look up an unresolvable name. pty-verified: qwen3-0.6b
+  answers "What is the capital of France?" streamed live, `[user]/[assistant]`
+  rows rendered, answer mentions Paris. util/chat.ijs gains
+  `chat_stream_start`/`chat_stream_stop` (the gen_cb_on_g/gen_cb_g globals are
+  NOUNS/verbs llm_core doesn't export, so external locales can't arm streaming).
+- **Cross-arch streaming/tools verification — DONE** — `chat_completion`
+  (stream=1, stream==batch) verified on all 8 arches (gemma3/qwen2/llama/
+  granite/ernie4_5/lfm2 + qwen3/qwen35): "The capital of France is Paris."
+  with finish `stop` on each. `chat_tool_loop` runs cleanly on all arches.
+  No arch-specific streaming bugs — `chat_tok_bytes` covers gemma3 (llama3),
+  qwen2/qwen3/qwen35/llama/granite/lfm2 (gpt2), ernie4_5 (spm).
+- **Tool-call formats by model — DONE** — capability detection
+  (`ct_new_chatpl_`) shows tools supported ONLY in qwen3/qwen3.5/granite/qwen2
+  (smollm2/llama, gemma3, ernie, lfm2 templates don't support tools — they just
+  answer). The supported models emit three formats, all handled by
+  `chat_extract_tool_calls`: qwen3.5 `<function=>`, qwen3/granite
+  JSON-in-`<tool_call>`, qwen2.5-coder bare `{"name":...,"arguments":{...}}`
+  JSON (no wrapper). Streaming during tool-call generation emits the markers
+  for each format (verified: qwen3.5 `<function=get_weather>`, granite
+  `<tool_call>{"name"...}</tool_call>`, qwen2 bare JSON). Tool-use loop
+  executes + re-calls for all 4 (qwen2.5-coder loops calls, capped by
+  max_rounds; granite-4.0 emits + executes). **granite-4.2-3b** supports tools
+  (capability detection: tools+tool_calls=1; same JSON-in-`<tool_call>`
+  extraction path as granite-4.0) but the 3b model does not reliably emit a
+  tool call on the get_weather prompt — it "thinks aloud" and asks the user for
+  the city name despite Paris being given (deterministic under both greedy and
+  temp 0.7/top_k 40). Model behavior, not a mechanism gap; the arch's
+  tool-call path is verified via granite-4.0.
+- **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
+  the same `chat_completion` verb behind an OpenAI SSE endpoint.
 
-**Test strategy:** test_chat_template.ijs documents the polyfill goldens
-(ToolCallSupported/ToolCallPolyfill/ToolsPolyfill/ToolPolyfill shapes) +
-capability flags from test-polyfills.cpp/test-capabilities.cpp, plus
-standalone `add_system`/normalization cases that pass without the renderer.
-Not wired into run_all_tests.sh until 5Gb lands.
+## Open items
 
-**Test strategy:** bake Python-jinja2 goldens (scripts/minja_goldens.py) into
-test_minja_render.ijs for the cases minja matches; use minja's own hardcoded
-EXPECT_EQ strings for the `!USE_JINJA2`-guarded divergences (`{% generation %}`,
-`{{ None | trim }}` → `""`, bare `{{ none }}` → empty, error substrings).
-Wire files into run_all_tests.sh as their cases pass; keep the suite green.
-
-### Phase 5H — Integration: GGUF-fetched jinja chat templates (swap the bespoke prompts)
-
-**Goal.** Replace the per-arch hardcoded chat-prompt verbs (`gem3_chat_prompt`,
-`qw2_chat_prompt`, `smollm2_chat_prompt`/`llama32_chat_prompt`, `granite_chat_prompt`,
-`ernie_chat_prompt`, `lf2_chat_prompt`, `qw35_chat_prompt`) with ONE GGUF-driven
-renderer: fetch `tokenizer.chat_template` (the jinja) from the GGUF metadata,
-parse it once with the minja engine, and render messages/tools through the
-chat-template layer. The bespoke verbs are hand-copies of these templates; the
-swap makes the model's own template authoritative and removes the per-arch
-copies. It also unblocks tool/typed-content/vision prompts (qwen3.5) that the
-bespoke verbs cannot express.
-
-**The GGUF already carries the template.** `tokenizer.chat_template` is a
-STRING KV (vt=8) — `'tokenizer.chat_template' kv_string kv` (gguf/gguf.ijs:455)
-extracts it from `parse_kv_pairs`. llama.cpp reads this same key and renders it
-with minja, so rendering it with our minja port reproduces llama.cpp exactly
-(that is the oracle guarantee — both run the same engine on the same source).
-qwen35.ijs:995 already notes "The real template (GGUF tokenizer.chat_template,
-reference/qwen35-chat_template.jinja)" — that file is the reference copy of the
-jinja that will now come from the GGUF itself.
-
-**Gating (analysis conclusion).** This CANNOT land yet. The swap needs the
-renderer, and the port has only Phase 5A (Value model + Context + minimal
-`render_expr`). Real chat templates use `{% for %}`/`{% if %}`/`{% set %}`/
-`{% macro %}` loops, `| trim`/`| length` filters, `~` concatenation, and
-`strftime` — all of 5B (expression grammar), 5C (tokenizer + template parser),
-5D (statements/controls), 5E (whitespace), 5F (builtins), plus chat_template
-5Gb (`ct_apply` render + capability detection) and 5Gc (`strftime_now`, bos/eos
-binding). Order of work: finish minja 5B→5F, then 5Gb/5Gc, then wire 5H.
-
-**Target shape.**
-- **Load**: in each arch loader (or `load_gguf_to_llm`), read
-  `'tokenizer.chat_template' kv_string kv` once and store it on the llm noun
-  (new index, e.g. `llm_chat_template_g`). If the KV is absent (older GGUFs),
-  fall back to the existing bespoke `*_chat_prompt` — keep them as the
-  no-template fallback, not the primary path.
-- **Render**: `chat_prompt` (util/chat.ijs dispatch) becomes: convert the
-  `<role ; content>` message boxes to a minja Value array of `{role, content}`
-  objs, `mk_inputs` (add_generation_prompt=1), `ct_apply (inputs ; options)`
-  → prompt string. `add_generation_prompt=1` reproduces the bespoke verbs'
-  appended gen prompt (`<start_of_turn>model`, `<|im_start|>assistant`, ...),
-  which the template itself now emits.
-- **Options**: `mk_options` must set `use_bos=0`/`use_eos=0` for every arch.
-  BOS is tokenizer-owned (AGENTS.md): llama3/gemma tokenizers prepend bos and
-  their templates omit `<|begin_of_text|>` (llama32_chat_prompt explicitly
-  omits it) — use_bos=1 would double-bos and break the token-stream oracles.
-  The `now`/`define_strftime_now` path (5Gc) replaces the hardcoded
-  `llama32_today_date`; pin `now` in tests via the options.
-- **Stop tokens stay per-arch** — they come from the vocab, not the template;
-  `chat_stop_tokens` is untouched.
-- **Persistent chat resume** (chat_session_g) is unaffected: it stores the
-  token stream + messages, and only re-renders the NEW segment; the renderer
-  runs only on the fresh path (`chat_fresh`) and the first-turn of a resume.
-
-**Oracle/verification.** test_chat.ijs pins prompts against llama-cpp-python;
-the minja-rendered GGUF template should match those `_input_ids` EXACTLY (both
-render the same template with the same engine). Add a 5H test that: parses the
-GGUF, reads `tokenizer.chat_template`, renders a single user message, and
-compares to the existing llama-cpp-python references — this is the swap's
-correctness gate and doubles as an end-to-end minja+chat_template engine test
-(test-supported-template.cpp goldens).
+- **Excluded ToolTest cases** — CommandR7b (HF-gated template), FirefunctionV2
+  (upstream marks BROKEN/TODO, not in CI), and test-fuzz.cpp (fuzztest property
+  fuzzing, no J equivalent). All are upstream-gated/known-broken/fuzz-only.
 
 ## Deferred J-idiom applications
 
@@ -267,6 +290,7 @@ Deferred ideas about applying an idiom to *our* code are kept here:
 ## Key Reference
 
 - llama.cpp: `llama.cpp/` checkout (`src/models/*.cpp`, `src/llama-graph.cpp`)
+- minja: `reference/minja/include/minja/minja.hpp` + `chat-template.hpp`, tests `test-syntax.cpp`/`test-polyfills.cpp`/`test-capabilities.cpp`/`test-supported-template.cpp`; golden generator `scripts/minja_goldens.py`
 - GGUF spec: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
 - J for C Programmers (JfC): https://www.jsoftware.com/help/jforc/
 - J Primer "Precedence": https://www.jsoftware.com/help/primer/precedence.htm

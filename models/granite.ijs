@@ -44,7 +44,14 @@ granite_extract_hparams =: 3 : 0
   emb_len =. 'granite.embedding_length' granite_kv_uint data
   n_heads =. 'granite.attention.head_count' granite_kv_uint data
   n_heads_kv_arr =. 'granite.attention.head_count_kv' kv_array data
-  n_heads_kv =. {. n_heads_kv_arr   NB. array (all-equal); take first
+  NB. granite-4.0 stores head_count_kv as an ARRAY (vt=9, all-equal) -> take
+  NB. first; granite-4.2+ stores it as a scalar UINT (vt=4) -> kv_array is empty,
+  NB. so fall back to kv_uint. (kv_array only decodes vt=9 arrays.)
+  if. 0 < # n_heads_kv_arr do.
+    n_heads_kv =. {. n_heads_kv_arr
+  else.
+    n_heads_kv =. 'granite.attention.head_count_kv' kv_uint data
+  end.
   rope_freq =. 'granite.rope.freq_base' granite_kv_float data
   vocab_size =. 'granite.vocab_size' granite_kv_uint data
   rms_eps =. 'granite.attention.layer_norm_rms_epsilon' granite_kv_float data

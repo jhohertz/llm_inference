@@ -28,7 +28,7 @@ inference.ijs (entry point)   — all code lives in the 'inference' locale
  ├── util/llm_core.ijs   — llm accessors, get_tensor_cached_d, embed_tokens, output_head, sample_from, infer_args, gen_args
  ├── models/gemma3.ijs     — Gemma 3 270M: attention+KV, FFN, blocks, gem3_infer/gem3_generate
  ├── models/llama.ijs      — generic llama arch (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE
- ├── models/granite.ijs    — Granite-4.0-350m: standard decoder + Granite 4.0 scaling (embed*12, residual*0.263, scores*0.015625, logits/4), tied embeddings
+  ├── models/granite.ijs    — Granite 4.0/4.1/4.2: standard decoder + Granite scaling (data-driven: embed*12, residual*resid, scores*0.015625, logits/logit_scale), tied embeddings
  ├── models/ernie.ijs      — ERNIE-4.5-0.3B: standard decoder byte-for-byte the llama arch (tied embeddings), reuses llama.ijs forward verbs, SPM tokenizer
  ├── models/qwen2.ijs      — Qwen2.5-Coder: standard decoder, GQA, SwiGLU, NEOX RoPE, Q/K/V biases
 ├── util/llmobj.ijs     — OOP wrapper: conew 'llmobj', infer__obj/generate__obj/destroy__obj
@@ -441,9 +441,104 @@ verbs) are dispatched by `llm_arch`. The arg list is
   Verified: persisted turn-by-turn chat == stateless full re-render (12/12
   Chat Session suite), SWA Boundary 16/16, full suite 374/374/0. qwen2
   29-token resume prefill: 0.115s vs 4.81s serial per-token (~42x).
-   NB: `kv_write_rows`' base must be `((a * max_seq) + start)` — `a * max_seq
-  + start` is `a * (max_seq + start)` (no precedence), harmless at start=0
-  (pre-resume callers) but clobbers the cache prefix at start>0.
+    NB: `kv_write_rows`' base must be `((a * max_seq) + start)` — `a * max_seq
+   + start` is `a * (max_seq + start)` (no precedence), harmless at start=0
+   (pre-resume callers) but clobbers the cache prefix at start>0.
+
+**PER-TOKEN STREAMING CALLBACK (Phase 6 item 1)** — `gen_loop_core` calls the
+monadic verb `gen_cb_g` (gated by the noun flag `gen_cb_on_g`) on each generated
+token after sampling, before the stop check. The callback may return a
+(possibly replaced) token id — returning a stop-token id forces a stop — so it
+serves both as a streaming hook (per-delta emit) and an interception point.
+Verbs can't be boxed into the y list (noun-verb syntax error) and can't be
+distinguished from a noun by `-:`/`3!:0`, so it's a global verb + noun flag
+rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
+ verb that uses it: `llm chat_completion (messages ; tools ; max_steps ; stream ;
+ <params>)` → `<content ; finish_reason ; tool_calls>`. `stream=1` uses the
+ caller's `gen_cb_g`; `stream=0` skips it. `<params>` MUST be the last `;`
+ operand — a pre-boxed `;` operand that isn't trailing nests (J gotcha). 
+`finish_reason` is `'stop'`/`'length'`/`'tool_calls'` (classification: Phase 6
+  item 3, see below).
+
+**STREAMING TEXT DELTAS (Phase 6 item 2)** — `chat_stream_piece` (util/chat.ijs)
+ is a port of llama.cpp's streaming incremental detokenizer: it appends each
+ token's raw bytes to `st_buf_g`, holds any incomplete trailing UTF-8 sequence
+ (`utf8_tail`), and emits only complete characters. `chat_stream_cb` is the
+ per-token callback the caller installs as `gen_cb_g` (with `gen_cb_on_g=1`);
+ it reads arch/llm from `chat_cb_arch_g`/`chat_cb_llm_g` (set by
+ `chat_completion`) and forwards each text delta to `chat_cb_g` (a monadic verb
+ on the delta string), returning the token unchanged so the delta never leaks
+ into the token stream. Streaming == batch detokenize on all tokenizer families
+ (greedy, e.g. qwen3 170/170 chars); a streaming==batch test is in
+  test_qwen3.ijs. Gotcha: J verb assignment `a =. b` is a dynamic ALIAS to the
+  name `b`, not a copy — so `x =: gen_cb_g` then `gen_cb_g =: chat_stream_cb`
+  would make the "capture" track the new value (infinite recursion). 
+`chat_completion` never overwrites the caller's callback. Stop tokens are
+  suppressed from the delta stream via `chat_cb_stop_g`: `gen_loop_core` breaks
+  WITHOUT appending a stop token to `output`, so the batch detokenize excludes it
+  — the streaming callback sees it (it fires before the stop check) and would
+  leak its text. qwen3.5's `<|im_end|>` (151645) has a NON-EMPTY byte-encoded
+  vocab string, so this is required for stream==batch there (verified 216/216).
+
+**TOOL-CALL CLASSIFICATION (Phase 6 item 3)** — `chat_completion` detects a
+  `<tool_call>...</tool_call>` region in the generated content: `finish_reason`
+  becomes `'tool_calls'`, `content` is nulled, and `tool_calls` are extracted as
+  OpenAI-shaped minja Values (`{type:'function'; function:<name; arguments>;
+  id}` with `id = 'call_' , name`, arguments a JSON string). 
+  `chat_extract_tool_calls`/`chat_parse_tool_call` handle the two generation
+  formats:
+  - qwen3.5: `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n</function>\n</tool_call>` — parsed into a pjson key/value table and `enc`'d to a JSON string.
+  - qwen3/granite (JSON): `<tool_call>\n{"name": ..., "arguments": {...}}\n</tool_call>` — parsed with `dec_pjson_` (convert/pjson, added to DEPENDS; it preserves numbers/bools, unlike convert/json which coerces 0/1 to bool), arguments re-`enc`'d.
+  - bare OpenAI-style JSON: qwen2.5-coder emits `{"name":..., "arguments":{...}}` WITHOUT the `<tool_call>` wrapper its template asks for — `chat_extract_tool_calls` falls back to parsing the whole content as JSON if it carries `name`+`arguments` keys (one tool call).
+  Verified end-to-end (greedy): qwen3.5, qwen2.5-coder-0.5b/1.5b, granite-4.0 — `get_weather` args `{"city":"Paris"}`; test_qwen35.ijs Section 6.
+
+**TOOL-USE LOOP** — `chat_tool_loop` (util/chat.ijs):
+  `llm chat_tool_loop (messages ; tools ; max_steps ; stream ; max_rounds ;
+  <params>)` drives the execute-and-recall cycle. It calls `chat_completion`;
+  on `finish_reason='tool_calls'` it executes each extracted tool via the
+  global verb `chat_tool_fn_g` (y = `<name ; args-JSON-string>`, returns the
+  result STRING), builds an assistant message Value carrying the model's
+  `tool_calls` (`{role:'assistant'; content:null; tool_calls:[...]}`) plus one
+  `tool` role message Value per result (`{role:'tool'; content:result;
+  tool_call_id:id}`), appends them to the history, and re-renders/re-calls
+  until the model stops calling tools (cap `max_rounds`). Returns
+  `<content ; finish_reason ; tool_calls_made>`. `chat_build_tool_call_msg`,
+  `chat_build_tool_msg`, `chat_exec_tool` are the builders; `chat_tool_fn_g`
+  mirrors the gen_cb_g global-verb pattern (verbs can't be boxed). Streaming
+  re-arms `gen_cb_on_g`/`gen_cb_g`/`chat_cb_*_g` each round, so stream==batch
+  holds across rounds. Verified on qwen3.5-0.8b: model calls get_weather, the
+  loop executes it (`"The weather in Paris is sunny and 22C."`), and the model
+  then answers `"The weather in Paris is sunny and 22°C."` (finish 'stop');
+  test_qwen35.ijs Section 6. Gotcha: `max_rounds` must come BEFORE `<params>`
+  (a pre-boxed `;` operand that isn't trailing nests).
+
+**GPT2 BYTE TABLES (llama.cpp vs OpenAI)** — `gpt2_build_tables`
+  (tokenizer_gpt2.ijs) originally followed OpenAI's `bytes_to_unicode`
+  (identity 33..126 + 160..255, control 0..32 + 127..159 -> codepoints 256..321).
+  llama.cpp's `unicode_utf8_to_byte_map` (unicode.cpp:172) treats byte 160 (0xA0)
+  and 173 (0xAD) as CONTROL (not identity): identity 33..126 + 161..172 +
+  174..255, control 0..32 -> 256..288, 127..160 -> 289..322, 173 -> 323. So the
+  byte-encoded codepoints run 0..323 (not 0..321). The old table broke qwen3.5
+  detokenize on tokens whose piece contains codepoints 322/323 (e.g. `ł`/`Ń`
+  decode to bytes 0xA0/0xAD — `index error: 323 > 322`). Fixed to match llama.cpp
+  (byte_tab length 324); verified tokenize/detokenize vs llama-cpp-python oracle.
+
+**STATEFUL CHAT + STREAMING (`chat_core_stream`)** — `chat_completion` streams
+but re-renders the full history each turn; the console `chat`/`chat_p` resumes
+the KV cache but never streams. `chat_core_stream` (util/chat.ijs) combines
+both: it takes `<msg ; max_steps ; <params>` (msg = the NEW user message only,
+the session holds the history), re-renders the history ONLY to tokenize the new
+segment, verifies the prefix matches the stored token stream, then **resumes
+from the KV cache** (ONE batched prefill of the new segment through
+`*_run_blocks_b`) AND arms the per-token streaming callback (mirrors
+`chat_completion`'s stream mode). Shared helpers `chat_gen_stream`/
+`chat_fresh_stream` do generate+stream+flush+reset. The stateful TUI
+(`chat_tui.ijs`) calls it per turn, renders from the session's messages
+(`get_msgs`), and `/reset` calls `chat_reset` (clears session + KV cache).
+J gotchas: a `;` chain with a boxed operand in the middle nests
+(`(messages ; max_steps ; <flat) ; <stop` → length-2) — append the trailing box
+with `, <stop`; `chat_stream_stop` rebinds `chat_cb_g` to `]`, so the caller
+must re-set its delta consumer each turn.
 
 **BATCHED DECODE (`gen_loop_batch`)** — the way off the M=1 matvec floor:
 one forward per decode step over B independent sequences. The KV cache gets a
@@ -491,8 +586,9 @@ crude console chat. The session state `chat_session_g` =
   in-place amend; the cache stays in `kv_cache_g` (one active session).
 
 Each turn:
-1. Append the new user message and RE-RENDER the full history (per-arch
-   `*_chat_prompt`) — only to tokenize the new segment.
+1. Append the new user message and RE-RENDER the full history (through the
+   real GGUF jinja template — see §Chat-template rendering below) — only to
+   tokenize the new segment.
 2. Prefix-check: the re-render's token stream must start with the stored
    `total_tokens`. If it matches, `seg = cur_pos }. new_toks` and
    `gen_loop_core` resumes at `cur_pos` (ONE batched prefill of `seg`).
@@ -505,6 +601,52 @@ presentation AND persistence — the space-text re-tokenizes to the same
 ▁-pieces, so gemma's stored token stream and the re-render prefix agree and
 the cache can be resumed. Byte-level BPE (qwen2/smollm2) round-trips exactly
 without the conversion.
+
+## Chat-template rendering (real GGUF jinja)
+
+Every architecture renders chat through its own **real `tokenizer.chat_template`**
+pulled from the GGUF, parsed and rendered by the minja/chat_template port —
+there are no bespoke per-arch prompt verbs anymore.
+
+- **Load**: each arch loader extracts the template once —
+  `'tokenizer.chat_template' kv_string (0 1 { kv_result)` (gguf/gguf.ijs:455;
+  vt=8 string) into the `ct_tmpl_g` global (`''` if absent). `load_gguf_to_llm`
+  resets `ct_tmpl_g` per load. `ct_tmpl_g`/`ct_vars_g`/`ct_now_g` are initialized
+  in util/chat.ijs.
+- **Render**: `chat_prompt` (util/chat.ijs dispatch) calls each arch's
+  `*_chat_prompt`, which is a thin wrapper over `chat_tmpl_render`
+  (util/chat.ijs): convert the `<role ; content>` message boxes (or pre-built
+  minja message Values carrying `tool_calls`/`tool_call_id`/typed content —
+  detected by the `'obj'` kind marker on the unboxed element) to a minja
+  Value array of `{role, content}` objs, `mkarr_minja_`, then
+  `ct_apply (source ; <msgs; tools; add_generation_prompt=1; extra;
+  now; ''; ''> ; caps ; tool_ex ; options)` → prompt string.
+  `tools` comes from `ct_tools_g` — a JSON string of tool definitions parsed
+  by `ct_parse_json_chatpl_` (`''` → null). Tool-capable templates render the
+  tool dump + tool_calls; non-tool templates get the tools polyfill (system
+  message) automatically via the layer's `detect_caps`.
+  `add_generation_prompt=1` makes the template emit its own gen prompt
+  (`<start_of_turn>model`, `<|im_start|>assistant`, ...). If a model has no
+  `tokenizer.chat_template`, `chat_tmpl_render` throws a clear error.
+- **Template variables**: `ct_vars_g` (a minja obj) is passed as the `extra`
+  input — e.g. `enable_thinking` (qwen3: default no thinking block, false →
+  ` thinking\n\n response\n\n`; qwen3.5: undefined → ` thinking\n\n response\n\n`,
+  true → ` thinking\n`). Settable per-call via the optional 4th `tmpl_vars`
+  arg to `chat_generate` (`chat_vars_obj` builds the obj from `<key ; value>`).
+- **Tools**: `chat_generate` accepts an optional 5th `tools` arg — a JSON
+  string of OpenAI-style function schemas, set into `ct_tools_g` per call
+  (mirroring `ct_vars_g`/`ct_now_g`, cleared by the persistent chat path and
+  reset on model load). `chat_tmpl_render` parses it to the template's `tools`
+  input, so tool-capable templates produce real function-calling prompts;
+  messages may be pre-built minja Values to express `tool_calls`/typed content.
+- **now**: `chat_tmpl_render` uses the current epoch (Hinnant `days_from_civil`
+  date→days inverse of the minja `civil_from_days`) unless `ct_now_g` is
+  non-zero (test oracle pinning, e.g. 1721952000 = 26 Jul 2024). The template's
+  `strftime_now` callable renders dates (Llama-3.2's "Today Date").
+- **BOS/EOS**: `mk_options` defaults keep `use_bos=0`/`use_eos=0` — BOS is
+  tokenizer-owned (llama3/gemma prepend bos; their templates omit the
+  `<|begin_of_text|>` marker), so the token stream matches llama.cpp exactly.
+- **Stop tokens stay per-arch** (from the vocab), untouched by the template.
 
 ## Per-Architecture Notes
 
@@ -540,21 +682,25 @@ interleaved RoPE (NORM), separate QKV/O weights, no q/k norm, no post-attention/
 norms, no embedding scale. Tokenizer: GPT-2 byte-level BPE. The llama module is
 generic: dims are read from the GGUF, and Llama-3.2-1B-Instruct shares it —
 llama-bpe tokenizer (llama3 regex pre + gpt2 BPE merges, `Ġ` space marker),
-BOS prepended by `llama_tokenize`, llama3 chat template with the always-emitted
-system block + dynamic date (`llama32_chat_date_g`). See PLAN.md item 6.
+BOS prepended by `llama_tokenize`. Chat is rendered from each model's real
+GGUF `tokenizer.chat_template` (SmolLM2's `<|im_start|>` or Llama-3.2's
+always-emitted system block + dynamic "Today Date" via `strftime_now`).
 
 ### Granite-4.0-350m (`granite.ijs`) — granite arch
 
 Standard decoder, GQA (16→4), SwiGLU, interleaved RoPE (NORM, full head_dim
 rotary, freq_base 1e7), separate QKV/O weights, no q/k norm, **tied
-embeddings** (no `output.weight`). The Granite 4.0 scaling scheme (read from
-KVs, stored in mi at indices 12..15): input embeddings *12 (`embedding_scale`),
-per layer `attn_out*0.263 + input` then `ffn_out*0.263 + that`
-(`residual_scale`), Q*K^T scores *0.015625 (`attention.scale` — NOT
-1/sqrt(head_dim)), lm_head logits /4 (`logit_scale`). Tokenizer: gpt2
-byte-level BPE with `dbrx` pre (same regex as llama3), no BOS
-(bos=eos=100257). Granite 4.0 chat template (always-emitted default system
-message). See PLAN.md item 7.
+  embeddings** (no `output.weight`). The Granite scaling scheme (read from
+  KVs, stored in mi at indices 12..15, data-driven per model — 4.0/4.1/4.2):
+  input embeddings *12 (`embedding_scale`),
+  per layer `attn_out*resid + input` then `ffn_out*resid + that`
+  (`residual_scale`; 0.263 on 4.0, 0.22 on 4.1), Q*K^T scores *0.015625
+  (`attention.scale` — NOT 1/sqrt(head_dim)), lm_head logits /`logit_scale`
+  (4 on 4.0, 10 on 4.1). Tokenizer: gpt2
+  byte-level BPE with `dbrx` pre (same regex as llama3), no BOS
+(bos=eos=100257). Chat is rendered from the real GGUF `tokenizer.chat_template`
+(granite `<|start_of_role|>` format with the always-emitted default system
+message).
 
 ### Qwen2.5-Coder 0.5B (`qwen2.ijs`) — qwen2 arch
 

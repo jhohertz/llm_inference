@@ -27,6 +27,7 @@ PLATFORMS=: 'linux'
 
 DEPENDS=: 0 : 0
 web/gethttp
+convert/pjson
 )
 
 FILES=: 0 : 0
@@ -35,6 +36,7 @@ inference.ijs
 gguf_dump.ijs
 llm_cli.ijs
 chat_launch.ijs
+chat_tui.ijs
 models/gemma3.ijs
 models/llama.ijs
 models/granite.ijs
@@ -58,4 +60,5 @@ util/models.ijs
 util/llmobj.ijs
 util/minja.ijs
 util/chat_template.ijs
+util/vt.ijs
 )

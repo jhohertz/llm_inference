@@ -49,13 +49,19 @@ at interactive speed, running large models, or production workloads.
   oracles.
 - **Built-in BPE + SentencePiece tokenizers**, matching llama.cpp's
   pre-tokenization and merge logic.
-- **Chat templates** — per-architecture instruct chat rendering with a
-  persistent multi-turn session (KV-cache resume across turns).
+- **Chat templates from the model's own GGUF** — every architecture renders
+  chat through its real `tokenizer.chat_template` (jinja), parsed and rendered
+  by our faithful **minja port** (`util/minja.ijs` + `util/chat_template.ijs`,
+  the same engine llama.cpp uses). Template variables like `enable_thinking`
+  are settable per call; **tool/function-calling prompts** are supported
+  (`chat_generate` takes a `tools` JSON input, plus messages carrying
+  `tool_calls`/typed content); a persistent multi-turn session resumes the KV
+  cache across turns.
 - **Sampling** — temperature, top-k, top-p, min-p.
 - **Model catalog + downloader** — reference a model by id, Hugging Face path,
   or URL and it downloads to a per-user model folder.
-- **Three ways to run it** — one-shot CLI, interactive chat console, or the
-  J API — plus a GGUF inspector.
+- **Four ways to run it** — one-shot CLI, interactive chat console, a raw-mode
+  chat TUI, or the J API — plus a GGUF inspector.
 - **An OOP wrapper** (`conew`) if you prefer objects over box-of-boxes.
 
 ---
@@ -139,6 +145,19 @@ exit ''                              NB. leave the console
 
 The session persists across turns until `chat_reset_inference_ ''` (or `exit`).
 
+### Raw-mode chat TUI
+
+```bash
+./scripts/chat_tui.sh 'qwen3-0.6b'
+```
+
+A minimal terminal chat UI driven directly by the addon (j-kvm `vt` raw-mode +
+key reads). It is **stateful** — the session (`chat_session_g`) + KV cache
+carry across turns via `chat_core_stream` (one batched prefill of the new
+segment), and the reply **streams live**, token by token. Controls: type a
+message + Enter to send; `/reset` clears the session + KV cache; Backspace to
+edit; Ctrl-C or type `exit` to quit.
+
 ### GGUF inspector
 
 ```bash
@@ -185,6 +204,13 @@ Multi-turn chat via the chat template:
 ```j
 msgs =. (<'user') , <'What is the capital of France?'
 answer =. llm chat_generate_simple_inference_ (msgs ; 200)
+```
+
+Tool/function-calling prompts (5th arg = a JSON string of tool definitions):
+
+```j
+tools =. '["{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"...\",\"parameters\":{...}}}"]'
+answer =. llm chat_generate_inference_ (msgs ; 200 ; <params ; '' ; tools)
 ```
 
 You may also `cocurrent <'inference'` to use plain simple names inside the
@@ -285,12 +311,13 @@ which you should read when you start editing or investigating:
   infer/generate/chat interface, GGUF parser API, debug tips, and J gotchas.
 - **docs/ARCHITECTURE.md** — architecture & implementation: GGUF layout, weight
   format, quant decode, KV cache, RoPE variants, attention, generation loop,
-  chat sessions, per-architecture notes.
+  chat sessions, real GGUF-jinja chat-template rendering, per-architecture notes.
 - **docs/J-KNOWLEDGE.md** — the J language knowledge base (jforc idiom reviews +
   gotchas), project-agnostic and reusable in any J project. Load it before
   writing or editing J code.
 - **docs/HISTORICAL.md** — the origin story, resolved limitations, and the
-  performance pass — what was tried, measured, and why.
+  performance pass — what was tried, measured, and why (including the Phase 5
+  minja port + GGUF-jinja integration).
 - **PLAN.md** — roadmap and planned work.
 
 ---
@@ -308,7 +335,8 @@ models/              per-architecture forward passes (gemma3, llama, granite, ..
 tokenizers/          BPE + SentencePiece tokenizers
 kernels/             float kernels (jfloat.ijs)
 gguf/                GGUF parser + quant decoders
-util/                KV cache, llm core, sampler, chat, model catalog, llmobj
+util/                KV cache, llm core, sampler, chat, model catalog, llmobj,
+                     minja jinja engine + chat-template layer (minja.ijs, chat_template.ijs)
 tests/               test suites (run tests/j/run_all_tests.sh from the checkout)
 ```
 

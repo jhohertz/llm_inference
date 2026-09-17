@@ -18,7 +18,7 @@ test_models =: 3 : 0
   NB. --- catalog lookup ---
   assert_test (0 = cat_idx 'gemma-3-270m-it') ; 'cat_idx gemma-3-270m-it = 0'
   assert_test (#catalog = cat_idx 'bogus-model') ; 'cat_idx unknown = #catalog'
-  assert_test (21 = #catalog) ; 'catalog has 21 models'
+  assert_test (24 = #catalog) ; 'catalog has 24 models'
 
   NB. --- target path convergence: id / HF path / URL -> same cache path ---
   exp =. jpath '~user/models/unsloth/gemma-3-270m-it-GGUF/gemma-3-270m-it-F16.gguf'

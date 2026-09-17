@@ -46,6 +46,24 @@ monad `u~ y = y u y` (reflex, e.g. `/:~ y` sorts ascending). Reductions
 (`+/`, `>./`, `*/`, `+/"1`, `>./"1`), sort/grade reflex (`\:`, `/:~`, `\:~`),
 revoke indexing (`{~`), AND-reduce `*./`.
 
+**`if.`/`while.` conditions with a boolean LIST reduce via `*./` (all-true
+required)** — `E.` (match) returns a boolean list, so `if. pat E. text do.` is
+FALSE unless every char matches. Use `1 e. pat E. text` (any) for substring
+presence. Hit twice in the tool-call path (chat_parse_tool_call, test_qwen35).
+
+**Cross-locale verb rebinding is a dynamic ALIAS to the NAME, resolved where
+the verb is CALLED** — `a_inference_ =: my_verb` (from an external locale)
+rebinds inference's `a` to alias the unqualified name `my_verb`. When inference
+later calls `a ...`, it looks up `my_verb` in INFERENCE (its own locale), not
+the defining locale — so an external-locale verb is unresolvable
+(`value error: my_verb`). `name__locale` verb access (`bar__chatu`) also fails
+for verbs. Fix: the rebinding verb must be defined in the SAME locale that
+calls it (the chat TUI now runs in the inference locale; the streaming
+consumer `chat_cb_g =: stream_delta` shares inference). Also: the addon export
+puts VERBS in base with the `_inference_` suffix, but NOUNS are not exported —
+so an external locale can't set a noun flag (e.g. `gen_cb_on_g`) via the suffix;
+exported helper verbs (chat_stream_start/chat_stream_stop) arm/disarm it.
+
 Greedy-max selection: `y i. >./ y` (index-of first max) replaces
 `{. I. y = >./ y`.
 

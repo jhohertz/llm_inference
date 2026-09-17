@@ -63,6 +63,7 @@ load_gguf_to_llm =: 3 : 0
   NB. plain filesystem path; model_path downloads to ~user/models if needed.
   y =. model_path y
   ct_tmpl_g =: ''
+  ct_tools_g =: ''
   raw =. mmap_gguf y
   arch =. detect_arch (y ; raw)
   select. arch
