@@ -4,14 +4,14 @@ NB. directly (j-kvm `vt` for raw-mode + key reads; no jpi).
 NB. Usage:
 NB.   jconsole chat_tui.ijs [MODEL]        (default mdl qwen3-0.6b)
 NB.
-NB. Stateless chat: each turn re-renders the full message history through
-NB. the shared chat_completion verb (streaming: the reply appears live,
-NB. token by token, via the chat_stream_cb per-token callback). The message
-NB. list persists for the session (stateful KV-cache resume is the end
-NB. goal, not yet).
+NB. Stateful chat: the session (chat_session_g) + KV cache carry across turns,
+NB. so each turn resumes from the cache (ONE batched prefill of the new segment)
+NB. instead of re-rendering the full history. Streaming: the reply appears live,
+NB. token by token, via the chat_stream_cb per-token callback — chat_core_stream
+NB. (util/chat.ijs) combines the stateful resume path with streaming.
 NB.
-NB. Controls: type a message + Enter to send; Backspace to edit;
-NB. Ctrl-C or type `exit` to quit.
+NB. Controls: type a message + Enter to send; Backspace to edit; type /reset to
+NB. clear the session + KV cache; Ctrl-C or type `exit` to quit.
 NB. ================================================================
 
 NB. Run the TUI in the inference locale itself (not a separate chatu locale):
@@ -36,9 +36,14 @@ mdl =: get_model ''
 LLM =: load_gguf_to_llm_inference_ mdl
 MAX_STEPS =: 100000
 RUNNING =: 1
-MSGS =: 0 $ <''                 NB. boxed list of <role ; content>
 IN =: ''                        NB. current input line
 STREAM =: ''                    NB. accumulating assistant text during streaming
+
+NB. The message history lives in chat_session_g (stateful session, held by
+NB. chat_core_stream) — read it back for rendering.
+get_msgs =: 3 : 0
+  if. 0 = # chat_session_g do. 0 $ <'' else. > 1 { chat_session_g end.
+)
 
 NB. Terminal driver (fd-fixed j-kvm vt: read stdin fd 0, write stdout fd 1).
 require 'llm/inference/util/vt'
@@ -100,12 +105,12 @@ draw_conv =: monad define
   in_row =. h - 1                     NB. input line occupies the last row
   cscr ''
   fgc 7
-  puts 'llm_inference chat (stateless) - ' , mdl
+  puts 'llm_inference chat (stateful) - ' , mdl
   reset ''
   NB. parallel rows (boxed row strings) + cols (numeric colors per row)
   rows =. ''                          NB. boxed list of row strings
   cols =. 0 $ 0                       NB. color per row, parallel to rows
-  for_m. MSGS do.
+  for_m. get_msgs '' do.
     m =. > m
     role =. > 0 { m
     content =. > 1 { m
@@ -176,22 +181,28 @@ run =: monad define
     case. 10;13 do.                     NB. Enter
       if. (IN -: 'exit') +. (IN -: 'quit') do.
         RUNNING =: 0
+      elseif. (IN -: '/reset') +. (IN -: 'reset') do.
+        NB. clear the stateful session + KV cache, start fresh
+        chat_reset ''
+        STREAM =: ''
+        draw_conv ''
       else.
         if. 0 < # IN do.
-          MSGS =: MSGS , < ('user') ; IN
+          msg =. IN
           IN =: ''
           STREAM =: ''
           draw_conv ''
           draw_input ''
-          NB. streaming reply: install the per-token callback, generate live.
-          NB. We run in the inference locale, so use simple names. chat_stream_start
+          NB. stateful streaming reply: chat_core_stream takes the NEW user
+          NB. message only (the session + KV cache hold the history) and resumes
+          NB. from the cache. Same streaming arming as chat_completion: we run
+          NB. in the inference locale, so use simple names. chat_stream_start
           NB. arms gen_cb_on_g/gen_cb_g; chat_cb_g (rebound to our stream_delta,
           NB. also in inference) is the per-delta consumer.
           chat_stream_start ''
           chat_cb_g =: stream_delta
-          res =. LLM chat_completion (MSGS ; '' ; MAX_STEPS ; 1 ; <(0 0 0.95 0.0))
+          res =. LLM chat_core_stream (msg ; MAX_STEPS ; <(0 0 0.95 0.0))
           chat_stream_stop ''
-          MSGS =: MSGS , < ('assistant') ; (> 0 { res)
           STREAM =: ''
           draw_conv ''
         end.

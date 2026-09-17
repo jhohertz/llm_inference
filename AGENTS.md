@@ -31,7 +31,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `gguf_dump.ijs` | **Utility**: pretty-print GGUF file info. `load 'gguf_dump.ijs'; gguf_dump_inference_ 'path.gguf'` (shell helper `scripts/gguf_dump.sh`) |
 | `llm_cli.ijs` | **CLI**: one-shot generate from the command line. `jconsole llm_cli.ijs MODEL "PROMPT" [MAX_STEPS] [CHAT]` — if PROMPT starts with `@`, the rest is read as a prompt FILE (curl-style). (shell helper `scripts/llm.sh`, which forwards the 4th arg as chat mode) |
 | `chat_launch.ijs` | **Chat console**: load a model and stay in an interactive J REPL (`llm_z_`, `chat_z_`, `chat_p_z_`, `chat_reset_z_` exposed in the GLOBAL/base locale so `llm chat 'msg'` works as-is at the prompt — a script-file `cocurrent` does NOT persist to the REPL). `jconsole chat_launch.ijs MODEL` (shell helper `scripts/chat.sh`) |
-| `chat_tui.ijs` | **Chat TUI**: raw-mode terminal chat (j-kvm `vt`, fd-fixed) that STREAMS the reply live via `chat_stream_cb`. Runs in the **inference locale** (not a separate chatu locale): J verb assignment aliases the NAME (resolved where the verb is CALLED), so rebinding `chat_cb_g` from an external locale makes `chat_stream_cb`'s `chat_cb_g delta` look up an unresolvable name. `jconsole chat_tui.ijs [MODEL]` (shell helper `scripts/chat_tui.sh`) |
+| `chat_tui.ijs` | **Chat TUI**: raw-mode terminal chat (j-kvm `vt`, fd-fixed) that STREAMS the reply live via `chat_stream_cb` and is **stateful** (KV-cache resume via `chat_core_stream`; `/reset` clears the session). Runs in the **inference locale** (not a separate chatu locale): J verb assignment aliases the NAME (resolved where the verb is CALLED), so rebinding `chat_cb_g` from an external locale makes `chat_stream_cb`'s `chat_cb_g delta` look up an unresolvable name. `jconsole chat_tui.ijs [MODEL]` (shell helper `scripts/chat_tui.sh`) |
 | `gguf/gguf.ijs` | GGUF parser, tensor loading (F32/F16/BF16), KV pair extraction |
 | `gguf/quant.ijs` / `gguf/quant_tables.ijs` | Quant decoders + block tables — aligned with the loader (packed-quant handling is part of gguf today) |
 | `kernels/jfloat.ijs` | Float kernels: matmul, `linear`, gelu, silu, swiglu, rms_norm, rope (`rope_apply2`/`rope_apply2_neox`/`rope_apply2_t`), softcap |
@@ -144,6 +144,12 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   total_tokens; cur_pos; max_steps; params>` (never holds a cache ref — a second
   ref would defeat the in-place amend). If the tokenizer round-trip drifts, it
   falls back to a full fresh re-render (correct, slower).
+- **Stateful chat WITH streaming (Phase 6 item 4)**: `chat_core_stream` combines
+  the console resume path with the streaming callback — same interface as
+  `chat_p` (`llm chat_core_stream (msg ; max_steps ; <params)`, msg = NEW user
+  message only), resumes the KV cache AND streams live deltas (the caller arms
+  `chat_stream_start` + sets `chat_cb_g`, stops after; mirrors chat_completion's
+  stream mode). Used by the stateful TUI. test_chat_session.ijs Section 3.
 - `llm chat_generate_simple (messages ; max_steps)` → per-arch default params.
 - **OpenAI-shaped completion + streaming (Phase 6)**: `llm chat_completion
   (messages ; tools ; max_steps ; stream ; <params>)` → `<content ;

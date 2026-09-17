@@ -27,10 +27,10 @@ so tool-capable templates render real function-calling prompts (verified
 against the upstream llama-3.1 tool_use golden).
 Full done-work detail is recorded in **docs/HISTORICAL.md**; the remaining
 planned work is **Phase 6 (streaming OpenAI-compatible chat API + our own chat
-TUI, in progress)** — items 1-3 + tool-use loop + streaming TUI are DONE, the
-last item is the **stateful TUI (item 4: KV-cache-resume chat loop)**; the
-network HTTP server is deferred (separate agent). Phase 4 (engineering stretch,
-low priority) plus a few open items below. The jpi fork was abandoned (2026-09).
+TUI)** — items 1-4 + tool-use loop are DONE, including the **stateful TUI
+(item 4: KV-cache-resume chat loop)**; the network HTTP server is deferred
+(separate agent). Phase 4 (engineering stretch, low priority) plus a few open
+items below. The jpi fork was abandoned (2026-09).
 
 ## Roadmap — Planned Work
 
@@ -134,12 +134,19 @@ SSE server.
    "chat loop" gap: stop on the arch's end-of-message marker (not just EOS),
    then classify the message as text vs tool call to set `finish_reason`
    (`'stop'` vs `'tool_calls'`) and extract `tool_calls`.
-4. **Stateful TUI (NEXT UP)** — reuse `chat_core`/`chat_session_g` (KV-cache
-   resume) in `chat_tui.ijs` instead of stateless `chat_generate` re-render.
-   The console chat (`chat`/`chat_p`) already IS stateful (session +
-   KV-cache resume via `chat_session_g`); item 4 wires the same resume path
-   into the TUI so multi-turn chat doesn't re-render the full history each
-   turn. This is the remaining planned work item in Phase 6.
+4. **Stateful TUI (DONE)** — `chat_core_stream` (util/chat.ijs) combines the
+   stateful console resume path (`chat_core`/`chat_session_g`) with streaming:
+   it resumes the KV cache (ONE batched prefill of the new segment, prefix
+   verified) AND arms the per-token streaming callback (mirrors
+   `chat_completion`'s stream mode). `chat_tui.ijs` now calls
+   `chat_core_stream (msg ; MAX_STEPS ; <params>)` with just the NEW user
+   message (the session holds the history), renders from the session's
+   messages (`get_msgs`), and adds a `/reset` command (`chat_reset` clears
+   session + KV cache). Verified: qwen3-0.6b + gemma3 stateful resume
+   (`chat_resume_count` increments, `chat_fallback_count` 0), stream==batch on
+   resume AND fresh, 2-turn context-aware TUI via pty, /reset clears.
+   test_chat_session.ijs Section 3 (chat_core_stream pin/resume/stream/reset).
+   Phase 6 is now COMPLETE except the deferred HTTP server.
 
 **Progress (2026-09).**
 - **jpi checkouts removed** (`reference/jpi`, `jpi_local/`); the fd-fixed
