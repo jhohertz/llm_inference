@@ -265,7 +265,9 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   0.015625 (scores, NOT 1/sqrt(hd)), `logit_scale` 4 (lm_head logits /4 — so
   `gen_loop_core` has a per-arch `logit_div` applied after `output_head`).
   Stored in mi at indices 12..15 (`granite_mi_*`). `head_count_kv` is an ARRAY
-  KV (all 4s) — take `{.` of `kv_array`, not `kv_uint` (returns _1). Tied
+  KV (all 4s) on granite-4.0 — take `{.` of `kv_array`; but granite-4.2+ stores
+  it as a scalar UINT (vt=4), so `kv_array` is empty and we fall back to
+  `kv_uint` (the loader handles both). Tied
   embeddings: the GGUF has NO `output.weight`; lm_head = `token_embd.weight`.
   `granite.rope.freq_base` is 1e7 = 10,000,000 (not 1e8 — a 1e7/1e8 confusion
   broke the test assert). RoPE is NORM/interleaved (llama.cpp

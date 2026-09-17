@@ -225,6 +225,14 @@ SSE server.
   rows rendered, answer mentions Paris. util/chat.ijs gains
   `chat_stream_start`/`chat_stream_stop` (the gen_cb_on_g/gen_cb_g globals are
   NOUNS/verbs llm_core doesn't export, so external locales can't arm streaming).
+- **Cross-arch streaming/tools verification — DONE** — `chat_completion`
+  (stream=1, stream==batch) verified on all 8 arches (gemma3/qwen2/llama/
+  granite/ernie4_5/lfm2 + qwen3/qwen35): "The capital of France is Paris."
+  with finish `stop` on each. `chat_tool_loop` runs cleanly on all arches
+  (models may or may not emit tool_calls; granite-4.0-350m emits + executes
+  get_weather; others return a plain answer). No arch-specific streaming
+  bugs — `chat_tok_bytes` covers gemma3 (llama3), qwen2/qwen3/qwen35/llama/
+  granite/lfm2 (gpt2), ernie4_5 (spm).
 - **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
   the same `chat_completion` verb behind an OpenAI SSE endpoint.
 
