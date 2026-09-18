@@ -43,6 +43,10 @@ ITEMS=(
   util/minja.ijs
   util/chat_template.ijs
   util/vt.ijs
+  http/protocol.ijs
+  http/builders.ijs
+  http/server.ijs
+  http/run.ijs
 )
 
 rm -rf "$DEST"
