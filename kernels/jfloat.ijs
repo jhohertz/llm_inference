@@ -18,10 +18,12 @@ linear =: 4 : 0
   if. 0 = #ins do. echo 'LINEAR: EMPTY INPUT, itype:', ": 3!:0 input; echo 'y was:', ": 3!:0 y; return. $0 end.
   result =. weight (+/ .* ) input
   if. #bias > 0 do. result =. result + bias end.
-  NB. NOTE: `result + bias` works only when result is a single row
-  NB. `(out,)` — for a BATCHED result `(rows,out)` J's rank-0 `+` rejects the
-  NB. `(out,)` bias (frames don't conform); use `result + Broadcastly bias`
-  NB. for the NumPy-broadcast behavior (see Broadcastly below).
+  NB. NOTE: `result + bias` is valid when result is a single row `(out,)` OR
+  NB. when the result is `(batch,out)` (bias right-aligns on the out axis).
+  NB. Our matmul yields `(out,batch)` — bias `(out,)` right-aligns on `batch`,
+  NB. which NumPy rejects too — so use `$`-replication or transpose there,
+  NB. not Broadcastly. (Broadcastly handles the `rms_norm_rows`-style
+  NB. `(len,)` weight × `(rows,len)` matrix broadcast.)
   result
 )
 
