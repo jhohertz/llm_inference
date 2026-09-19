@@ -140,6 +140,19 @@ bufput =: 4 : 0
 )
 
 NB. ============================================================
+NB.  fd closefd  ->  close a socket fd.  sdclose is BROKEN in this jsocket
+NB.  build: its `0=res closesocketJ <y` passes a BOXED arg to the libc close
+NB.  foreign (15!:0), which domain-errors, so every sdclose crashes the event
+NB.  loop after the response.  Call the libc close directly with the UNBOXED
+NB.  fd (works), then deregister (rmconn) separately.
+closefd =: 3 : 0
+  try.
+    '"libc.so.6" close i i'&(15!:0) y
+  catch. '' end.
+  ''
+)
+
+NB. ============================================================
 NB.  fd finish resp  ->  send response bytes, close, deregister.
 finish =: 4 : 0
   try.
@@ -147,7 +160,7 @@ finish =: 4 : 0
   catch.
     say 'senderr fd=', (": x)
   end.
-  sdclose x
+  closefd x
   rmconn x
 )
 
@@ -264,9 +277,9 @@ stream_chat =: 4 : 0
   SFIRST=: 1
   chat_stream_start ''
   chat_cb_g =: sse_sender
-  res=: LLM chat_completion (msgs ; tools_json ; max_steps ; 1 ; <params)
+  cres=: LLM chat_completion (msgs ; tools_json ; max_steps ; 1 ; <params)
   chat_stream_stop ''
-  fin=: > 1 { res
+  fin=: > 1 { cres
   fr=: 'data: ' , (fin endchunkbody (SID ; MODEL ; CREATED)) , LF , LF
   try.
     sdcheck (h11_chunk fr) sdsend fd , 0
@@ -278,7 +291,7 @@ stream_chat =: 4 : 0
   catch.
     say 'stream done err'
   end.
-  sdclose fd
+  closefd fd
   rmconn fd
   ''
 )
@@ -308,15 +321,16 @@ v1_chat =: 4 : 0
   mx=: 'max_tokens' getv r
   if. _1 -: mx do. mx=: 200 end.
   cid=: 'chatcmpl-' , (": created_now '')
+  CREATED=: created_now ''
   if. 1 = stream do.
     x stream_chat (msgs ; tools_json ; temp ; top_p ; mx)
     ''
   else.
     params=: < temp ; 0 ; top_p ; 0
-    res=: LLM chat_completion (msgs ; tools_json ; mx ; 0 ; <params)
-    ct=: > 0 { res
-    fin=: > 1 { res
-    tcs=: > 2 { res
+    cres=: LLM chat_completion (msgs ; tools_json ; mx ; 0 ; <params)
+    ct=: > 0 { cres
+    fin=: > 1 { cres
+    tcs=: > 2 { cres
     bdy=: respbody (cid ; MODEL ; CREATED ; ct ; fin ; tcs)
     hd=: 'Content-Type: application/json' , CRLF
     lst=: '200' ; 'OK' ; hd ; bdy
@@ -391,7 +405,7 @@ NB. ============================================================
 NB.  oneof fd  ->  peer closed; drop the connection (guard: may be gone).
 oneof =: 3 : 0
   if. y e. CFD do.
-    sdclose y
+    closefd y
     rmconn y
   end.
 )

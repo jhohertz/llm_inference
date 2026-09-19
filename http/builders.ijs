@@ -192,7 +192,9 @@ NB.  params = <id ; model ; created>
 NB.  x = text delta.
 NB.  y frame_first / frame_mid / frame_end -> bytes.
 frame_first =: 4 : 0
-  fr =. 'data: ' , (chunkbody (y ; x)) , LF , LF
+  NB. (y ; x) is WRONG — appending a char to a 3-item boxed list yields 2 items
+  NB. (not 4); box the content: (y , <x) -> <id ; model ; created ; content>.
+  fr =. 'data: ' , (chunkbody (y , <x)) , LF , LF
   h11_chunk fr
 )
 frame_mid =: 4 : 0
