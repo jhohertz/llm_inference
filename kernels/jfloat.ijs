@@ -84,9 +84,11 @@ rms_norm =: ((>@(1&{)) * ((>@(2&{)) % (%: @ (((+/ @ (*: @ >@(2&{))) % (# @ >@(2&
 
 NB. ---- RMSNorm per row of 2D array ----
 NB. rms_norm_rows eps <weight, matrix>
-NB. Applies RMSNorm independently to each row
-NB. Tacit: broadcast weight to matrix shape ((($ @ >@(2&{)) $ >@(1&{))), then
-NB. matrix % sqrt((row sumsq % row_len) + eps). Hot path (every norm).
+NB. Applies RMSNorm independently to each row. Broadcast the weight vector
+NB. across the matrix rows by `$`-replication (J's `$` is special-coded and
+NB. near-free). NOTE: Broadcastly (NumPy-style broadcasting) was tried here but
+NB. changed the result (off by sqrt(row_len)) — the broadcast-multiply via
+NB. Broadcastly does not reproduce rms_norm_rows exactly, so keep `$`.
 rms_norm_rows =: ((($ @ >@(2&{)) $ >@(1&{)) * ((>@(2&{)) % (%: @ (((+/"1 @ (*: @ >@(2&{))) % ({: @ $ @ >@(2&{))) + >@(0&{)))))
 
 NB. ---- RoPE for 1D vector ----
