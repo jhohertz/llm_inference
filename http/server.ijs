@@ -1,10 +1,10 @@
 NB. ============================================================
-NB.  server.ijs - J9.7 non-blocking HTTP/1.1 server exposing the
+NB.  server.ijs - J9.8 non-blocking HTTP/1.1 server exposing the
 NB.  OpenAI-compatible POST /v1/chat/completions endpoint, driven by
 NB.  OUR llm_inference (real generation: plain + streamed SSE).
 NB.  Molded from reference/j-http-handoff/server.ijs (the mock).
 NB.
-NB.  run:  ~/j9.7/bin/jconsole http/server.ijs [MODEL]   (listens 8790)
+NB.  run:  ~/j9.8/bin/jconsole http/server.ijs [MODEL]   (listens 8790)
 NB.  shell helper:  scripts/llm_server.sh [MODEL]
 NB.
 NB.  CONCURRENCY MODEL (from the handoff, proven):
@@ -339,6 +339,24 @@ v1_chat =: 4 : 0
 )
 
 NB. ============================================================
+NB.  v1_models  ->  OpenAI GET /v1/models list: {object:'list',
+NB.  data:[{id; object:'model'; created; owned_by}]}.  Single-model server.
+v1_models =: 3 : 0
+  b1 =. <MODEL
+  b2 =. <'model'
+  b3 =. <created_now ''
+  b4 =. <'j'
+  mk =. ('id';'object';'created';'owned_by')
+  v =. b1 , b2 , b3 , b4
+  ent =. mk ,: v
+  A =. 1 $ <ent
+  h =. ('object';'data')
+  v2 =. (<'list') , <A
+  O =. h ,: v2
+  enc_json O
+)
+
+NB. ============================================================
 NB.  fd serve buf  ->  parse the request and dispatch.
 serve =: 4 : 0
   fd=: x
@@ -348,7 +366,12 @@ serve =: 4 : 0
   if. 'GET' ceq m do.
     if. '/' ceq p do.
       hd=: 'Content-Type: text/plain' , CRLF
-      lst=: '200' ; 'OK' ; hd ; 'J9.7 OpenAI-style LLM server running'
+      lst=: '200' ; 'OK' ; hd ; 'J9.8 OpenAI-style LLM server running'
+      resp=: h11_simple lst
+    end.
+    if. '/v1/models' ceq p do.
+      hd=: 'Content-Type: application/json' , CRLF
+      lst=: '200' ; 'OK' ; hd ; v1_models ''
       resp=: h11_simple lst
     end.
   else.

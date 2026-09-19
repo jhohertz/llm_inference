@@ -106,6 +106,7 @@ run_suite "Minja Value"     "$BASE/tests/j/test_minja.ijs"
 run_suite "Minja Render"    "$BASE/tests/j/test_minja_render.ijs"
 run_suite "ChatTemplate Engine"   "$BASE/tests/j/test_chat_template.ijs"
 run_suite "ChatTemplate Goldens"  "$BASE/tests/j/test_chat_template_goldens.ijs"
+run_suite "HTTP Server"   "$BASE/tests/j/test_http_server.ijs"
 
 echo "################################################################"
 echo "#              MASTER TEST SUMMARY                           #"

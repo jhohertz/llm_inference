@@ -7,7 +7,7 @@ NB.  sockets and calls these. Locale-independent; loaded by server.ijs
 NB.  into the inference locale.
 NB.  Load:   load 'llm/inference/http/protocol'  (addon) or './http/protocol.ijs'
 NB.
-NB.  Operator code page (standard J9.7, confirmed against
+NB.  Operator code page (standard J9.8, confirmed against
 NB.  system/main/stdlib.ijs):
 NB.    -  13{a. / 10{a. = at (index-fetch) -> CR / LF bytes
 NB.       (matches stdlib.ijs:207  '...CR...'=: ...13{a. )

@@ -1,7 +1,7 @@
 # llm_inference — GGUF language model inference in J
 
 **Run small LLMs — Gemma, Llama, Qwen, Granite, ERNIE, LFM2 and more — from
-GGUF weights, entirely in J (J9.7).** No native code, no bindings, no
+GGUF weights, entirely in J (J9.8).** No native code, no bindings, no
 `llama-cpp` under the hood: a model-agnostic GGUF parser loads the weights and
 each architecture has its own pure-J forward pass.
 
@@ -88,7 +88,7 @@ into your J runtime's addons folder (`~addons`):
 ```
 
 `scripts/jfind.sh` discovers your J install under `$HOME` (`~/j9.x`, e.g.
-`~/j9.7`); override with `$JINSTALL` if needed. Re-run it after updating a
+`~/j9.8`); override with `$JINSTALL` if needed. Re-run it after updating a
 checkout. Then, from any J console:
 
 ```j

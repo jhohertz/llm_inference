@@ -1,4 +1,4 @@
-# PLAN.md — LLM Inference in J (J9.7)
+# PLAN.md — LLM Inference in J (J9.8)
 
 Living roadmap and task-tracking document, scoped to **planned work**. For
 done/legacy material see **docs/HISTORICAL.md**; for J-language knowledge see
@@ -7,7 +7,7 @@ for operational guidance (file map, how to run) see **AGENTS.md**.
 
 ## Project
 
-Generic GGUF-based language model inference in J (J9.7), multi-model across
+Generic GGUF-based language model inference in J (J9.8), multi-model across
 architectures. An educational inference engine; simplicity over speed.
 
 ## Current Status
@@ -116,8 +116,11 @@ SSE server.
   goal.** Each turn re-renders the full history via the shared `chat_generate`;
   the message list persists in-session. KV-cache resume (stateful) is the
   end-goal, not yet built. No markdown/video buffers initially — plain text.
-- **HTTP server is deferred** — a separate agent is building J HTTP-server APIs
-  and will bring them to us; do not start the network layer until then.
+- **HTTP server — DONE (was deferred).** A network OpenAI-compatible server
+  now lives in `http/` (server.ijs + protocol.ijs + builders.ijs): non-blocking
+  jsocket event loop, POST `/v1/chat/completions` (plain JSON + streamed SSE
+  via the same `chat_completion` verb) and GET `/v1/models`. Driven by the
+  handoff's proven concurrency model; the live loop runs `scripts/llm_server.sh`.
 
 **Work items.**
 1. **Streaming-first `chat_completion` verb** (util/chat.ijs, OpenAI-shaped):
@@ -265,8 +268,15 @@ SSE server.
   the city name despite Paris being given (deterministic under both greedy and
   temp 0.7/top_k 40). Model behavior, not a mechanism gap; the arch's
   tool-call path is verified via granite-4.0.
-- **HTTP server** — deferred to the J HTTP-server APIs (separate agent); reuse
-  the same `chat_completion` verb behind an OpenAI SSE endpoint.
+- **HTTP server — DONE.** `http/server.ijs` (non-blocking jsocket event loop)
+  exposes POST `/v1/chat/completions` (plain + streamed SSE) and GET `/v1/models`,
+  reusing the same `chat_completion` verb behind the OpenAI endpoint. Fixed two
+  loop-crash gotchas: `sdclose` is BROKEN in this jsocket build (boxed-arg libc
+  close domain-errors) so `closefd` calls the libc close directly with the
+  unboxed fd; and the server's `res=:` globals clobbered jsocket's `res` verb
+  that `sdselect` depends on (renamed to `cres=:`). Contract-tested in
+  `tests/j/test_http_server.ijs`; the live loop is verified by
+  `scripts/llm_server.sh`.
 
 ## Open items
 
