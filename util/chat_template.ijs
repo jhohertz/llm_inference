@@ -316,11 +316,11 @@ ct_parse_args =: 3 : 0
   out =. mkarr_minja_ ''
   for_tc. arr_items_minja_ tcs do.
     tc =. > tc
-    fn =. ('function') obj_get_minja_ tc
-    args =. ('arguments') obj_get_minja_ fn
+    fin =. ('function') obj_get_minja_ tc
+    args =. ('arguments') obj_get_minja_ fin
     if. is_str_minja_ args do.
       parsed =. ct_parse_json (payload_minja_ args)
-      fn2 =. ((<'arguments') , <parsed) obj_set_minja_ fn
+      fn2 =. ((<'arguments') , <parsed) obj_set_minja_ fin
       tc2 =. ((<'function') , <fn2) obj_set_minja_ tc
     else.
       tc2 =. tc
@@ -443,9 +443,9 @@ ct_tool_calls_polyfill =: 3 : 0
   for_tc. arr_items_minja_ tcs do.
     tc =. > tc
     if. -. ((<'function') e. (obj_keys_minja_ tc)) do. continue. end.
-    fn =. ('function') obj_get_minja_ tc
-    nm =. ('name') obj_get_minja_ fn
-    args =. ('arguments') obj_get_minja_ fn
+    fin =. ('function') obj_get_minja_ tc
+    nm =. ('name') obj_get_minja_ fin
+    args =. ('arguments') obj_get_minja_ fin
     tc2 =. mkobj_minja_ ((('name') pair_minja_ nm) , (('arguments') pair_minja_ args))
     if. (<'id') e. (obj_keys_minja_ tc) do.
       tid =. ('id') obj_get_minja_ tc
@@ -505,15 +505,15 @@ ct_typed_msg =: 3 : 0
 ct_tool_obj =: 3 : 0
   NB. tool obj: {name, type, function:{name,description,parameters}}
   'nm desc params' =. y
-  fn =. mkobj_minja_ ((('name') pair_minja_ (mkstr_minja_ nm)) , (('description') pair_minja_ (mkstr_minja_ desc)) , (('parameters') pair_minja_ params))
-  mkobj_minja_ ((('name') pair_minja_ (mkstr_minja_ nm)) , (('type') pair_minja_ (mkstr_minja_ 'function')) , (('function') pair_minja_ fn))
+  fin =. mkobj_minja_ ((('name') pair_minja_ (mkstr_minja_ nm)) , (('description') pair_minja_ (mkstr_minja_ desc)) , (('parameters') pair_minja_ params))
+  mkobj_minja_ ((('name') pair_minja_ (mkstr_minja_ nm)) , (('type') pair_minja_ (mkstr_minja_ 'function')) , (('function') pair_minja_ fin))
 )
 
 ct_tool_call =: 3 : 0
   NB. (name ; arguments) -> tool_call obj {id,type,function:{arguments,name}}
   'nm args' =. y
-  fn =. mkobj_minja_ ((('arguments') pair_minja_ args) , (('name') pair_minja_ (mkstr_minja_ nm)))
-  mkobj_minja_ ((('id') pair_minja_ (mkstr_minja_ 'call_1___')) , (('type') pair_minja_ (mkstr_minja_ 'function')) , (('function') pair_minja_ fn))
+  fin =. mkobj_minja_ ((('arguments') pair_minja_ args) , (('name') pair_minja_ (mkstr_minja_ nm)))
+  mkobj_minja_ ((('id') pair_minja_ (mkstr_minja_ 'call_1___')) , (('type') pair_minja_ (mkstr_minja_ 'function')) , (('function') pair_minja_ fin))
 )
 
 

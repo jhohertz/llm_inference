@@ -266,8 +266,8 @@ stream_chat =: 4 : 0
   chat_cb_g =: sse_sender
   res=: LLM chat_completion (msgs ; tools_json ; max_steps ; 1 ; <params)
   chat_stream_stop ''
-  fn=: > 1 { res
-  fr=: 'data: ' , (fn endchunkbody (SID ; MODEL ; CREATED)) , LF , LF
+  fin=: > 1 { res
+  fr=: 'data: ' , (fin endchunkbody (SID ; MODEL ; CREATED)) , LF , LF
   try.
     sdcheck (h11_chunk fr) sdsend fd , 0
   catch.
@@ -315,9 +315,9 @@ v1_chat =: 4 : 0
     params=: < temp ; 0 ; top_p ; 0
     res=: LLM chat_completion (msgs ; tools_json ; mx ; 0 ; <params)
     ct=: > 0 { res
-    fn=: > 1 { res
+    fin=: > 1 { res
     tcs=: > 2 { res
-    bdy=: respbody (cid ; MODEL ; CREATED ; ct ; fn ; tcs)
+    bdy=: respbody (cid ; MODEL ; CREATED ; ct ; fin ; tcs)
     hd=: 'Content-Type: application/json' , CRLF
     lst=: '200' ; 'OK' ; hd ; bdy
     h11_simple lst

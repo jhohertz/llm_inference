@@ -24,11 +24,11 @@ lint_all =: 3 : 0
   out =. out , '--- runtime files (lint + load-probe gate) ---' , LF
   i =. 0
   while. i < # RUNTIME do.
-    fn =. > i { RUNTIME
-    'ems lok lmsg' =. lint_file_jlinter_ < fn
+    fin =. > i { RUNTIME
+    'ems lok lmsg' =. lint_file_jlinter_ < fin
     n =. # ems
-    line =. fn , ': ' , (": n) , ' finding(s), load=' , (": lok)
-    if. (0 = lok) *. -. (< fn) e. ENTRYPOINTS do.
+    line =. fin , ': ' , (": n) , ' finding(s), load=' , (": lok)
+    if. (0 = lok) *. -. (< fin) e. ENTRYPOINTS do.
       LINT_EXIT =: 1
       line =. line , '  <-- LOAD FAIL (gate)'
     end.

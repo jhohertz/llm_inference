@@ -460,8 +460,8 @@ chat_parse_tool_call =: 3 : 0
       args =. enc_pjson_ av
     end.
   end.
-  fn =. mkobj_minja_ ((('name') pair_minja_ (mkstr_minja_ name)) , (('arguments') pair_minja_ (mkstr_minja_ args)))
-  tc =. mkobj_minja_ ((('type') pair_minja_ (mkstr_minja_ 'function')) , (('function') pair_minja_ fn) , (('id') pair_minja_ (mkstr_minja_ ('call_' , name))))
+  fin =. mkobj_minja_ ((('name') pair_minja_ (mkstr_minja_ name)) , (('arguments') pair_minja_ (mkstr_minja_ args)))
+  tc =. mkobj_minja_ ((('type') pair_minja_ (mkstr_minja_ 'function')) , (('function') pair_minja_ fin) , (('id') pair_minja_ (mkstr_minja_ ('call_' , name))))
   tc
 )
 
@@ -618,9 +618,9 @@ chat_build_tool_msg =: 3 : 0
 NB. Execute one tool_call minja Value via chat_tool_fn_g -> <id ; result-string>.
 chat_exec_tool =: 3 : 0
   tc =. y
-  fn =. ('function') obj_get_minja_ tc
-  name =. payload_minja_ ('name') obj_get_minja_ fn
-  args =. payload_minja_ ('arguments') obj_get_minja_ fn
+  fin =. ('function') obj_get_minja_ tc
+  name =. payload_minja_ ('name') obj_get_minja_ fin
+  args =. payload_minja_ ('arguments') obj_get_minja_ fin
   id =. payload_minja_ ('id') obj_get_minja_ tc
   res =. chat_tool_fn_g (name ; args)
   (<id) , <res

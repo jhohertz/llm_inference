@@ -50,7 +50,7 @@ respbody =: 3 : 0
   cm  =. >1{ y
   cr  =. >2{ y
   ct  =. >3{ y
-  fn  =. >4{ y
+  fin  =. >4{ y
   tcs =. >5{ y
   NB. message object
   if. 0 < # tcs do.
@@ -65,7 +65,7 @@ respbody =: 3 : 0
     msg =. mk ,: mv
   end.
   ck =. ('index';'message';'logprobs';'finish_reason')
-  cv =. (0;msg;'json_null';fn)
+  cv =. (0;msg;'json_null';fin)
   ch =. ck ,: cv
   A =. 1 $ <ch
   uk =. ('prompt_tokens';'completion_tokens';'total_tokens')

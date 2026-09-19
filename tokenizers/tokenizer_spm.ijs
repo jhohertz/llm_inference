@@ -14,6 +14,7 @@ NB. (SPM default add_space_prefix=true; matches llama.cpp line 3336).
 NB. Depends on: llm_core.ijs (template_markers/split_specials), gguf.ijs
 NB. ================================================================
 coclass 'inference'
+require 'data/dict'   NB. jsymbol (symbol datatype replaced the s: foreign in J9.8)
 require 'llm/inference/util/llm_core'
 require 'llm/inference/gguf/gguf'
 
@@ -25,21 +26,26 @@ spm_llm_tokenizer =: >@(3&{)
 
 NB. ---- Build tokenizer from GGUF KV pairs ----
 NB. y = kv_result = <kvs_flat; raw_bytes; count; kv_end_offset>
-NB. Container (10 items):
-NB.   <vocab; bos; eos; tk_len; sym; scores; sym_sorted; tok_sorted; specials; pre>
+NB. Container (9 items):
+NB.   <vocab; eos; sym; scores; sym_sorted; tok_sorted; specials; pre; sym_dict>
 build_spm_tokenizer =: 3 : 0
   kvs =. > 0 { y
   raw =. > 1 { y
   vocab =. 'tokenizer.ggml.tokens' kv_string_array (<kvs) , (<raw)
   if. 0 = # vocab do.
-    return. (<'' , <0 , <'' , <'' , <'' , <'' , <'' , <'')
+    return. (<'' , <0 , <'' , <'' , <'' , <'' , <'' , <'' , <''
   end.
   eos_id =. 'tokenizer.ggml.eos_token_id' kv_uint (<kvs) , (<raw)
   if. eos_id <: 0 do. eos_id =. 2 end.
   tk_len =. # vocab
   scores =. 'tokenizer.ggml.scores' kv_array (<kvs) , (<raw)
   if. 0 = # scores do. scores =. tk_len $ 0 end.
-  sym =. s: vocab
+  NB. initcapacity must exceed puts — the dict addon's resize (16!:_8) is
+  NB. broken in j9.8-beta. Size above the vocab count so we never resize.
+  sd =. ('hash' ; <((('keytype') ; 'boxed') ,: (('initcapacity') ; (2 * # vocab)))) conew 'jsymbol'
+  put__sd vocab
+  sym =. get__sd vocab
+  spm_sym_dict_g =: sd   NB. global dict for spm_lookup (a list+object can't combine via ;/,)
   ord =. /: sym
   sym_sorted =. ord { sym
   tok_sorted =. ord { i. tk_len
@@ -49,7 +55,7 @@ build_spm_tokenizer =: 3 : 0
   specials =. template_markers tmpl
   specials =. specials #~ specials e. vocab
   pre =. 'tokenizer.ggml.pre' kv_string (<kvs) , (<raw)
-  (<vocab) , (<eos_id) , (<sym) , (<scores) , (<sym_sorted) , (<tok_sorted) , (<specials) , (<pre)
+  (<vocab) , (<eos_id) , (<sym) , (<scores) , (<sym_sorted) , (<tok_sorted) , (<specials) , (<pre) , <sd
 )
 
 NB. ---- Tokenizer field accessors ----
@@ -63,6 +69,7 @@ spm_sym_sorted =: >@(4&{)
 spm_tok_sorted =: >@(5&{)
 spm_specials   =: >@(6&{)
 spm_pre        =: >@(7&{)
+spm_sym_dict   =: >@(8&{)  NB. jsymbol dict for runtime symbol lookup
 
 NB. ---- Split string into UTF-8 codepoints (boxed) ----
 spm_chars =: 3 : 0
@@ -103,10 +110,12 @@ spm_escape =: 3 : 0
 
 NB. ---- Lookup token id for an exact piece (sorted-symbol binary search) ----
 NB. x = <sym_sorted; tok_sorted>, y = piece string. Returns id or _1.
+NB. The jsymbol dict is a global (spm_sym_dict_g) set at build time.
 spm_lookup =: 4 : 0
   sym_sorted =. > 0 { x
   tok_sorted =. > 1 { x
-  si =. s: <y
+  sd =. spm_sym_dict_g
+  si =. get__sd <y
   lo =. 0
   hi =. # sym_sorted
   found =. 0
@@ -222,6 +231,7 @@ spm_tokenize =: 3 : 0
   text =. spm_input_text y
   tokenizer =. spm_llm_tokenizer llm_data
   specials =. spm_specials tokenizer
+  sd =. spm_sym_dict tokenizer
   if. 0 < # specials do.
     segs =. specials split_specials text
   else.
@@ -233,7 +243,7 @@ spm_tokenize =: 3 : 0
   while. si < # segs do.
     seg =. > si { segs
     if. (specials i. <seg) < # specials do.
-      tokens =. tokens , <(spm_sym tokenizer) i. s: <seg
+      tokens =. tokens , <(spm_sym tokenizer) i. get__sd <seg
       is_prev_special =. 1
     else.
       if. is_prev_special do.
