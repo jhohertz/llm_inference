@@ -12,10 +12,10 @@ NB. Use: load this, then  lint_all_z_ ''   -> prints report, sets LINT_EXIT_z_
 coclass 'inference'
 require 'tmcguire/jlinter'
 
-ENTRYPOINTS =: 'llm_cli.ijs';'chat_launch.ijs'
+ENTRYPOINTS =: 'llm_cli.ijs';'chat_launch.ijs';'chat_tui.ijs';'http/run.ijs'
 
 NB. Runtime files (the addon's installed ITEMS — same set as install_local.sh)
-RUNTIME =: 'manifest.ijs';'inference.ijs';'gguf_dump.ijs';'llm_cli.ijs';'chat_launch.ijs';'models/gemma3.ijs';'models/llama.ijs';'models/granite.ijs';'models/qwen2.ijs';'models/qwen3.ijs';'models/qwen35.ijs';'models/ernie.ijs';'models/lfm2.ijs';'tokenizers/tokenizer_llama3.ijs';'tokenizers/tokenizer_gpt2.ijs';'tokenizers/tokenizer_spm.ijs';'kernels/jfloat.ijs';'gguf/gguf.ijs';'gguf/quant.ijs';'gguf/quant_tables.ijs';'util/kv_cache.ijs';'util/llm_core.ijs';'util/sampler.ijs';'util/chat.ijs';'util/models.ijs';'util/llmobj.ijs';'util/minja.ijs';'util/chat_template.ijs'
+RUNTIME =: 'manifest.ijs';'inference.ijs';'gguf_dump.ijs';'llm_cli.ijs';'chat_launch.ijs';'chat_tui.ijs';'models/gemma3.ijs';'models/llama.ijs';'models/granite.ijs';'models/qwen2.ijs';'models/qwen3.ijs';'models/qwen35.ijs';'models/ernie.ijs';'models/lfm2.ijs';'tokenizers/tokenizer_llama3.ijs';'tokenizers/tokenizer_gpt2.ijs';'tokenizers/tokenizer_spm.ijs';'kernels/jfloat.ijs';'gguf/gguf.ijs';'gguf/quant.ijs';'gguf/quant_tables.ijs';'util/kv_cache.ijs';'util/llm_core.ijs';'util/sampler.ijs';'util/chat.ijs';'util/models.ijs';'util/llmobj.ijs';'util/minja.ijs';'util/chat_template.ijs';'util/vt.ijs';'http/protocol.ijs';'http/builders.ijs';'http/server.ijs'
 
 LINT_EXIT =: 0
 
@@ -24,11 +24,11 @@ lint_all =: 3 : 0
   out =. out , '--- runtime files (lint + load-probe gate) ---' , LF
   i =. 0
   while. i < # RUNTIME do.
-    fn =. > i { RUNTIME
-    'ems lok lmsg' =. lint_file_jlinter_ < fn
+    fin =. > i { RUNTIME
+    'ems lok lmsg' =. lint_file_jlinter_ < fin
     n =. # ems
-    line =. fn , ': ' , (": n) , ' finding(s), load=' , (": lok)
-    if. (0 = lok) *. -. (< fn) e. ENTRYPOINTS do.
+    line =. fin , ': ' , (": n) , ' finding(s), load=' , (": lok)
+    if. (0 = lok) *. -. (< fin) e. ENTRYPOINTS do.
       LINT_EXIT =: 1
       line =. line , '  <-- LOAD FAIL (gate)'
     end.

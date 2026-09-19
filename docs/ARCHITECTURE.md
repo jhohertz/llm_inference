@@ -1,7 +1,7 @@
 # LLM in J — Architecture Reference
 
 This document preserves the architecture and design details of the GGUF-based
-language model inference engine written in J (J9.7). It is a reference for
+language model inference engine written in J (J9.8). It is a reference for
 implementing new model architectures and debugging. For operational guidance
 (file map, J gotchas, performance idioms) see **AGENTS.md**. For status and
 roadmap see **PLAN.md**.
@@ -99,7 +99,7 @@ tds =. 32 * <. (kv_end + (#ti) + 31) % 32
 
 ## Numeric Representation & F16/BF16 Decode
 
-J9.7 has NO native float32 type; only float64 (8) and complex (16) exist. All
+J9.8 has NO native float32 type; only float64 (8) and complex (16) exist. All
 GGUF numeric decoding goes through the native verbs — **never DIY IEEE 754**:
 
 - `3!:5` dyad: `_1(3!:5)` 4 chars → float32, `_2(3!:5)` 8 chars → float64.
@@ -647,6 +647,45 @@ there are no bespoke per-arch prompt verbs anymore.
   tokenizer-owned (llama3/gemma prepend bos; their templates omit the
   `<|begin_of_text|>` marker), so the token stream matches llama.cpp exactly.
 - **Stop tokens stay per-arch** (from the vocab), untouched by the template.
+
+## HTTP Server (`http/`)
+
+A network OpenAI-compatible server in `http/` — `server.ijs` (driver +
+event loop), `protocol.ijs` (pure HTTP/1.1 framing/parse/build, NO socket
+calls), `builders.ijs` (OpenAI JSON/SSE body builders). Runs in the
+**inference** locale (`+ coinsert 'jsocket'`) so the streaming callback
+(`chat_cb_g -> sse_sender`) and `chat_completion` resolve where
+`chat_stream_cb` CALLS them (mirrors the TUI locale fix). `scripts/llm_server.sh`
+is the launcher; `http/run.ijs` is the entry point.
+
+- **Concurrency model (from the handoff, proven)**: every socket is
+  NON-BLOCKING (`sdcheck sdioctl fd,FIONBIO,1`). The event loop is
+  `z=: sdcheck sdselect FSET;FSET;FSET;200` — sdcheck drops the status cell →
+  `<read;write;error>`; READ fds at cell 0. One op per ready fd per cycle:
+  listener → `sdaccept`, conn → `sdrecv` (4096) accumulated in `CBF` until
+  `h11_complete`. `sdaccept` → `<0;newfd>` | `<11;''>` EAGAIN; `sdrecv` →
+  `<0;DATA>` | `<0;''>` EOF | `<11;''>` EAGAIN. Inspect error codes directly
+  (never block).
+- **Endpoints**: POST `/v1/chat/completions` (plain JSON via `respbody`, or
+  streamed SSE via `chat_stream_cb` → `sse_sender` → `frame_*`), GET `/v1/models`
+  (`v1_models`), GET `/` (status line). `finish` sends the response, closes,
+  deregisters (`rmconn`).
+- **J gotcha — `sdclose` is BROKEN in this jsocket build**: its `0=res
+  closesocketJ <y` passes a BOXED arg to the libc close foreign (15!:0), which
+  domain-errors, so every `sdclose` crashes the event loop after a response.
+  `closefd` (server.ijs) calls the libc close directly with the UNBOXED fd
+  (`'"libc.so.6" close i i'&(15!:0) y`), then `rmconn` deregisters separately.
+- **J gotcha — `res=:` clobbers jsocket's `res` verb**: `sdselect` uses
+  `_1=res q=.selectJ(...)` where `res` is jsocket's global verb (`res=: >@:{.`).
+  The server's handlers must NOT use the global name `res` (the old
+  `res=: LLM chat_completion ...` overwrote the verb with a noun → the next
+  `sdselect` syntax-errors "unexecutable fragment (noun noun)" and the loop
+  crashes). The handlers use `cres=:` instead.
+- **Builder gotcha**: convert/json needs each value cell EXPLICITLY boxed with
+  `<` (`b1=. <MODEL` ... `v=. b1,b2,b3,b4`), NOT a `;`-chained boxed list —
+  `MODEL ; 'model'` boxes each cell, then appending a scalar re-boxes the whole
+  list (nested), so `enc_json` drops/coerces the last cell (e.g. `owned_by` 0).
+  Contract-tested in `tests/j/test_http_server.ijs`.
 
 ## Per-Architecture Notes
 

@@ -21,7 +21,8 @@ if [ -n "${JINSTALL:-}" ]; then
 fi
 
 # Dot-version installs: ~/j9.6, ~/j9.7, ~/j9.8 ...
-for d in $(ls -d "$HOME"/j9.* 2>/dev/null | sort -V); do
+# Pick the HIGHEST version that has a console binary (descending sort).
+for d in $(ls -d "$HOME"/j9.* 2>/dev/null | sort -V -r); do
   if [ -x "$d/bin/jconsole" ]; then
     echo "$d"
     exit 0
@@ -29,7 +30,7 @@ for d in $(ls -d "$HOME"/j9.* 2>/dev/null | sort -V); do
 done
 
 # Legacy numeric installs: ~/j903, ~/j807 ...
-for d in $(ls -d "$HOME"/j9* 2>/dev/null | sort -V); do
+for d in $(ls -d "$HOME"/j9* 2>/dev/null | sort -V -r); do
   if [ -x "$d/bin/jconsole" ]; then
     echo "$d"
     exit 0

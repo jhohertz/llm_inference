@@ -4,6 +4,7 @@ NB. ================================================================
 
 NB. ---- ASCII helpers ----
 coclass 'inference'
+require 'data/dict'   NB. jsymbol (symbol datatype replaced the s: foreign in J9.8)
 is_letter =: 3 : 0
   b =. y
   ((b <: 90) *. b > 64) +. (b <: 122) *. b > 96
@@ -175,34 +176,40 @@ build_llama3_tokenizer =: 3 : 0
   if. eos_id <: 0 do. eos_id =. 2 end.
   
   
-  NB. Build symbols for fast O(1)-ish hash lookup (s: uses a global symbol table;
-  NB. no 64K limit — handles 262k+ vocab). Store in tokenizer index 3.
-  sym =. s: vocab
+  NB. Build symbols for fast lookup. J9.8 removed the s: foreign; the
+  NB. jsymbol dict addon replaces it. initcapacity is sized above the vocab
+  NB. count because the dict addon's resize path is broken in j9.8-beta —
+  NB. resizing crashes (16!:_8), so we must never exceed initcapacity.
+  NB. sym = symbol numbers in vocab order; sd = the dict (index 5 for lookups).
+  sd =. ('hash' ; <((('keytype') ; 'boxed') ,: (('initcapacity') ; (2 * # vocab)))) conew 'jsymbol'
+  put__sd vocab
+  sym =. get__sd vocab
   
   NB. Store as 6-element boxed container:
-  NB. [vocab; bos_token_id; tk_len; sym; eos_token_id; specials]
+  NB. [vocab; bos_token_id; sym; eos_token_id; specials; sym_dict]
   vb =. <vocab
   bb =. <bos_id
-  tb =. <tk_len
   sb =. <sym
   eb =. <eos_id
   NB. Special tokens: markers used by the model's chat template (llama.cpp
   NB. splits on specials via tokenizer.ggml.token_type; we scope to the
-  NB. template's markers to keep tokenize fast). Store at index 5.
+  NB. template's markers to keep tokenize fast). Store at index 4.
   tmpl =. 'tokenizer.chat_template' kv_string (<kvs) , (<raw)
   specials =. template_markers tmpl
   specials =. specials #~ specials e. vocab   NB. keep only real vocab entries
   sp =. <specials
-  vb , bb , sb , eb , sp
+  sd2 =. <sd
+  vb , bb , sb , eb , sp , sd2
 )
 
 NB. ---- Tokenizer field accessors ----
-NB. tokenizer = [vocab; bos_token_id; tk_len; sym; eos_token_id; specials]
+NB. tokenizer = [vocab; bos_token_id; sym; eos_token_id; specials; sym_dict]
 tokenizer_vocab     =: >@(0&{)  NB. unbox vocab
 tokenizer_bos_token =: >@(1&{)  NB. unbox BOS token ID
-tokenizer_sym       =: >@(2&{)  NB. symbols for hash lookup
+tokenizer_sym       =: >@(2&{)  NB. symbol numbers for hash lookup (vocab order)
 tokenizer_eos       =: >@(3&{)  NB. unbox EOS token ID
 tokenizer_specials  =: >@(4&{)  NB. special-token marker strings (boxed)
+tokenizer_sym_dict  =: >@(5&{)  NB. jsymbol dict for runtime symbol lookup
 
 NB. ---- Input accessors for tokenize/detokenize ----
 NB. Both functions receive y = <llm; data> where data is either text or token list
@@ -222,6 +229,7 @@ llama3_tokenize =: 3 : 0
   vocab =. tokenizer_vocab tokenizer
   bos_token =. tokenizer_bos_token tokenizer
   sym =. tokenizer_sym tokenizer
+  sd =. tokenizer_sym_dict tokenizer
   specials =. tokenizer_specials tokenizer
   
   NB. Split out special-token markers (chat template markers) first; tokenize
@@ -237,7 +245,7 @@ llama3_tokenize =: 3 : 0
   while. si < # segs do.
     seg =. > si { segs
     if. (specials i. <seg) < # specials do.
-      tokens =. tokens , <(sym i. s: <seg)
+      tokens =. tokens , <(sym i. get__sd <seg)
     else.
       pieces =. llama3_pre_tokenize seg
       i =. 0
@@ -252,12 +260,12 @@ llama3_tokenize =: 3 : 0
           NB. like " The" must look up directly. Fall back to the ▁ form
           NB. (SentencePiece convention, e.g. gemma) only when the raw piece
           NB. is absent from the vocab. Byte fallback as a last resort.
-          found_idx =. sym i. s: <piece
+          found_idx =. sym i. get__sd <piece
           if. found_idx < # sym do.
             tokens =. tokens , <found_idx
           elseif. ' ' = {. piece do.
             target =. '▁' , (1 }. piece)
-            found_idx =. sym i. s: <target
+            found_idx =. sym i. get__sd <target
             if. found_idx < # sym do.
               tokens =. tokens , <found_idx
             else.

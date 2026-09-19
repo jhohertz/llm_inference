@@ -267,7 +267,8 @@ Measurement: `6!:2` (time) / `7!:0` + `7!:2` (space). The J Performance Monitor
 (`load 'jpm'`; `$JINSTALL/system/util/pm.ijs`, locale `jpm`, NOT auto-loaded)
 profiles named explicit verbs line-by-line. Console API: `start_jpm_ ''`
 (SIZE=1e9 on 64-bit) → run → `showtotal_jpm_ ''` (summary) /
-`showdetail_jpm_ ''` (per-line). `viewtotal_jpm_` (GUI) is gone in J9.7.
+`showdetail_jpm_ ''` (per-line). `viewtotal_jpm_` (GUI) is gone since J9.7
+(we run J9.8 — still absent).
 **NEVER call `stop_jpm_ ''` before `showtotal_jpm_ ''`** — it resets the tracing
 buffer and `read` reports "no PM records"; `read` stops tracing itself
 (start → run → showtotal). Trace overhead inflates `6!:2` numbers; heavy suites
@@ -601,6 +602,49 @@ memory-bound); N=64 ≈ 65 GFLOP/s; N=256 ≈ 145 GFLOP/s. Consequences:
 **NEVER call `stop_jpm_ ''` before `showtotal_jpm_ ''`** — it resets the
 tracing buffer and `read` reports "no PM records"; `read` stops tracing itself
 (start → run → showtotal).
+
+## J9.8 Migration & Version Notes
+
+**We run J9.8 fully now** (`~/j9.8`; `jfind.sh` discovers it). Earlier versions
+(J9.7 and below) are NOT used — the addon targets J9.8 only. Migration commit
+"Move to J9.8": `jsymbol` replaces `s:` (symbols), dict `initcapacity`, and
+GGUF slicing uses index-lists. When writing/debugging J code, target J9.8
+semantics, not J9.7.
+
+New gotchas hit on J9.8 (addon + jsocket HTTP server):
+
+- **`13{a. , 10{a.}` is CR, NOT CRLF (right-to-left).** It parses as
+  `13 { (a. , 10{a.})` = CR only (1 char), because `,` binds to `a.` first.
+  Build CRLF from named globals (`CR =: 13{a.`; `LF =: 10{a.}`; `CRLF =: CR , LF`)
+  or use a prebuilt constant — never inline the comma form.
+- **`-:` is SHAPE-ONLY comparison** — `'user' -: <'user'` is 0 (shape 4 vs 1);
+  unbox before comparing boxed cells (`'user' -: > 0 { ...`).
+- **`E.` returns a BOOLEAN MASK, not a scalar.** `x E. y` is a 0/1 list; a
+  bare `if. mask` reduces with `*./` (all-true required) and fails on a sparse
+  match. Use the `1 e.` guard: `1 e. needle E. haystack`.
+- **convert/json needs each value cell EXPLICITLY boxed with `<`.**
+  `('id';'object') ,: ('a';'b')` works (key/value cells boxed by `;`), but a
+  `;`-chained row with a scalar (`MODEL ; 'model' ; created_now '' ; 'j'`)
+  re-boxes the whole list into a nested cell (the scalar is incompatible with
+  the boxed list), so `enc_json` drops/coerces the last cell. Build values as
+  `b1=. <MODEL` ... `v=. b1,b2,b3,b4` (explicit `<` per cell, `,` to append).
+- **`;` on two char arrays BOXES each** (empirical on this build) rather than
+  concatenating — `MODEL ; 'model'` is `(<MODEL> ; <'model'>)`, not a single
+  string. Use `,` (append) for char concatenation; `;` only when you want a
+  boxed list.
+- **jsocket `sdclose` is BROKEN on this build**: its `0=res closesocketJ <y`
+  passes a BOXED arg to the libc close foreign (15!:0), which domain-errors,
+  so every `sdclose` crashes the event loop. Call the libc close directly with
+  the unboxed fd (`'"libc.so.6" close i i'&(15!:0) y`), then deregister
+  (`rmconn`) separately.
+- **Global `res=:` clobbers jsocket's `res` verb.** `sdselect` uses
+  `_1=res q=.selectJ(...)` where `res` is jsocket's global verb (`res=: >@:{.`).
+  A server handler assigning `res=: <noun>` overwrites that verb with a noun →
+  the next `sdselect` syntax-errors ("unexecutable fragment (noun noun)") and
+  the event loop crashes. Avoid the global name `res` in jsocket-using scripts.
+- **Foreigns `6!:16`/`6!:17` (unix-time conversion/format) FAIL** on this build
+  (monadic ISO, date-only, and `sfe` on 0 all error) — use manual calendar math
+  or an ISO-string helper instead of these foreigns.
 
 ## J Idiom Reference — where the deep material lives
 

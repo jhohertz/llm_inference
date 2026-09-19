@@ -45,7 +45,10 @@ test_tokenize =: 3 : 0
   echo ''
   echo '--- Full tokenizer ---'
   vocab =. (<'Hello') , (<'world') , (<'test') , (<'!') , (<'end')
-  tokenizer =. (<vocab) , (<1) , (<s: vocab) , (<2) , (<'')
+  sd =. ('hash' ; <('keytype' ; 'boxed')) conew 'jsymbol'
+  put__sd vocab
+  sym =. get__sd vocab
+  tokenizer =. (<vocab) , (<1) , (<sym) , (<2) , (<'') , <sd
   llm =. mk_llm tokenizer
 
   tokens =. llama3_tokenize (<llm) , <'Hello world'
@@ -67,7 +70,10 @@ test_detokenize =: 3 : 0
   echo ''
   echo '--- Detokenizer ---'
   vocab =. (<'Hello') , (<'world') , (<'!')
-  tokenizer =. (<vocab) , (<0) , (<s: vocab) , (<2) , (<'')
+  sd =. ('hash' ; <('keytype' ; 'boxed')) conew 'jsymbol'
+  put__sd vocab
+  sym =. get__sd vocab
+  tokenizer =. (<vocab) , (<0) , (<sym) , (<2) , (<'') , <sd
   llm =. mk_llm tokenizer
 
   tokens =. <0 1 2
@@ -90,7 +96,10 @@ test_roundtrip =: 3 : 0
   echo ''
   echo '--- Round-trip ---'
   vocab =. (<'Hello') , (<'world') , (<'!') , (<'test')
-  tokenizer =. (<vocab) , (<1) , (<s: vocab) , (<2) , (<'')
+  sd =. ('hash' ; <('keytype' ; 'boxed')) conew 'jsymbol'
+  put__sd vocab
+  sym =. get__sd vocab
+  tokenizer =. (<vocab) , (<1) , (<sym) , (<2) , (<'') , <sd
   llm =. mk_llm tokenizer
 
   original =. 'Hello world!'

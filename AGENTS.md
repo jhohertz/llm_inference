@@ -6,7 +6,7 @@ status, roadmap, and the jforc chapter reviews see **PLAN.md**.
 
 ## Overview
 
-Generic GGUF-based language model inference in J (J9.7), multi-model.
+Generic GGUF-based language model inference in J (J9.8), multi-model.
 A model-agnostic GGUF parser loads weights; each architecture has its own
 module (`models/gemma3.ijs`, `models/llama.ijs`, `models/granite.ijs`, `models/qwen2.ijs`, `models/qwen3.ijs`) implementing the
 forward pass. Inference logits are verified exact vs `llama-cpp-python`.
@@ -54,7 +54,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `util/minja.ijs` | **minja port (Phase 5, DONE)**: Python-like Value model + Context, `coclass 'minja'` (self-contained, lift-out-able). Port of `reference/minja/include/minja/minja.hpp`. Full test-syntax.cpp parity; oracle = minja test-syntax.cpp, cross-check = Python jinja2 via `scripts/minja_goldens.py` |
 | `util/chat_template.ijs` | **chat-template port (Phase 5G, DONE, wired into chat.ijs)**: HuggingFace messages/tools→prompt layer, `coclass 'chat_template'`, depends on `util/minja.ijs`. Port of `reference/minja/include/minja/chat-template.hpp`. `chat_tmpl_render` (util/chat.ijs) drives `ct_apply`; engine complete (capability detection, polyfills, strftime_now) |
 | `scripts/minja_goldens.py` | **minja golden generator**: batch Python-jinja2 oracle (adapted from reference/minja/scripts/render.py) — `cases.json goldens.json` |
-| `scripts/jfind.sh` | Discover the J runtime dir in `$HOME` (`~/j9.x`, e.g. `~/j9.7`); prints the install dir |
+| `scripts/jfind.sh` | Discover the J runtime dir in `$HOME` (`~/j9.x`, e.g. `~/j9.8`); prints the install dir |
  | `scripts/install_local.sh` | Dev workflow: copy FILES into the discovered J runtime's addons dir (`$JINSTALL/addons/llm/inference/`, jlinter-style) |
  | `scripts/lint.sh` | **jlinter wrapper**: lint the checkout's runtime `.ijs` files via `tmcguire/jlinter` (headless `debug/lint`). Exits non-zero if a runtime file FAILS TO LOAD (real syntax/load regression — the load-probe gate). Requires `addons/tmcguire/jlinter` installed (JAL) + `install_local.sh` for load-probing. |
  | `tests/j/lint_all.ijs` | jlinter driver: lint + load-probe the runtime files; `lint_all_z_ ''` prints the report and sets `LINT_EXIT_z_`. Test files excluded (debug/lint loads them, and they run suites on load); `llm_cli.ijs`/`chat_launch.ijs` are entry-points (load=0 expected, not gated). |
@@ -67,7 +67,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 ./scripts/install_local.sh --force
 
 # Quick test (run from the checkout root; jfind.sh discovers the J runtime)
-J="$(./scripts/jfind.sh)"   # e.g. /home/me/j9.7
+J="$(./scripts/jfind.sh)"   # e.g. /home/me/j9.8
 "$J/bin/jconsole" << 'EOFILE'
 load 'llm/inference'
 llm =. load_gguf_to_llm_inference_ 'gemma-3-270m-it'
@@ -81,12 +81,17 @@ EOFILE
 **ALWAYS re-run `./scripts/install_local.sh --force` after editing any checkout file before running tests** — `tests/j/*.ijs` load the checkout `inference.ijs` but its `require 'llm/inference/...'` resolves to the INSTALLED addon (`~addons`), not the checkout. Tests exercise the installed copy; stale installs make tests look wrong.
 
 `scripts/jfind.sh` discovers the J runtime under `$HOME` (`~/j9.x`, e.g.
-`~/j9.7`) — override with `$JINSTALL`. The console wrapper
+`~/j9.8`) — override with `$JINSTALL`. The console wrapper
 `$JINSTALL/jconsole.sh` `cd`s to the J install dir, so run from the checkout
 root with `$JINSTALL/bin/jconsole` for `./`-relative paths; `require`/`load`
 with addon names (no `.ijs` extension) for library scripts.
 `scripts/llm.sh` / `chat.sh` / `gguf_dump.sh` derive paths from the checkout
 and discover J automatically.
+
+**We run J9.8 ONLY** — the addon targets J9.8 (jsymbol replaces `s:`, dict
+`initcapacity`, index-list GGUF slicing); earlier versions (J9.7 and below) are
+NOT used. Never target or test against J9.7. New J9.8 gotchas live in
+**@docs/J-KNOWLEDGE.md** ("J9.8 Migration & Version Notes").
 
 # Lint (jlinter / debug/lint)
 ```bash

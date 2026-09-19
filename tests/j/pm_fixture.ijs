@@ -11,7 +11,7 @@ NB. jpm lives in system (system/util/pm.ijs, locale 'jpm') but is NOT
 NB. auto-loaded in a fresh console — the fixture loads it once per session.
 NB. Console API: start_jpm_ <size>, showtotal_jpm_ '' (summary table),
 NB. showdetail_jpm_ '' (per-line detail). The old GUI viewtotal_jpm_
-NB. is gone in J9.7.
+NB. is gone since J9.7 (we run J9.8 — still absent).
 NB. ================================================================
 coclass 'inference'
 load 'jpm'

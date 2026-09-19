@@ -613,21 +613,13 @@ load_tdata =: 3 : 0
     raw =. 1!: 1 < path
   end.
   bpe =. etype_bpe etype
-  NB. Hybrid slice. The index-list (off + i. n) { raw allocates an n-int
-  NB. index vector + element fetch (~4.6ns/elem measured — the big
-  NB. embedding is 155M elems ≈ 0.72s). The take-of-drop n {. off }. raw
-  NB. instead copies the FILE TAIL (fs - off) — cheap for tensors near the
-  NB. END, catastrophic if used for every tensor (sums to ~130GB — the 20x
-  NB. regression). Use take-of-drop only when the tail copy is cheaper:
-  NB. tail < nbytes * 18 (bytes vs measured elem-cost) — the big early
-  NB. tensors (token_embd) and late small-tail tensors; index-list elsewhere.
+  NB. Slice. raw is a MEMORY-MAPPED array (pages fault in lazily). Never use
+  NB. the take-of-drop (n {. off }. raw): }. with a nonzero offset MATERIALIZES
+  NB. the whole file suffix — for the big early tensors that's a >2^31 array,
+  NB. which J9.8 rejects (lower array limit). Index-list fetch faults pages
+  NB. lazily and materializes only the slice.
   nbytes =. <. ne * bpe
-  tail =. (# raw) - file_off
-  if. tail < nbytes * 18 do.
-    slice =. nbytes {. file_off }. raw
-  else.
-    slice =. (file_off + i. nbytes) { raw
-  end.
+  slice =. (file_off + i. nbytes) { raw
 
   flat =. decode_tensor_flat (<etype) , (<ne) , <slice
   dims tensor_reshape flat

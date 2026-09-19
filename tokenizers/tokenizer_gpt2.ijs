@@ -5,6 +5,7 @@ NB. tokenizer.ggml.model = "gpt2" / "whitespace" / "hybriddna"
 NB. ================================================================
 coclass 'inference'
 require 'regex'
+require 'data/dict'   NB. jsymbol (symbol datatype replaced the s: foreign in J9.8)
 require 'llm/inference/gguf/gguf'
 require 'llm/inference/tokenizers/tokenizer_llama3'   NB. llama3_pre_tokenize (llama-bpe pre)
 
@@ -43,22 +44,28 @@ gpt2_build_tables =: 3 : 0
 
 NB. ---- Build tokenizer from GGUF KV pairs ----
 NB. y = kv_result = <kvs_flat; raw_bytes; count; kv_end_offset>
-NB. Returns 9-element boxed: <vocab; bos_id; eos_id; sym_vocab; sym_merges; cpt_tab; byte_tab; specials; pre>
+NB. Returns 10-element boxed: <vocab; bos_id; eos_id; sym_vocab; sym_merges; cpt_tab; byte_tab; specials; pre; sym_dict>
 build_gpt2_tokenizer =: 3 : 0
   kvs =. > 0 { y
   raw =. > 1 { y
   tk_tokens =. 'tokenizer.ggml.tokens' kv_string_array (<kvs) , (<raw)
   if. 0 = # tk_tokens do.
-    return. <'' , <0 , <0 , <'' , <'' , <'' , <'' , <'' , <''
+    return. <'' , <0 , <0 , <'' , <'' , <'' , <'' , <'' , <'' , <''
   end.
   vocab =. tk_tokens
   bos_id =. 'tokenizer.ggml.bos_token_id' kv_uint (<kvs) , (<raw)
   if. bos_id <: 0 do. bos_id =. 0 end.
   eos_id =. 'tokenizer.ggml.eos_token_id' kv_uint (<kvs) , (<raw)
   if. eos_id <: 0 do. eos_id =. 2 end.
-  sym_vocab =. s: vocab
   merges =. 'tokenizer.ggml.merges' kv_string_array (<kvs) , (<raw)
-  sym_merges =. s: merges
+  NB. initcapacity must exceed puts — the dict addon's resize (16!:_8) is
+  NB. broken in j9.8-beta. Size above vocab+merges so we never resize.
+  sd =. ('hash' ; <((('keytype') ; 'boxed') ,: (('initcapacity') ; (2 * ((# vocab) + (# merges)))))) conew 'jsymbol'
+  put__sd vocab
+  put__sd merges
+  sym_vocab =. get__sd vocab
+  sym_merges =. get__sd merges
+  sym_dict_g =: sd   NB. global dict for gpt2_merge (a list+object can't be combined via ;/,)
   tables =. gpt2_build_tables 0
   cpt_tab =. > 0 { tables
   byte_tab =. > 1 { tables
@@ -82,7 +89,8 @@ build_gpt2_tokenizer =: 3 : 0
   NB. module covers both SmolLM2 (pre 'smollm') and Llama-3.2 (pre 'llama-bpe').
   pre =. 'tokenizer.ggml.pre' kv_string (<kvs) , (<raw)
   pr =. <pre
-  vb , bb , eb , sv , sm , ct , bt , sp , pr
+  sd2 =. <sd
+  vb , bb , eb , sv , sm , ct , bt , sp , pr , sd2
 )
 
 NB. ---- Tokenizer field accessors ----
@@ -95,6 +103,7 @@ tokenizer_cpt      =: >@(5&{)   NB. byte->codepoint table
 tokenizer_byte     =: >@(6&{)   NB. codepoint->byte table
 tokenizer_specials_g =: >@(7&{)  NB. special-token marker strings (boxed)
 tokenizer_pre_g      =: >@(8&{)  NB. pre-tokenizer name ('llama-bpe' or gpt2-style)
+tokenizer_sym_dict_g =: >@(9&{)  NB. jsymbol dict for runtime symbol lookup
 
 NB. ---- Input accessors ----
 input_llm  =: >@(0&{)
@@ -134,8 +143,11 @@ gpt2_map_bytes =: 4 : 0
 )
 
 NB. ---- BPE merge: greedily merge lowest-rank adjacent pairs ----
-NB. x = sym_merges (s: of merges, rank = index), y = boxed list of char strings
+NB. x = sym_merges (merge symbol numbers), y = boxed list of char strings.
+NB. The jsymbol dict is a global (sym_dict_g) set at build time.
 gpt2_merge =: 4 : 0
+  merges =. x
+  sd =. sym_dict_g
   syms =. y
   n =. # syms
   while. 1 < n do.
@@ -146,8 +158,8 @@ gpt2_merge =: 4 : 0
       l =. > i { syms
       r =. > (i+1) { syms
       merge_str =. l , ' ' , r
-      idx =. x i. s: <merge_str
-      if. idx < # x do.
+      idx =. merges i. get__sd <merge_str
+      if. idx < # merges do.
         if. idx < bestr do.
           bestr =. idx
           best =. i
@@ -217,6 +229,7 @@ gpt2_tokenize =: 3 : 0
   tokenizer =. llm_tokenizer llm_data
   sym_vocab =. tokenizer_symv tokenizer
   sym_merges =. tokenizer_symm tokenizer
+  sd =. tokenizer_sym_dict_g tokenizer
   cpt_tab =. tokenizer_cpt tokenizer
   byte_tab =. tokenizer_byte tokenizer
   specials =. tokenizer_specials_g tokenizer
@@ -234,7 +247,7 @@ gpt2_tokenize =: 3 : 0
   while. si < # segs do.
     seg =. > si { segs
     if. (specials i. <seg) < # specials do.
-      tokens =. tokens , <(sym_vocab i. s: <seg)
+      tokens =. tokens , <(sym_vocab i. get__sd <seg)
     else.
       NB. Pre-tokenizer dispatch: llama-bpe (Llama-3.2), dbrx (Granite) and
       NB. lfm2 (LFM2) all use the llama3 regex pre; SmolLM2/Qwen use the gpt2
@@ -255,7 +268,7 @@ gpt2_tokenize =: 3 : 0
           j =. 0
           while. j < # syms do.
             ss =. > j { syms
-            idx =. sym_vocab i. s: <ss
+            idx =. sym_vocab i. get__sd <ss
             if. idx < # sym_vocab do.
               tokens =. tokens , <idx
             else.
@@ -263,7 +276,7 @@ gpt2_tokenize =: 3 : 0
               k =. 0
               while. k < # c2 do.
                 cs =. > k { c2
-                i2 =. sym_vocab i. s: <cs
+                i2 =. sym_vocab i. get__sd <cs
                 if. i2 < # sym_vocab do. tokens =. tokens , <i2
                 else. tokens =. tokens , <0
                 end.
