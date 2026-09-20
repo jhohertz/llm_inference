@@ -28,9 +28,11 @@ against the upstream llama-3.1 tool_use golden).
 Full done-work detail is recorded in **docs/HISTORICAL.md**; the remaining
 planned work is **Phase 6 (streaming OpenAI-compatible chat API + our own chat
 TUI)** — items 1-4 + tool-use loop are DONE, including the **stateful TUI
-(item 4: KV-cache-resume chat loop)**; the network HTTP server is deferred
-(separate agent). Phase 4 (engineering stretch, low priority) plus a few open
-items below. The jpi fork was abandoned (2026-09).
+(item 4: KV-cache-resume chat loop)**; the **network HTTP server is DONE**
+(`http/`: POST `/v1/chat/completions` plain + SSE, GET `/v1/models`, non-blocking
+jsocket loop; contract-tested in `tests/j/test_http_server.ijs`). Phase 6 is
+COMPLETE. Phase 4 (engineering stretch, low priority) plus a few open items
+below. The jpi fork was abandoned (2026-09).
 
 ## Roadmap — Planned Work
 
@@ -149,7 +151,7 @@ SSE server.
    (`chat_resume_count` increments, `chat_fallback_count` 0), stream==batch on
    resume AND fresh, 2-turn context-aware TUI via pty, /reset clears.
    test_chat_session.ijs Section 3 (chat_core_stream pin/resume/stream/reset).
-   Phase 6 is now COMPLETE except the deferred HTTP server.
+   Phase 6 is COMPLETE (HTTP server DONE — see below).
 
 **Progress (2026-09).**
 - **jpi checkouts removed** (`reference/jpi`, `jpi_local/`); the fd-fixed
@@ -277,6 +279,20 @@ SSE server.
   that `sdselect` depends on (renamed to `cres=:`). Contract-tested in
   `tests/j/test_http_server.ijs`; the live loop is verified by
   `scripts/llm_server.sh`.
+- **Broadcastly adverb (arXiv:2609.16064) — DONE.** Ported into
+  `kernels/jfloat.ijs` (NumPy-style broadcasting via verb rank, from
+  `reference/broadcastly.ijs`), verified against the paper's example +
+  broadcast pairs + rejection, tested in `test_kernels.ijs` (32/32), documented
+  in `docs/J-KNOWLEDGE.md` ("Broadcasting via Verb Rank"). **Measured
+  (benchmark):** a modest win on LARGE broadcast-multiply (~1.4x at 256×8192 —
+  Broadcastly avoids materializing the replicated vector that J's `$` copies),
+  but equal-or-slower on the small per-layer broadcasts we actually do
+  (`rms_norm_rows` ~1.05x/noisy, rope cos/sin ~4x slower — J's `$` is
+  special-coded). Also **rejected for correctness**: Broadcastly's
+  rms_norm_rows changed the result (off by sqrt(row_len)). So it's kept as an
+  available tool, NOT wired into the hot kernels — the manual `$`/outer-product
+  broadcasts are already optimal for our shapes. Revisit only if large-batched
+  projections appear.
 
 ## Open items
 
@@ -293,6 +309,10 @@ Deferred ideas about applying an idiom to *our* code are kept here:
   (e.g. piece accumulation in a tokenizer) where space is not a concern; the
   generation loop stays a `while.` because it carries per-step KV tensors too
   large to materialize looplessly.
+- **`Broadcastly` (verb-rank broadcasting) — DONE, available.** Ported into
+  `kernels/jfloat.ijs` (see Phase 6 record); NOT wired into the hot kernels
+  because our per-layer broadcasts are small and J's `$`-replication is
+  special-coded. Revisit for large-batched projections.
 - **Tokenizer encode/decode mutual obverse (Ch 33)** — item 13 below; defining
   `tokenize =: ... :. detokenize` would enable `u&.:tokenize` round-trips, but no
   current call site needs it.
