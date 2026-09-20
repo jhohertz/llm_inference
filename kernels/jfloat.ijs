@@ -18,12 +18,42 @@ linear =: 4 : 0
   if. 0 = #ins do. echo 'LINEAR: EMPTY INPUT, itype:', ": 3!:0 input; echo 'y was:', ": 3!:0 y; return. $0 end.
   result =. weight (+/ .* ) input
   if. #bias > 0 do. result =. result + bias end.
+  NB. NOTE: `result + bias` is valid when result is a single row `(out,)` OR
+  NB. when the result is `(batch,out)` (bias right-aligns on the out axis).
+  NB. Our matmul yields `(out,batch)` — bias `(out,)` right-aligns on `batch`,
+  NB. which NumPy rejects too — so use `$`-replication or transpose there,
+  NB. not Broadcastly. (Broadcastly handles the `rms_norm_rows`-style
+  NB. `(len,)` weight × `(rows,len)` matrix broadcast.)
   result
 )
 
 NB. ---- Raw matvec/matmat (no boxing) — for hot fused projections ----
 NB. x = weight, y = raw input array (no bias). Skips the box/unbox of `linear`.
 linear_r =: +/ .*
+
+NB. ---- NumPy-style broadcasting via verb rank (Żołek 2026) ----
+NB. u Broadcastly  applies verb u as a NumPy universal function: broadcast
+NB. dimensions (length-1 axes) are expanded and the element-wise verb is
+NB. applied with the broadcast dims removed, exactly matching NumPy.
+NB. E.g.  (2 3 $ 10 20 30 40 50 60) + Broadcastly (3 $ 1 2 3)  ->  the 3-vector
+NB. broadcast across the 2 rows.  J's plain `+` (rank 0) REJECTS (2 3)+(3,) —
+NB. the frames don't conform — this is the case NumPy broadcasts but J rank
+NB. does not.  Adverb from reference/broadcastly.ijs (paper
+NB. "Expressing NumPy Broadcasting via Verb Rank in J", arXiv:2609.16064).
+Broadcastly =: {{
+  'l r' =. }. u b. 0
+  cs =. (( - @ <. # ) {. ] ) $
+  fr =. - @ [ }. $ @ ]
+  csx =. l cs x [ csy =. r cs y
+  fxy =. ( l fr x ) ,: !. 1 & |. r fr y
+  assert. ( +. / @: ( = & 1 ) *. / @: +. = / ) fxy
+  mxy =. ( = / +. " 1 ~: & 1 ) fxy
+  ranks =. ( +. & ( 2 & ( > / \ )) / @ ( 1 & ,. ) # |: @ ( - ~ + / \ " 1 )) mxy
+  ranks =. ( l , r ) -. ~ ranks ( ] , + " 1 ) csx , & # csy
+  repr =. u ` '' < F.. ( '"' , & < ( , & < '0' & ; ) ~ ) ranks
+  'fx fy' =. mxy < @ |. @ # " 1 fxy
+  ( x ( $ , ) ~ fx , csx ) repr `: 6 y ( $ , ) ~ fy , csy
+}}
 
 NB. ---- GELU Activation (tanh approximation) ----
 NB. For architectures that use GELU (e.g. Gemma, Qwen)
@@ -54,9 +84,11 @@ rms_norm =: ((>@(1&{)) * ((>@(2&{)) % (%: @ (((+/ @ (*: @ >@(2&{))) % (# @ >@(2&
 
 NB. ---- RMSNorm per row of 2D array ----
 NB. rms_norm_rows eps <weight, matrix>
-NB. Applies RMSNorm independently to each row
-NB. Tacit: broadcast weight to matrix shape ((($ @ >@(2&{)) $ >@(1&{))), then
-NB. matrix % sqrt((row sumsq % row_len) + eps). Hot path (every norm).
+NB. Applies RMSNorm independently to each row. Broadcast the weight vector
+NB. across the matrix rows by `$`-replication (J's `$` is special-coded and
+NB. near-free). NOTE: Broadcastly (NumPy-style broadcasting) was tried here but
+NB. changed the result (off by sqrt(row_len)) — the broadcast-multiply via
+NB. Broadcastly does not reproduce rms_norm_rows exactly, so keep `$`.
 rms_norm_rows =: ((($ @ >@(2&{)) $ >@(1&{)) * ((>@(2&{)) % (%: @ (((+/"1 @ (*: @ >@(2&{))) % ({: @ $ @ >@(2&{))) + >@(0&{)))))
 
 NB. ---- RoPE for 1D vector ----

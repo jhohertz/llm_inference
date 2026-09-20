@@ -154,6 +154,22 @@ test_kernels =: 3 : 0
   if. 6 = # lb do. pass 'linear shape'
   else. fail 'linear shape' end.
 
+  NB. Broadcastly — NumPy-style broadcasting via verb rank (arXiv:2609.16064)
+  echo ''
+  echo '--- Broadcastly ---'
+  assert_test ((2 3) -: $ (2 3 $ 10 20 30 40 50 60) + Broadcastly (3 $ 1 2 3)) ; 'broadcast (2 3)+(3,) -> 2 3'
+  assert_test (((2 3 $ 11 22 33 41 52 63) -: (2 3 $ 10 20 30 40 50 60) + Broadcastly (3 $ 1 2 3)) ; 'broadcast (2 3)+(3,) values match manual')
+  assert_test ((4 4) -: $ (1 4 $ 10 11 12 13) + Broadcastly (4 1 $ 1 2 3 4)) ; 'broadcast (1 4)+(4 1) -> 4 4'
+  assert_test ((2 2 3) -: $ (0) + Broadcastly (2 2 3 $ 0)) ; 'scalar + (2 2 3) -> 2 2 3'
+  assert_test ((1 2 3 4 1 5 6) -: $ (1 4 1 1 6 $ i. 24) + Broadcastly (1 2 3 1 1 5 6 $ i. 30)) ; 'documented 1 4 1 1 6 + 1 2 3 1 1 5 6'
+  bad =. 'incompatible rejected'
+  try.
+    _ =. (3 1 4 $ 0) + Broadcastly (1 4 2 $ 0)
+    fail 'broadcast rejects incompatible (3 1 4)+(1 4 2)'
+  catch.
+    pass 'broadcast rejects incompatible (3 1 4)+(1 4 2)'
+  end.
+
   show_summary 1
 )
 pm_start 1e8

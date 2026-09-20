@@ -24,7 +24,7 @@ inference.ijs (entry point)   — all code lives in the 'inference' locale
 ├── gguf_dump.ijs      — Utility: pretty-print any GGUF file
  ├── tokenizers/tokenizer_llama3.ijs / tokenizers/tokenizer_gpt2.ijs — BPE tokenizers
  ├── tokenizers/tokenizer_spm.ijs   — SentencePiece tokenizer (llama.cpp llm_tokenizer_spm bigram-merge)
- ├── kernels/jfloat.ijs    — matmul, linear, RMSNorm, GELU, SiLU, SwiGLU, RoPE, softcap
+ ├── kernels/jfloat.ijs    — matmul, linear, RMSNorm, GELU, SiLU, SwiGLU, RoPE, softcap; `Broadcastly` adverb (NumPy-style broadcasting via verb rank)
  ├── util/llm_core.ijs   — llm accessors, get_tensor_cached_d, embed_tokens, output_head, sample_from, infer_args, gen_args
  ├── models/gemma3.ijs     — Gemma 3 270M: attention+KV, FFN, blocks, gem3_infer/gem3_generate
  ├── models/llama.ijs      — generic llama arch (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE

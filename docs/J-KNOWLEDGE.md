@@ -646,6 +646,28 @@ New gotchas hit on J9.8 (addon + jsocket HTTP server):
   (monadic ISO, date-only, and `sfe` on 0 all error) — use manual calendar math
   or an ISO-string helper instead of these foreigns.
 
+## Broadcasting via Verb Rank (`Broadcastly`)
+
+NumPy broadcasting ≡ J verb rank + frame/cell agreement (Żołek 2026,
+arXiv:2609.16064). J's rank-`"` conjunction handles frame agreement by
+requiring one frame to be a prefix of the other — it does NOT expand
+length-1 (broadcast) axes, so J rejects pairs NumPy broadcasts, e.g.
+`(2 3) + (3,)` → length error (frames `2 3` and `3` don't conform).
+
+The `Broadcastly` adverb (in `kernels/jfloat.ijs`, port of
+`reference/broadcastly.ijs`) applies a verb as a NumPy ufunc: it inspects
+`u b. 0`, finds the broadcast dimensions (length-1 axes that differ), removes
+them, and applies `u` with the appropriate rank — matching NumPy exactly.
+`(2 3 $ 10 20 30 40 50 60) + Broadcastly (3 $ 1 2 3)` broadcasts the 3-vector
+across the rows. `assert.` inside rejects genuinely incompatible shapes
+(e.g. `(3 1 4) + (1 4 2)` — last dims 4 vs 2). Verified in
+`tests/j/test_kernels.ijs` (shape + values + rejection).
+
+Use it wherever a smaller array must be expanded across an axis that J's
+rank-0 verb would reject (bias-add to a batched `(rows,out)` result,
+per-row/column scaling, attention masks). For the common single-row path,
+plain `+` is fine (no overhead).
+
 ## J Idiom Reference — where the deep material lives
 
 This file holds the chapter-by-chapter idiom reviews (Ch 22-43) and the
