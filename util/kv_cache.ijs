@@ -136,3 +136,117 @@ kv_reset =: 3 : 0
   kv_pos_g =: 0
   ''
 )
+
+NB. ================================================================
+NB.  Session-aware KV verbs (foundation for multi-session / batched HTTP).
+NB.  x = the session noun (util/session.ijs layout: 9=kv_seq, 10=kv_pos,
+NB.  11=kv_batch, 12=kv_max_seq, 13=kv_meta); the SHARED k_cache_g/v_cache_g
+NB.  buffers are used.  The write verbs return the UPDATED session (the caller
+NB.  rebinds it); kv_read_s returns <k_rows; v_rows>.  base =
+NB.  ((layer*kv_batch)+seq)*eff_seq — the same formula the global verbs use.
+NB.  The global verbs above stay for the single-session serial path (tests/TUI/
+NB.  CLI are unchanged); these are the per-request building blocks for batching.
+NB. ================================================================
+
+NB. ---- Create (re)allocate the shared buffers for a session + reset its pos ----
+NB.  x = sess; y = <n_layers; max_seq; n_heads_kv; head_dim>.
+NB.  eff_seq = min(max_seq, session kv_max_seq).  Returns the updated session.
+kv_create_s =: 4 : 0
+  sess =. x
+  n_layers =. > 0 { y
+  max_seq =. > 1 { y
+  n_heads_kv =. > 2 { y
+  head_dim =. > 3 { y
+  kvb =. > 11 { sess
+  kvmx =. > 12 { sess
+  eff_seq =. max_seq
+  if. 0 < kvmx do. eff_seq =. max_seq <. kvmx end.
+  kv_batch_g =: kvb
+  k_cache_g =: ((n_layers * kvb * eff_seq) , (n_heads_kv * head_dim)) $ 0.0
+  v_cache_g =: ((n_layers * kvb * eff_seq) , (n_heads_kv * head_dim)) $ 0.0
+  meta =. (<n_layers) , (<eff_seq) , (<n_heads_kv) , (<head_dim)
+  sess =. (<meta) (13) } sess
+  sess =. (<0) (10) } sess
+  sess
+)
+
+NB. ---- Write one K/V row at pos for a layer (session seq) ----
+NB.  x = sess; y = <layer; pos; k_new; v_new>.  Returns the updated session.
+kv_write_s =: 4 : 0
+  sess =. x
+  layer =. > 0 { y
+  pos =. > 1 { y
+  k_new =. > 2 { y
+  v_new =. > 3 { y
+  seq =. > 9 { sess
+  kvb =. > 11 { sess
+  meta =. > 13 { sess
+  eff =. > 1 { meta
+  base =. ((layer * kvb) + seq) * eff
+  k_cache_g =: (, k_new) ((base + pos)) } k_cache_g
+  v_cache_g =: (, v_new) ((base + pos)) } v_cache_g
+  sess =. (<(> 10 { sess) >. pos + 1) (10) } sess
+  sess
+)
+
+NB. ---- Bulk write L rows for a layer (session seq) ----
+NB.  x = sess; y = <kind; layer; start; rows>.  Returns the updated session.
+kv_write_rows_s =: 4 : 0
+  sess =. x
+  kind =. > 0 { y
+  layer =. > 1 { y
+  start =. > 2 { y
+  rows =. > 3 { y
+  seq =. > 9 { sess
+  kvb =. > 11 { sess
+  meta =. > 13 { sess
+  eff =. > 1 { meta
+  L =. {. $ rows
+  rows =. (L , ((> 2 { meta) * (> 3 { meta))) $ , rows
+  base =. ((layer * kvb) + seq) * eff
+  idx =. base + start + i. L
+  if. kind = 0 do.
+    k_cache_g =: rows idx } k_cache_g
+  else.
+    v_cache_g =: rows idx } v_cache_g
+  end.
+  sess =. (<(> 10 { sess) >. start + L) (10) } sess
+  sess
+)
+
+NB. ---- Read K/V for a layer (session seq) ----
+NB.  x = sess; y = <layer; pos>.  Returns <k_rows; v_rows> each (count, n_kv, hd).
+kv_read_s =: 4 : 0
+  sess =. x
+  layer =. > 0 { y
+  pos =. > 1 { y
+  seq =. > 9 { sess
+  kvb =. > 11 { sess
+  meta =. > 13 { sess
+  eff =. > 1 { meta
+  count =. pos + 1
+  base =. ((layer * kvb) + seq) * eff
+  k_rows =. (count , (> 2 { meta) , (> 3 { meta)) $ , ((base + i. count) { k_cache_g)
+  v_rows =. (count , (> 2 { meta) , (> 3 { meta)) $ , ((base + i. count) { v_cache_g)
+  (<k_rows) , (<v_rows)
+)
+
+NB. ---- Reset the session's KV pos (keeps the shared buffer) ----
+NB.  x = sess.  Returns the updated session.
+kv_reset_s =: 4 : 0
+  sess =. x
+  sess =. (<0) (10) } sess
+  sess
+)
+
+NB. ---- Bind the GLOBAL kv state to a session ----
+NB.  y = sess.  Sets kv_seq_g/kv_batch_g/kv_max_seq_g from the session so the
+NB.  EXISTING gen_loop/block-run verbs (which read the globals) run at the
+NB.  session's seq slot in the shared B-axis cache.  Returns ''.  This is the
+NB.  bridge that lets gen_loop take a session without changing its signature.
+sess_kv_bind =: 3 : 0
+  kv_seq_g =: > 9 { y
+  kv_batch_g =: > 11 { y
+  kv_max_seq_g =: > 12 { y
+  ''
+)
