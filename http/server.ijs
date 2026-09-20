@@ -310,7 +310,11 @@ v1_chat =: 4 : 0
   stream=: 'stream' getv r
   if. _1 -: stream do. stream=: 0 end.
   msgs=: 'messages' getv r
-  if. _1 -: msgs do. msgs=: <('user') ; 'Hi' else. msgs=: mk_msgs msgs end.
+  if. _1 -: msgs do.
+    NB. Missing/invalid messages -> 400 (OpenAI chat requests require it).
+    badrequest 'missing messages' return.
+  end.
+  msgs=: mk_msgs msgs
   tools=: 'tools' getv r
   tools_json=: ''
   if. -. _1 -: tools do. tools_json=: enc_arr tools end.
@@ -363,23 +367,28 @@ serve =: 4 : 0
   raw=: y
   'm p v b'=. h11_parse raw
   resp=: notfound ''
-  if. 'GET' ceq m do.
-    if. '/' ceq p do.
+  NB. Dispatch by path; wrong method on a KNOWN path -> 405, unknown path
+  NB. -> 404, malformed body -> 400 (caught).
+  if. '/' ceq p do.
+    if. 'GET' ceq m do.
       hd=: 'Content-Type: text/plain' , CRLF
       lst=: '200' ; 'OK' ; hd ; 'J9.8 OpenAI-style LLM server running'
       resp=: h11_simple lst
-    end.
-    if. '/v1/models' ceq p do.
+    else. resp=: methodnotallowed (m , ' / is not allowed') end.
+  elseif. '/v1/models' ceq p do.
+    if. 'GET' ceq m do.
       hd=: 'Content-Type: application/json' , CRLF
       lst=: '200' ; 'OK' ; hd ; v1_models ''
       resp=: h11_simple lst
-    end.
-  else.
+    else. resp=: methodnotallowed (m , ' /v1/models is not allowed') end.
+  elseif. '/v1/chat/completions' ceq p do.
     if. 'POST' ceq m do.
-      if. '/v1/chat/completions' ceq p do.
+      try.
         resp=: fd v1_chat b
+      catch.
+        resp=: badrequest 'malformed request body'
       end.
-    end.
+    else. resp=: methodnotallowed (m , ' /v1/chat/completions is not allowed') end.
   end.
   say 'respond fd=', (": fd) , ' bytes=', (": # resp)
   if. 0 < # resp do.

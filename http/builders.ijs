@@ -236,3 +236,20 @@ notfound =: 3 : 0
   lst =. '404' ; 'Not Found' ; hd ; 'unknown path'
   h11_simple lst
 )
+
+NB. ============================================================
+NB.  y badrequest  ->  bytes of a 400 response (malformed request/body).
+badrequest =: 3 : 0
+  hd =. 'Content-Type: text/plain' , CRLF
+  lst =. '400' ; 'Bad Request' ; hd ; y
+  h11_simple lst
+)
+
+NB. ============================================================
+NB.  y methodnotallowed  ->  bytes of a 405 response (wrong method on a
+NB.  known path).  y = e.g. 'GET /v1/chat/completions is not allowed'.
+methodnotallowed =: 3 : 0
+  hd =. 'Content-Type: text/plain' , CRLF
+  lst =. '405' ; 'Method Not Allowed' ; hd ; y
+  h11_simple lst
+)

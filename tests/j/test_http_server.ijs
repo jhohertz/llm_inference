@@ -63,8 +63,12 @@ f3=. 'stop' frame_end ('sid' ; 'qwen3-0.6b' ; 123)
 assert_test ((1 e. 'finish_reason":"stop"}' E. f3) *. (0 < # f3)) ; 'frame_end carries finish_reason'
 assert_test (0 < # frame_done '') ; 'frame_done emits done chunk'
 
-section_header_inference_ 'error response (notfound)'
+section_header_inference_ 'error responses'
 nf=. notfound ''
 assert_test ((1 e. 'HTTP/1.1 404 Not Found' E. nf) *. (1 e. 'unknown path' E. nf)) ; 'notfound 404 + body'
+br=. badrequest 'malformed request body'
+assert_test ((1 e. 'HTTP/1.1 400 Bad Request' E. br) *. (1 e. 'malformed request body' E. br)) ; 'badrequest 400 + body'
+mn=. methodnotallowed 'GET /v1/chat/completions is not allowed'
+assert_test ((1 e. 'HTTP/1.1 405 Method Not Allowed' E. mn) *. (1 e. 'GET /v1/chat/completions is not allowed' E. mn)) ; 'methodnotallowed 405 + body'
 
 show_summary_inference_ ''
