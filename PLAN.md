@@ -300,9 +300,59 @@ SSE server.
   (upstream marks BROKEN/TODO, not in CI), and test-fuzz.cpp (fuzztest property
   fuzzing, no J equivalent). All are upstream-gated/known-broken/fuzz-only.
 
-## Deferred J-idiom applications
+## Multi-session & batched HTTP generation (2026-09, IN PROGRESS)
 
-The general jforc idiom reviews live in **docs/J-KNOWLEDGE.md** (project-agnostic).
+**Motivation.** The HTTP server (Phase 6) handles concurrent connections but
+*serializes* generation: each request is served one-at-a-time through the
+single-session `chat_completion`, which uses shared globals. `llama-benchy`
+measured the cost: concurrency 1→2→4 drops throughput (pp128: 49→45→38 t/s)
+and grows latency (ttfr 4.5s→8.9s) — requests queue, they don't batch. The
+batched generator (`gen_loop_batch`, llm_core.ijs) already runs B sequences in
+ONE forward pass with a B-axis KV cache (`kv_batch_g`/`kv_seq_g`). The work is
+to make generation session-aware and batch concurrent requests.
+
+**Design — a per-session entity.** The single-session globals move into a
+`session` noun (one per request) holding:
+- **KV cache**: `kv_meta`, `k_cache`, `v_cache`, `kv_pos`, `kv_batch`,
+  `kv_batch_alloc`, `kv_seq`, `kv_max_seq` (util/kv_cache.ijs globals).
+- **Chat session**: `chat_session` (arch/messages/tokens/pos/params),
+  `resume_count`, `fallback_count` (util/chat.ijs).
+- **Template**: `ct_tmpl`, `ct_vars`, `ct_now`, `ct_tools` (chat.ijs).
+- **Streaming**: `st_buf`, `st_arch` (chat.ijs streaming detokenizer).
+- **Callbacks**: `gen_cb_on`, `gen_cb`, `chat_cb`, `chat_cb_arch`,
+  `chat_cb_llm`, `chat_cb_stop` (chat.ijs / llm_core.ijs).
+- **Response**: `sid`, `created`, `fd`.
+- **Shared (read-only, may stay global)**: `llm`, `arch`, `model`.
+
+**Staged plan (proceed methodically):**
+- **Stage 1 — session entity + KV-cache sessionization** (foundation). Define
+  the `session` noun; add session-aware kv verbs (`kv_create_s`/`kv_write_s`/
+  `kv_read_s`/`kv_reset_s`) that read/write cache state in the session, keeping
+  the global-based verbs for the single-session path (tests/TUI/CLI unchanged).
+  Wire `gen_loop_core`/`gen_loop_batch` to take a session.
+- **Stage 2 — chat/template/streaming sessionization.** Move `chat_session_g`,
+  `ct_*`, `st_buf`, callback globals into the session; add session-aware
+  `chat_completion`/`chat_stream`/`chat_core_stream` that operate on a session.
+  Streaming callback reads state from the session (not globals).
+- **Stage 3 — server batching.** The server buffers concurrent complete
+  requests; each gets a session + a seq slot in a shared B-axis cache; render
+  each prompt, run ONE `gen_loop_batch` over B sequences, return per-session
+  responses. Streaming deferred (interleaving B delta streams is hard — do
+  plain JSON first).
+- **Stage 4 — validation.** `llama-benchy` concurrency before/after (throughput
+  should NOT drop with concurrency; latency should stay ~flat); `test_chat_session`
+  + `test_http_server` correctness (sessionized path == single-session path).
+
+**Gotchas to watch (from Phase 6).**
+- J verb assignment is a dynamic ALIAS to the name — sessionizing callbacks
+  (verb fields) must store the verb in the session and resolve it where called.
+- `kv_write_rows` base is `((layer*kv_batch_g + seq) * eff_seq)` — precedence
+  gotcha (see AGENTS.md); the sessionized version must keep it.
+- The B-axis cache is shared; a guarded-but-unreset cache made batch-after-
+  single inherit stale state (lfm2 conv / qwen35 delta-net) — reset per batch.
+- `gen_loop_batch` needs `kv_max_seq_g` bounded for big-ctx models.
+
+## Deferred J-idiom applicationsThe general jforc idiom reviews live in **docs/J-KNOWLEDGE.md** (project-agnostic).
 Deferred ideas about applying an idiom to *our* code are kept here:
 
 - **`LoopWithInitial` (Ch 36)** — the tool if a small-state fold ever appears
