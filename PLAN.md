@@ -363,11 +363,25 @@ to make generation session-aware and batch concurrent requests.
     piece round-trips (delta emitted, st_buf consumed), chat_completion_s
     generates ("Hello! How can I help you today?" / finish 'stop'), serial path
     unchanged (serial chat_completion + chat_generate green), lint gate passes.
-  - **Open (Stage 2 tail):** session-aware `chat_core_s`/`chat_core_stream_s`
-    (stateful KV-resume + streaming) — they need a session-aware `chat_fresh_s`
-    too (chat_fresh currently writes `chat_session_g`). Deferred: the HTTP
-    server's batching path uses `chat_completion_s` (one-shot), not the stateful
-    TUI resume, so this is lower priority for Stage 3.
+  - **Done (2026-09):** session-aware `chat_fresh_s` (fresh full-render, stores
+    the session's chat_session), `chat_core_s` (stateful KV-resume), and the
+    streaming trio `chat_gen_stream_s` / `chat_fresh_stream_s` /
+    `chat_core_stream_s` (stateful resume + streaming). A `sess_cur_g` global
+    (the current session for streaming) makes `chat_stream_cb` session-aware: it
+    reads/writes the session's st_buf/st_arch when a session is set, else falls
+    back to the globals (serial path). Fixed a runaway: `sess_kv_bind` now
+    defaults the session seq to 0 when it is `_1` (no slot yet), so the
+    session-aware verbs don't write at seq -1. Verified: single-turn +
+    multi-turn resume via `chat_core_stream_s` (turn 1 "Hello! How can I help
+    you today?", turn 2 "The capital of France is Paris." — resume works, no
+    OOM), serial `chat_core_stream` unchanged (sess_cur_g empty -> globals),
+    lint gate passes.
+  - **End-state note:** the design goal is all-session-aware with ONE global
+    `session` for the serial path — the serial verbs (`chat_completion`/
+    `chat_core`/`chat_gen_stream`/`chat_fresh_stream`/`chat_core_stream`) can
+    later become thin wrappers over the `_s` versions passing the global
+    `session`. Deferred as a follow-up refactor (the `_s` verbs are the
+    canonical form; the serial verbs use the globals today).
 - **Stage 3 — server batching.** The server buffers concurrent complete
   requests; each gets a session + a seq slot in a shared B-axis cache; render
   each prompt, run ONE `gen_loop_batch` over B sequences, return per-session

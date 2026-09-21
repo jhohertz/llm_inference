@@ -245,7 +245,9 @@ NB.  EXISTING gen_loop/block-run verbs (which read the globals) run at the
 NB.  session's seq slot in the shared B-axis cache.  Returns ''.  This is the
 NB.  bridge that lets gen_loop take a session without changing its signature.
 sess_kv_bind =: 3 : 0
-  kv_seq_g =: > 9 { y
+  seq =. > 9 { y
+  if. seq = _1 do. seq =. 0 end.   NB. no slot yet -> single-session slot 0
+  kv_seq_g =: seq
   kv_batch_g =: > 11 { y
   kv_max_seq_g =: > 12 { y
   ''
