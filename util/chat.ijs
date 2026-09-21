@@ -95,6 +95,44 @@ chat_stream_reset =: 3 : 0
   ''
 )
 
+NB. ---- Session-aware streaming detokenizer (Stage 2) ----
+NB.  A session-aware port of chat_stream_piece/chat_stream_reset that reads/writes
+NB.  the session's st_buf (field 5) / st_arch (field 6).  The streaming CALLBACK
+NB.  (chat_stream_cb) stays a global verb (verbs can't be boxed in the session);
+NB.  the session-aware path is the building block for batching, where the caller
+NB.  drives it per-session.  chat_stream_reset_s returns the updated session;
+NB.  chat_stream_piece_s returns <delta ; updated_sess>.
+chat_stream_reset_s =: 4 : 0
+  sess =. x
+  sess =. (<'') (5) } sess
+  sess =. (<'') (6) } sess
+  sess
+)
+
+NB. ---- Emit the text delta for one token, session-aware ----
+NB.  x = sess; y = <arch ; llm ; token>.  Reads/writes the session's st_buf/st_arch
+NB.  and returns <delta ; updated_sess> (delta = complete UTF-8 text, '' if a
+NB.  char is still incomplete).
+chat_stream_piece_s =: 4 : 0
+  sess =. x
+  arch =. > 0 { y
+  llm =. > 1 { y
+  token =. > 2 { y
+  bytes =. arch chat_tok_bytes (llm ; token)
+  buf =. (> 5 { sess) , bytes
+  sess =. (<buf) (5) } sess
+  sess =. (<arch) (6) } sess
+  hold =. utf8_tail buf
+  emit_n =. (# buf) - hold
+  if. emit_n > 0 do.
+    out =. emit_n {. buf
+    sess =. (<(emit_n }. buf)) (5) } sess
+    (<out) , <sess
+  else.
+    (<'') , <sess
+  end.
+)
+
 NB. ---- Stream arming helpers (external-locale callers, e.g. the chat TUI) ----
 NB. The callback globals gen_cb_on_g (noun) / gen_cb_g (verb) live in llm_core;
 NB. the addon exports VERBS only (not nouns), so an external locale cannot set
@@ -585,6 +623,65 @@ chat_completion =: 4 : 0
     content =. ''
   end.
   (<content) , (<finish) , (<tcs)
+)
+
+NB. ---- Session-aware chat_completion (Stage 2) ----
+NB.  x = llm; y = <sess ; messages ; tools ; max_steps ; stream ; <params>.
+NB.  Session-aware port of chat_completion: reads/writes the session's ct_*
+NB.  (fields 1-4: ct_vars/ct_tools) + st_buf (field 5); the global callbacks
+NB.  (gen_cb_g/chat_cb_g/chat_cb_arch_g/chat_cb_llm_g/chat_cb_stop_g) stay
+NB.  global (verbs can't be boxed in the session).  Returns
+NB.  <content ; finish_reason ; tool_calls ; updated_sess>.
+chat_completion_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  messages =. > 1 { y
+  tools =. > 2 { y
+  max_steps =. > 3 { y
+  stream =. > 4 { y
+  params =. > 5 { y
+  if. 1 = # params do.
+    flat =. > > params
+  else.
+    flat =. > params
+  end.
+  temp =. 0 { flat
+  k =. 1 { flat
+  p =. 2 { flat
+  min_p =. 3 { flat
+  sess =. (<(chat_vars_obj '')) (2) } sess
+  sess =. (<tools) (4) } sess
+
+  arch =. llm_arch llm
+  prompt =. arch chat_prompt messages
+  tokens =. arch chat_tokenize (<llm) , <prompt
+  stop =. chat_stop_tokens llm
+  L =. # , > tokens
+
+  if. stream do.
+    chat_cb_arch_g =: arch
+    chat_cb_llm_g =: llm
+    chat_cb_stop_g =: stop
+    sess =. sess chat_stream_reset_s ''
+  else.
+    gen_cb_on_g =: 0
+  end.
+  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  gen_cb_on_g =: 0
+  if. stream do.
+    if. 0 < # sess_stbuf sess do. chat_cb_g sess_stbuf sess end.
+    sess =. sess chat_stream_reset_s ''
+  end.
+  gen =. L }. output
+  content =. arch chat_detokenize (<llm) , <gen
+  finish =. 'stop'
+  if. max_steps <: # gen do. finish =. 'length' end.
+  tcs =. chat_extract_tool_calls content
+  if. 0 < # tcs do.
+    finish =. 'tool_calls'
+    content =. ''
+  end.
+  (<content) , (<finish) , (<tcs) , <sess
 )
 
 NB. ---- Tool dispatch registry (Phase 6 item 4) ----

@@ -325,15 +325,49 @@ to make generation session-aware and batch concurrent requests.
 - **Shared (read-only, may stay global)**: `llm`, `arch`, `model`.
 
 **Staged plan (proceed methodically):**
-- **Stage 1 — session entity + KV-cache sessionization** (foundation). Define
+- **Stage 1 — session entity + KV-cache sessionization (DONE, 2026-09).** Define
   the `session` noun; add session-aware kv verbs (`kv_create_s`/`kv_write_s`/
-  `kv_read_s`/`kv_reset_s`) that read/write cache state in the session, keeping
-  the global-based verbs for the single-session path (tests/TUI/CLI unchanged).
-  Wire `gen_loop_core`/`gen_loop_batch` to take a session.
-- **Stage 2 — chat/template/streaming sessionization.** Move `chat_session_g`,
-  `ct_*`, `st_buf`, callback globals into the session; add session-aware
-  `chat_completion`/`chat_stream`/`chat_core_stream` that operate on a session.
-  Streaming callback reads state from the session (not globals).
+  `kv_write_rows_s`/`kv_read_s`/`kv_reset_s`) that read/write cache state in the
+  session, keeping the global-based verbs for the single-session path (tests/
+  TUI/CLI unchanged). Wire `gen_loop_core`/`gen_loop_batch` to take a session.
+  - **Done:** `util/session.ijs` — the boxed `session` noun (17 indexed fields:
+    chat_session, ct_tmpl/vars/now/tools, st_buf/st_arch, sid/created,
+    kv_seq/kv_pos/kv_batch/kv_max_seq/kv_meta, llm/arch/model) + accessors +
+    `session_new`/`session_reset`/`sess_put`/`sess_set`. Lives in the
+    `inference` locale. Callbacks (verbs) stay as globals for now.
+    `util/kv_cache.ijs` — session-aware KV verbs (x = session; write verbs
+    return the updated session; shared k_cache_g/v_cache_g buffers) +
+    `sess_kv_bind` (sets kv_seq_g/kv_batch_g/kv_max_seq_g from a session so the
+    existing gen_loop/block-run verbs run at the session's seq — the bridge to
+    make gen_loop take a session without changing its signature). Wired into
+    manifest.ijs / inference.ijs / install_local.sh / lint_all.ijs. Verified:
+    session entity + session-aware KV verbs round-trip (k/v read-back correct),
+    `sess_kv_bind` sets the globals, lint/load-probe gate passes, serial
+    inference (SmolLM2-135M) intact.
+  - **Open (Stage 1 tail):** actually re-point `gen_loop_core`/`gen_loop_batch`
+    at a session (they currently read the globals that `sess_kv_bind` sets).
+    Deferred to Stage 3 (the batch driver), where the per-arch block-run verbs
+    become session-aware.
+- **Stage 2 — chat/template/streaming sessionization (IN PROGRESS).** Move
+  `chat_session_g`, `ct_*`, `st_buf`, callback globals into the session; add
+  session-aware `chat_completion`/`chat_stream`/`chat_core_stream` that operate
+  on a session. Streaming callback reads state from the session (not globals).
+  - **Done (2026-09):** session-aware streaming — `chat_stream_piece_s` (x =
+    sess; y = <arch; llm; token>; reads/writes the session's st_buf/st_arch
+    fields 5/6; returns <delta ; updated_sess>) and `chat_stream_reset_s` (x =
+    sess; clears the session's st_buf/st_arch). Session-aware `chat_completion_s`
+    (x = llm; y = <sess ; messages ; tools ; max_steps ; stream ; <params>; uses
+    the session's ct_* fields 1-4 + st_buf field 5; the global callbacks stay
+    global — verbs can't be boxed in the session; returns
+    <content ; finish_reason ; tool_calls ; updated_sess>). Verified: streaming
+    piece round-trips (delta emitted, st_buf consumed), chat_completion_s
+    generates ("Hello! How can I help you today?" / finish 'stop'), serial path
+    unchanged (serial chat_completion + chat_generate green), lint gate passes.
+  - **Open (Stage 2 tail):** session-aware `chat_core_s`/`chat_core_stream_s`
+    (stateful KV-resume + streaming) — they need a session-aware `chat_fresh_s`
+    too (chat_fresh currently writes `chat_session_g`). Deferred: the HTTP
+    server's batching path uses `chat_completion_s` (one-shot), not the stateful
+    TUI resume, so this is lower priority for Stage 3.
 - **Stage 3 — server batching.** The server buffers concurrent complete
   requests; each gets a session + a seq slot in a shared B-axis cache; render
   each prompt, run ONE `gen_loop_batch` over B sequences, return per-session
