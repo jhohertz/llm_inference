@@ -37,6 +37,22 @@ NB. rank-1 empty lists: (0 0 $ x) is RANK 2 (shape 0 0) - appending
 NB. scalars yields 2-D shapes.  0 # 0 is the rank-1 empty list.
 CFD=: 0 # 0
 CBF=: 0 # <''
+NB. PENDING: box array of buffered chat-completion requests, each a 9-cell
+NB. record <fd ; msgs ; tools_json ; temp ; top_p ; mx ; stream ; cid ; created>.
+NB. v1_chat appends here; maybe_flush (called once per select cycle) drains it
+NB. after a short window, batching the non-stream requests in ONE gen_loop_batch
+NB. (Stage 3).  The window lets concurrent requests (arriving while the loop is
+NB. free) accumulate into one batch; the select timeout drops to 20ms while
+NB. PENDING is non-empty so the window is honored without long polling.
+PENDING=: ''
+BATCH_CYCLES=: 0      NB. select cycles since the current batch's first request
+BATCH_MAX=: 8         NB. flush immediately once the batch reaches this size
+BATCH_WAIT=: 3        NB. cycles (~3 x 20ms = 60ms) to wait for concurrent requests
+NB. BUF_FD: the fds whose request is buffered in PENDING.  onread SKIPS them
+NB. (no sdrecv — a buffered peer is idle waiting for its response, and a stray
+NB. EOF/FIN would otherwise close the connection before the flush).  Dropped in
+NB. rmconn when the fd is closed.
+BUF_FD=: 0 # 0
 
 NB. ---- Model (first ARGV arg or default) + boot-time response id/created ----
 get_model =: 3 : 0
@@ -109,6 +125,7 @@ rmconn =: 3 : 0
   end.
   CFD=: keepc
   CBF=: keepb
+  BUF_FD=: (y ~: BUF_FD) # BUF_FD
   say 'conn closed fd=', (": y) , ' total=', (": # CFD)
 )
 
@@ -297,10 +314,102 @@ stream_chat =: 4 : 0
 )
 
 NB. ============================================================
+NB.  flush_pending  ->  drain PENDING (Stage 3 batching).  Non-stream requests
+NB.  are generated together: B=1 -> chat_completion (the proven serial path);
+NB.  B>1 -> ONE chat_completion_batch (groups by identical params, one
+NB.  gen_loop_batch per group — one forward per decode step over B sequences).
+NB.  Stream requests are served individually (streaming deferred: interleaving
+NB.  B delta streams is hard — plain JSON first).  Called once per select cycle
+NB.  (after the ready-fd loop), so a lone request is flushed in the same cycle
+NB.  it arrives (no added latency) and concurrent requests (ready in the same
+NB.  cycle) share a batch.  Returns ''.
+flush_pending =: 3 : 0
+  if. 0 = # PENDING do. '' return. end.
+  recs=: PENDING
+  PENDING=: ''
+  NB. Split non-stream (ns) and stream (s) records.
+  ns=: ''
+  s=: ''
+  i=: 0
+  while. i < # recs do.
+    rec=: > i { recs
+    if. 0 = (> 6 { rec) do. ns=: ns , <rec else. s=: s , <rec end.
+    i=: i + 1
+  end.
+  if. 1 < # ns do.
+    say 'flush: batch ', (": # ns), ' non-stream request(s)'
+    brecs=: ''
+    i=: 0
+    while. i < # ns do.
+      rec=: > i { ns
+      msgs=: > 1 { rec
+      tools_json=: > 2 { rec
+      mx=: > 5 { rec
+      params=: (> 3 { rec) ; 0 ; (> 4 { rec) ; 0
+      brec=: (<msgs) , (<tools_json) , (<mx) , <params
+      brecs=: brecs , <brec
+      i=: i + 1
+    end.
+    results=: LLM chat_completion_batch brecs
+    i=: 0
+    while. i < # ns do.
+      rec=: > i { ns
+      fd=: > 0 { rec
+      cres=: > i { results
+      ct=: > 0 { cres
+      fin=: > 1 { cres
+      tcs=: > 2 { cres
+      bdy=: respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
+      hd=: 'Content-Type: application/json' , CRLF
+      lst=: '200' ; 'OK' ; hd ; bdy
+      fd finish (h11_simple lst)
+      i=: i + 1
+    end.
+  elseif. 1 = # ns do.
+    rec=: > 0 { ns
+    fd=: > 0 { rec
+    params=: (> 3 { rec) ; 0 ; (> 4 { rec) ; 0
+    cres=: LLM chat_completion ((> 1 { rec) ; (> 2 { rec) ; (> 5 { rec) ; 0 ; <params)
+    ct=: > 0 { cres
+    fin=: > 1 { cres
+    tcs=: > 2 { cres
+    bdy=: respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
+    hd=: 'Content-Type: application/json' , CRLF
+    lst=: '200' ; 'OK' ; hd ; bdy
+    fd finish (h11_simple lst)
+  end.
+  i=: 0
+  while. i < # s do.
+    rec=: > i { s
+    fd=: > 0 { rec
+    fd stream_chat ((> 1 { rec) ; (> 2 { rec) ; (> 3 { rec) ; (> 4 { rec) ; (> 5 { rec))
+    i=: i + 1
+  end.
+  ''
+)
+
+NB. ============================================================
+NB.  maybe_flush  ->  called once per select cycle.  Flushes PENDING only when
+NB.  the batch window has elapsed (now - BATCH_START >= BATCH_WINDOW) or the
+NB.  batch is full (>= BATCH_MAX).  Otherwise it leaves the requests buffered so
+NB.  concurrent requests arriving while the loop is free can join the batch.
+NB.  Returns ''.
+maybe_flush =: 3 : 0
+  if. 0 = # PENDING do. '' return. end.
+  BATCH_CYCLES=: BATCH_CYCLES + 1
+  full=: BATCH_MAX <: # PENDING
+  if. (BATCH_CYCLES >: BATCH_WAIT) +. full do.
+    flush_pending ''
+  end.
+  ''
+)
+
+NB. ============================================================
 NB.  x v1_chat y  ->  the POST /v1/chat/completions handler.
 NB.  x = connection fd; y = request body (complete).  Parses the OpenAI
-NB.  request with convert/pjson, maps params, calls OUR chat_completion.
-NB.  Returns full plain response bytes, or '' for a stream (already sent).
+NB.  request with convert/pjson and BUFFERS it in PENDING (no generation here —
+NB.  flush_pending drains PENDING each cycle, batching concurrent requests).
+NB.  Returns '' (buffered), or a 400 body for a malformed/missing-messages body.
 v1_chat =: 4 : 0
   fd=: x
   body=: y
@@ -325,21 +434,16 @@ v1_chat =: 4 : 0
   mx=: 'max_tokens' getv r
   if. _1 -: mx do. mx=: 200 end.
   cid=: 'chatcmpl-' , (": created_now '')
-  CREATED=: created_now ''
-  if. 1 = stream do.
-    x stream_chat (msgs ; tools_json ; temp ; top_p ; mx)
-    ''
-  else.
-    params=: < temp ; 0 ; top_p ; 0
-    cres=: LLM chat_completion (msgs ; tools_json ; mx ; 0 ; <params)
-    ct=: > 0 { cres
-    fin=: > 1 { cres
-    tcs=: > 2 { cres
-    bdy=: respbody (cid ; MODEL ; CREATED ; ct ; fin ; tcs)
-    hd=: 'Content-Type: application/json' , CRLF
-    lst=: '200' ; 'OK' ; hd ; bdy
-    h11_simple lst
-  end.
+  created=: created_now ''
+  NB. Buffer the request (no generation here).  flush_pending drains PENDING once
+  NB. per select cycle: non-stream requests are batched in ONE gen_loop_batch
+  NB. (Stage 3); stream requests are served individually (streaming deferred).
+  rec=: fd ; msgs ; tools_json ; temp ; top_p ; mx ; stream ; cid ; created
+  if. 0 = # PENDING do. BATCH_CYCLES=: 0 end.
+  PENDING=: PENDING , <rec
+  BUF_FD=: BUF_FD , fd
+  say 'buffered chat fd=', (": fd), ' pending=', (": # PENDING)
+  ''
 )
 
 NB. ============================================================
@@ -412,6 +516,7 @@ NB.  onread fd  ->  ONE non-blocking read; accumulate; serve on complete.
 NB.  sdrecv: success <0;data> (data may be '' on EOF), error <'';errno>.
 onread =: 3 : 0
   y=. 0 { y
+  if. y e. BUF_FD do. '' return. end.   NB. buffered — idle, awaiting flush
   raw=: sdrecv y , 4096 , 0
   if. 0 = > 0 { raw do.
     d=: > 1 { raw
@@ -447,7 +552,10 @@ NB.  selectloop  ->  the non-blocking event loop (never returns).
 selectloop =: 3 : 0
   while. 1 do.
     fset=: (SKLISTEN) , CFD
-    z=: sdcheck sdselect fset ; fset ; fset ; 200
+    NB. While requests are buffered, poll every 20ms so the batch window is
+    NB. honored (concurrent requests join the batch); otherwise 200ms.
+    if. 0 < # PENDING do. to=: 20 else. to=: 200 end.
+    z=: sdcheck sdselect fset ; fset ; fset ; to
     rd=: > 0 { z
     while. 0 < # rd do.
       fd=: {. rd
@@ -459,9 +567,17 @@ selectloop =: 3 : 0
           onread fd
         end.
       catch.
-        say 'LOOPERR fd=', (": fd) , ' err: ' , 13!:12 ''
+        say 'LOOPERR fd=', (": fd), ' err: ' , 13!:12 ''
         oneof fd
       end.
+    end.
+    NB. Flush the batch when the window elapses or the batch is full. Guarded so
+    NB. a generation error can't crash the loop; on error drop the batch.
+    try.
+      maybe_flush ''
+    catch.
+      say 'FLUSHERR: ' , 13!:12 ''
+      PENDING=: ''
     end.
   end.
 )

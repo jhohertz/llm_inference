@@ -693,6 +693,123 @@ chat_completion_s =: 4 : 0
   (<content) , (<finish) , (<tcs) , <sess
 )
 
+NB. ---- Batched chat completion (Stage 3) ----
+NB.  x = llm; y = boxed list of B request records, each =
+NB.  <messages ; tools ; max_steps ; <params (temp;k;p;min_p)>>.
+NB.  gen_loop_batch shares ONE (max_steps; temp; k; p; min_p) across a whole
+NB.  batch, so records are grouped by IDENTICAL params; each group runs ONE
+NB.  gen_loop_batch (one forward per decode step over the group's B sequences —
+NB.  the B-axis KV cache).  Per record the prompt is rendered + tokenized with
+NB.  the real jinja template (exactly as chat_completion) and the output
+NB.  post-processed (strip prompt, detokenize, finish_reason, tool-call
+NB.  classification).  Returns a boxed list of B <content ; finish ; tcs> in
+NB.  INPUT ORDER.  kv_batch_g is reset to 1 on exit (the serial path expects it).
+chat_completion_batch =: 4 : 0
+  llm =. x
+  recs =. y
+  B =. # recs
+  if. 0 = B do. '' return. end.
+  arch =. llm_arch llm
+  stop =. chat_stop_tokens llm
+  NB. Pre-parse each record -> <msgs ; tools ; key ; temp ; k ; p ; min_p ; mx>.
+  parsed =. ''
+  i =. 0
+  while. i < B do.
+    r =. > i { recs
+    msgs =. > 0 { r
+    tools =. > 1 { r
+    mx =. > 2 { r
+    params =. > 3 { r
+    if. 1 = # params do. flat =. > > params else. flat =. > params end.
+    temp =. 0 { flat
+    k =. 1 { flat
+    p =. 2 { flat
+    min_p =. 3 { flat
+    key =. (": mx) , '|' , (": temp) , '|' , (": k) , '|' , (": p) , '|' , (": min_p)
+    parsed =. parsed , <(<msgs) , (<tools) , (<key) , (<temp) , (<k) , (<p) , (<min_p) , (<mx)
+    i =. i + 1
+  end.
+  NB. Group record indices by key (order-preserving); a group = <key ; idxs>.
+  groups =. ''
+  i =. 0
+  while. i < B do.
+    key =. > 2 { > i { parsed
+    placed =. 0
+    g =. 0
+    while. g < # groups do.
+      gkey =. > 0 { > g { groups
+      same =. 0
+      if. (# key) = # gkey do. same =. */ key = gkey end.
+      if. same do.
+        idxs =. > 1 { > g { groups
+        idxs =. idxs , <i
+        cell =. (<key) , <idxs
+        groups =. (<cell) g} groups
+        placed =. 1
+        break.
+      end.
+      g =. g + 1
+    end.
+    if. 1 ~: placed do.
+      idxs =. <i
+      cell =. (<key) , <idxs
+      groups =. groups , <cell
+    end.
+    i =. i + 1
+  end.
+  NB. Per group: render + tokenize each seq, ONE gen_loop_batch, post-process.
+  results =. B $ <''
+  g =. 0
+  while. g < # groups do.
+    idxs =. > 1 { > g { groups
+    Bg =. # idxs
+    i0 =. > {. idxs
+    r0 =. > i0 { parsed
+    temp =. > 3 { r0
+    k =. > 4 { r0
+    p =. > 5 { r0
+    min_p =. > 6 { r0
+    mx =. > 7 { r0
+    prompts_tok =. ''
+    Ls =. ''
+    j =. 0
+    while. j < Bg do.
+      i =. > j { idxs
+      r =. > i { parsed
+      ct_vars_g =: chat_vars_obj ''
+      ct_tools_g =. > 1 { r
+      prompt =. arch chat_prompt > 0 { r
+      tokens =. arch chat_tokenize (<llm) , <prompt
+      tok_list =. , > tokens
+      prompts_tok =. prompts_tok , <tok_list
+      Ls =. Ls , <(# tok_list)
+      j =. j + 1
+    end.
+    kv_batch_g =: Bg
+    output =. llm gen_loop_batch (prompts_tok ; mx ; temp ; k ; p ; min_p ; <stop)
+    j =. 0
+    while. j < Bg do.
+      i =. > j { idxs
+      L =. > j { Ls
+      gen =. (L) }. (> j { output)
+      content =. arch chat_detokenize (<llm) , <gen
+      finish =. 'stop'
+      if. mx <: # gen do. finish =. 'length' end.
+      tcs =. chat_extract_tool_calls content
+      if. 0 < # tcs do.
+        finish =. 'tool_calls'
+        content =. ''
+      end.
+      cell =. (<content) , (<finish) , (<tcs)
+      results =. (<cell) i} results
+      j =. j + 1
+    end.
+    g =. g + 1
+  end.
+  kv_batch_g =: 1
+  results
+)
+
 NB. ---- Tool dispatch registry (Phase 6 item 4) ----
 NB. chat_tool_fn_g is the global verb executed for each tool call. y = <name ;
 NB. args-JSON-string>. Returns the result STRING (fed back as a 'tool' message

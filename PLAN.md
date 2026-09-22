@@ -382,11 +382,24 @@ to make generation session-aware and batch concurrent requests.
     later become thin wrappers over the `_s` versions passing the global
     `session`. Deferred as a follow-up refactor (the `_s` verbs are the
     canonical form; the serial verbs use the globals today).
-- **Stage 3 — server batching.** The server buffers concurrent complete
-  requests; each gets a session + a seq slot in a shared B-axis cache; render
-  each prompt, run ONE `gen_loop_batch` over B sequences, return per-session
-  responses. Streaming deferred (interleaving B delta streams is hard — do
-  plain JSON first).
+- **Stage 3 — server batching. DONE (2026-09).** The server buffers concurrent
+  complete requests in `PENDING` (each a 9-cell `<fd ; msgs ; tools ; temp ;
+  top_p ; mx ; stream ; cid ; created>` record); `v1_chat` appends (no
+  generation) and `maybe_flush` drains it once per select cycle after a short
+  window (`BATCH_WAIT`=3 cycles ~ 60ms, `BATCH_MAX`=8, select timeout drops to
+  20ms while pending so the window is honored). Non-stream requests are grouped
+  by identical params and generated in ONE `chat_completion_batch` (one
+  `gen_loop_batch` over B sequences); stream requests are served individually
+  (streaming deferred — interleaving B delta streams is hard, plain JSON
+  first). `BUF_FD` tracks buffered fds so `onread` skips them (a buffered peer
+  is idle awaiting its response — a stray EOF/FIN would otherwise close the
+  connection before the flush). J gotchas hit: `<=` is NOT a primitive (use
+  `:<`/`>:`), `#.` is base-conversion (use `#` for compress), `;` boxes the
+  left operand but concatenates a box-array right operand (use `(<a) , <b`),
+  and amend needs `(<cell) i} list` (box the cell first). Verified: 2 concurrent
+  requests batched (one `gen_loop_batch`, same latency) + singles still work;
+  batch==single exact (greedy); `test_kv_cache`/`test_chat_session`/
+  `test_batched`/`test_chat`/`test_http_server` all green; lint exit 0.
 - **Stage 4 — validation.** `llama-benchy` concurrency before/after (throughput
   should NOT drop with concurrency; latency should stay ~flat); `test_chat_session`
   + `test_http_server` correctness (sessionized path == single-session path).
