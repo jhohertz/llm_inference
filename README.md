@@ -60,8 +60,12 @@ at interactive speed, running large models, or production workloads.
 - **Sampling** — temperature, top-k, top-p, min-p.
 - **Model catalog + downloader** — reference a model by id, Hugging Face path,
   or URL and it downloads to a per-user model folder.
-- **Four ways to run it** — one-shot CLI, interactive chat console, a raw-mode
-  chat TUI, or the J API — plus a GGUF inspector.
+- **OpenAI-compatible HTTP server** (`http/`, `scripts/llm_server.sh`) — a
+  non-blocking jsocket event loop serving POST `/v1/chat/completions` (plain
+  JSON + streamed SSE) and GET `/v1/models`, reusing the same `chat_completion`
+  verb behind the OpenAI endpoint.
+- **Five ways to run it** — one-shot CLI, interactive chat console, a raw-mode
+  chat TUI, the network HTTP server, or the J API — plus a GGUF inspector.
 - **An OOP wrapper** (`conew`) if you prefer objects over box-of-boxes.
 
 ---

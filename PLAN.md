@@ -28,9 +28,11 @@ against the upstream llama-3.1 tool_use golden).
 Full done-work detail is recorded in **docs/HISTORICAL.md**; the remaining
 planned work is **Phase 6 (streaming OpenAI-compatible chat API + our own chat
 TUI)** — items 1-4 + tool-use loop are DONE, including the **stateful TUI
-(item 4: KV-cache-resume chat loop)**; the network HTTP server is deferred
-(separate agent). Phase 4 (engineering stretch, low priority) plus a few open
-items below. The jpi fork was abandoned (2026-09).
+(item 4: KV-cache-resume chat loop)**; the **network HTTP server is DONE**
+(`http/`: POST `/v1/chat/completions` plain + SSE, GET `/v1/models`, non-blocking
+jsocket loop; contract-tested in `tests/j/test_http_server.ijs`). Phase 6 is
+COMPLETE. Phase 4 (engineering stretch, low priority) plus a few open items
+below. The jpi fork was abandoned (2026-09).
 
 ## Roadmap — Planned Work
 
@@ -149,7 +151,7 @@ SSE server.
    (`chat_resume_count` increments, `chat_fallback_count` 0), stream==batch on
    resume AND fresh, 2-turn context-aware TUI via pty, /reset clears.
    test_chat_session.ijs Section 3 (chat_core_stream pin/resume/stream/reset).
-   Phase 6 is now COMPLETE except the deferred HTTP server.
+   Phase 6 is COMPLETE (HTTP server DONE — see below).
 
 **Progress (2026-09).**
 - **jpi checkouts removed** (`reference/jpi`, `jpi_local/`); the fd-fixed
@@ -277,6 +279,20 @@ SSE server.
   that `sdselect` depends on (renamed to `cres=:`). Contract-tested in
   `tests/j/test_http_server.ijs`; the live loop is verified by
   `scripts/llm_server.sh`.
+- **Broadcastly adverb (arXiv:2609.16064) — DONE.** Ported into
+  `kernels/jfloat.ijs` (NumPy-style broadcasting via verb rank, from
+  `reference/broadcastly.ijs`), verified against the paper's example +
+  broadcast pairs + rejection, tested in `test_kernels.ijs` (32/32), documented
+  in `docs/J-KNOWLEDGE.md` ("Broadcasting via Verb Rank"). **Measured
+  (benchmark):** a modest win on LARGE broadcast-multiply (~1.4x at 256×8192 —
+  Broadcastly avoids materializing the replicated vector that J's `$` copies),
+  but equal-or-slower on the small per-layer broadcasts we actually do
+  (`rms_norm_rows` ~1.05x/noisy, rope cos/sin ~4x slower — J's `$` is
+  special-coded). Also **rejected for correctness**: Broadcastly's
+  rms_norm_rows changed the result (off by sqrt(row_len)). So it's kept as an
+  available tool, NOT wired into the hot kernels — the manual `$`/outer-product
+  broadcasts are already optimal for our shapes. Revisit only if large-batched
+  projections appear.
 
 ## Open items
 
@@ -284,15 +300,147 @@ SSE server.
   (upstream marks BROKEN/TODO, not in CI), and test-fuzz.cpp (fuzztest property
   fuzzing, no J equivalent). All are upstream-gated/known-broken/fuzz-only.
 
-## Deferred J-idiom applications
+## Multi-session & batched HTTP generation (2026-09, IN PROGRESS)
 
-The general jforc idiom reviews live in **docs/J-KNOWLEDGE.md** (project-agnostic).
+**Motivation.** The HTTP server (Phase 6) handles concurrent connections but
+*serializes* generation: each request is served one-at-a-time through the
+single-session `chat_completion`, which uses shared globals. `llama-benchy`
+measured the cost: concurrency 1→2→4 drops throughput (pp128: 49→45→38 t/s)
+and grows latency (ttfr 4.5s→8.9s) — requests queue, they don't batch. The
+batched generator (`gen_loop_batch`, llm_core.ijs) already runs B sequences in
+ONE forward pass with a B-axis KV cache (`kv_batch_g`/`kv_seq_g`). The work is
+to make generation session-aware and batch concurrent requests.
+
+**Design — a per-session entity.** The single-session globals move into a
+`session` noun (one per request) holding:
+- **KV cache**: `kv_meta`, `k_cache`, `v_cache`, `kv_pos`, `kv_batch`,
+  `kv_batch_alloc`, `kv_seq`, `kv_max_seq` (util/kv_cache.ijs globals).
+- **Chat session**: `chat_session` (arch/messages/tokens/pos/params),
+  `resume_count`, `fallback_count` (util/chat.ijs).
+- **Template**: `ct_tmpl`, `ct_vars`, `ct_now`, `ct_tools` (chat.ijs).
+- **Streaming**: `st_buf`, `st_arch` (chat.ijs streaming detokenizer).
+- **Callbacks**: `gen_cb_on`, `gen_cb`, `chat_cb`, `chat_cb_arch`,
+  `chat_cb_llm`, `chat_cb_stop` (chat.ijs / llm_core.ijs).
+- **Response**: `sid`, `created`, `fd`.
+- **Shared (read-only, may stay global)**: `llm`, `arch`, `model`.
+
+**Staged plan (proceed methodically):**
+- **Stage 1 — session entity + KV-cache sessionization (DONE, 2026-09).** Define
+  the `session` noun; add session-aware kv verbs (`kv_create_s`/`kv_write_s`/
+  `kv_write_rows_s`/`kv_read_s`/`kv_reset_s`) that read/write cache state in the
+  session, keeping the global-based verbs for the single-session path (tests/
+  TUI/CLI unchanged). Wire `gen_loop_core`/`gen_loop_batch` to take a session.
+  - **Done:** `util/session.ijs` — the boxed `session` noun (17 indexed fields:
+    chat_session, ct_tmpl/vars/now/tools, st_buf/st_arch, sid/created,
+    kv_seq/kv_pos/kv_batch/kv_max_seq/kv_meta, llm/arch/model) + accessors +
+    `session_new`/`session_reset`/`sess_put`/`sess_set`. Lives in the
+    `inference` locale. Callbacks (verbs) stay as globals for now.
+    `util/kv_cache.ijs` — session-aware KV verbs (x = session; write verbs
+    return the updated session; shared k_cache_g/v_cache_g buffers) +
+    `sess_kv_bind` (sets kv_seq_g/kv_batch_g/kv_max_seq_g from a session so the
+    existing gen_loop/block-run verbs run at the session's seq — the bridge to
+    make gen_loop take a session without changing its signature). Wired into
+    manifest.ijs / inference.ijs / install_local.sh / lint_all.ijs. Verified:
+    session entity + session-aware KV verbs round-trip (k/v read-back correct),
+    `sess_kv_bind` sets the globals, lint/load-probe gate passes, serial
+    inference (SmolLM2-135M) intact.
+  - **Open (Stage 1 tail):** actually re-point `gen_loop_core`/`gen_loop_batch`
+    at a session (they currently read the globals that `sess_kv_bind` sets).
+    Deferred to Stage 3 (the batch driver), where the per-arch block-run verbs
+    become session-aware.
+- **Stage 2 — chat/template/streaming sessionization (IN PROGRESS).** Move
+  `chat_session_g`, `ct_*`, `st_buf`, callback globals into the session; add
+  session-aware `chat_completion`/`chat_stream`/`chat_core_stream` that operate
+  on a session. Streaming callback reads state from the session (not globals).
+  - **Done (2026-09):** session-aware streaming — `chat_stream_piece_s` (x =
+    sess; y = <arch; llm; token>; reads/writes the session's st_buf/st_arch
+    fields 5/6; returns <delta ; updated_sess>) and `chat_stream_reset_s` (x =
+    sess; clears the session's st_buf/st_arch). Session-aware `chat_completion_s`
+    (x = llm; y = <sess ; messages ; tools ; max_steps ; stream ; <params>; uses
+    the session's ct_* fields 1-4 + st_buf field 5; the global callbacks stay
+    global — verbs can't be boxed in the session; returns
+    <content ; finish_reason ; tool_calls ; updated_sess>). Verified: streaming
+    piece round-trips (delta emitted, st_buf consumed), chat_completion_s
+    generates ("Hello! How can I help you today?" / finish 'stop'), serial path
+    unchanged (serial chat_completion + chat_generate green), lint gate passes.
+  - **Done (2026-09):** session-aware `chat_fresh_s` (fresh full-render, stores
+    the session's chat_session), `chat_core_s` (stateful KV-resume), and the
+    streaming trio `chat_gen_stream_s` / `chat_fresh_stream_s` /
+    `chat_core_stream_s` (stateful resume + streaming). A `sess_cur_g` global
+    (the current session for streaming) makes `chat_stream_cb` session-aware: it
+    reads/writes the session's st_buf/st_arch when a session is set, else falls
+    back to the globals (serial path). Fixed a runaway: `sess_kv_bind` now
+    defaults the session seq to 0 when it is `_1` (no slot yet), so the
+    session-aware verbs don't write at seq -1. Verified: single-turn +
+    multi-turn resume via `chat_core_stream_s` (turn 1 "Hello! How can I help
+    you today?", turn 2 "The capital of France is Paris." — resume works, no
+    OOM), serial `chat_core_stream` unchanged (sess_cur_g empty -> globals),
+    lint gate passes.
+  - **End-state note:** the design goal is all-session-aware with ONE global
+    `session` for the serial path — the serial verbs (`chat_completion`/
+    `chat_core`/`chat_gen_stream`/`chat_fresh_stream`/`chat_core_stream`) can
+    later become thin wrappers over the `_s` versions passing the global
+    `session`. Deferred as a follow-up refactor (the `_s` verbs are the
+    canonical form; the serial verbs use the globals today).
+- **Stage 3 — server batching. DONE (2026-09).** The server buffers concurrent
+  complete requests in `PENDING` (each a 9-cell `<fd ; msgs ; tools ; temp ;
+  top_p ; mx ; stream ; cid ; created>` record); `v1_chat` appends (no
+  generation) and `maybe_flush` drains it once per select cycle after a short
+  window (`BATCH_WAIT`=3 cycles ~ 60ms, `BATCH_MAX`=8, select timeout drops to
+  20ms while pending so the window is honored). Non-stream requests are grouped
+  by identical params and generated in ONE `chat_completion_batch` (one
+  `gen_loop_batch` over B sequences); stream requests are served individually
+  (streaming deferred — interleaving B delta streams is hard, plain JSON
+  first). `BUF_FD` tracks buffered fds so `onread` skips them (a buffered peer
+  is idle awaiting its response — a stray EOF/FIN would otherwise close the
+  connection before the flush). J gotchas hit: `<=` is NOT a primitive (use
+  `:<`/`>:`), `#.` is base-conversion (use `#` for compress), `;` boxes the
+  left operand but concatenates a box-array right operand (use `(<a) , <b`),
+  and amend needs `(<cell) i} list` (box the cell first). Verified: 2 concurrent
+  requests batched (one `gen_loop_batch`, same latency) + singles still work;
+  batch==single exact (greedy); `test_kv_cache`/`test_chat_session`/
+  `test_batched`/`test_chat`/`test_http_server` all green; lint exit 0.
+- **Stage 4 — validation. DONE (2026-09).** Correctness: `test_chat_session`
+  (21/0) + `test_http_server` (20/0) + `test_kv_cache` (20/20) + `test_batched`
+  (9/9) + `test_chat` (7/0) all green — the sessionized/batched path equals the
+  single-session path (batch==single exact, greedy).  `llama-benchy` (0.4.0)
+  concurrency before/after (via `uvx llama-benchy --base-url http://localhost:8790/v1`):
+  with SmolLM2-135M, pp=256/tg=16/runs=1, depth 0 and 2048, concurrency 1/2/4:
+  - depth=0: pp total 148.05/136.03/117.94, tg total 16.60/8.85/6.32, tg PER-REQ
+    16.60/16.92/15.11, ttfr 1883/2836/5602ms.
+  - depth=2048: pp total 89.66/79.95/79.92, tg per-req 9.65/6.43/7.03, ttfr
+    25959/43523/73503ms.
+  Reading: the batched DECODE holds per-request tg throughput ~flat at depth 0
+  (16.60 -> 16.92 -> 15.11) — the batch amortizes the forward pass.  But the
+  PREFILL is the bottleneck: total pp throughput drops with concurrency (148 ->
+  136 -> 118) and ttfr rises (1883 -> 5602ms), so throughput drops / latency
+  rises with concurrency for pp-heavy workloads.  4K depth was machine-limited:
+  SmolLM2-135M prefills at ~56 tok/s (4096-token prompt ~96s), so the 4K tests
+  exceed a 600s budget — the batching behavior is depth-independent (the
+  prefill dominates).  Net: batching helps the decode (per-request tg flat) but
+  the prefill stays the wall — a candidate follow-up is batched-prefill
+  amortization (the prefill is memory-bound, not compute-bound).
+
+**Gotchas to watch (from Phase 6).**
+- J verb assignment is a dynamic ALIAS to the name — sessionizing callbacks
+  (verb fields) must store the verb in the session and resolve it where called.
+- `kv_write_rows` base is `((layer*kv_batch_g + seq) * eff_seq)` — precedence
+  gotcha (see AGENTS.md); the sessionized version must keep it.
+- The B-axis cache is shared; a guarded-but-unreset cache made batch-after-
+  single inherit stale state (lfm2 conv / qwen35 delta-net) — reset per batch.
+- `gen_loop_batch` needs `kv_max_seq_g` bounded for big-ctx models.
+
+## Deferred J-idiom applicationsThe general jforc idiom reviews live in **docs/J-KNOWLEDGE.md** (project-agnostic).
 Deferred ideas about applying an idiom to *our* code are kept here:
 
 - **`LoopWithInitial` (Ch 36)** — the tool if a small-state fold ever appears
   (e.g. piece accumulation in a tokenizer) where space is not a concern; the
   generation loop stays a `while.` because it carries per-step KV tensors too
   large to materialize looplessly.
+- **`Broadcastly` (verb-rank broadcasting) — DONE, available.** Ported into
+  `kernels/jfloat.ijs` (see Phase 6 record); NOT wired into the hot kernels
+  because our per-layer broadcasts are small and J's `$`-replication is
+  special-coded. Revisit for large-batched projections.
 - **Tokenizer encode/decode mutual obverse (Ch 33)** — item 13 below; defining
   `tokenize =: ... :. detokenize` would enable `u&.:tokenize` round-trips, but no
   current call site needs it.

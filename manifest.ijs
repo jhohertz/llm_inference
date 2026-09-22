@@ -53,6 +53,7 @@ gguf/gguf.ijs
 gguf/quant.ijs
 gguf/quant_tables.ijs
 util/kv_cache.ijs
+util/session.ijs
 util/llm_core.ijs
 util/sampler.ijs
 util/chat.ijs

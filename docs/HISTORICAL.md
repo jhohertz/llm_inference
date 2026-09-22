@@ -897,8 +897,8 @@ the session's messages (`get_msgs`), and adds a `/reset` command (`chat_reset`
 clears session + KV cache). Verified: qwen3 + gemma3 stateful resume
 (`chat_resume_count` increments, `chat_fallback_count` 0), stream==batch on
 fresh AND resume, 2-turn context-aware TUI via pty, /reset clears.
-test_chat_session.ijs Section 3. Phase 6 is complete except the deferred HTTP
-server.
+test_chat_session.ijs Section 3. Phase 6 is COMPLETE (network HTTP server DONE —
+see the HTTP server section below).
 
 J gotchas surfaced:
 - **A `;` chain with a boxed operand in the middle nests.** `(messages ;
@@ -913,3 +913,62 @@ J gotchas surfaced:
 - **Test-design: the shared `ct_tmpl_g` global is clobbered per arch load.** A
   Section that re-renders a previously-loaded arch after another was loaded uses
   the wrong template — test_chat_session.ijs Section 3 uses gemma3 (loaded last).
+
+## Phase 6 — network HTTP server (2026-09)
+
+`http/` — `server.ijs` (driver + non-blocking jsocket event loop), `protocol.ijs`
+(pure HTTP/1.1 framing/parse/build, NO socket calls), `builders.ijs` (OpenAI
+JSON/SSE body builders). Runs in the **inference** locale (+ `coinsert
+'jsocket'`) so the streaming callback (`chat_cb_g -> sse_sender`) and
+`chat_completion` resolve where `chat_stream_cb` CALLS them (mirrors the TUI
+locale fix). `scripts/llm_server.sh` is the launcher; `http/run.ijs` is the
+entry.
+
+- **Concurrency model (handoff, proven):** every socket NON-BLOCKING
+  (`sdcheck sdioctl fd,FIONBIO,1`); event loop `z=: sdcheck sdselect
+  FSET;FSET;FSET;200` (sdcheck drops the status cell -> `<read;write;error>`);
+  one op per ready fd per cycle (listener -> sdaccept, conn -> sdrecv 4096
+  accumulated in CBF until h11_complete); inspect error codes directly (never
+  block).
+- **Endpoints:** POST `/v1/chat/completions` (plain JSON via `respbody`, or
+  streamed SSE via `chat_stream_cb -> sse_sender -> frame_*`), GET `/v1/models`
+  (`v1_models`), GET `/` (status). `finish` sends, closes (`closefd`), and
+  deregisters (`rmconn`). Contract-tested in `tests/j/test_http_server.ijs`
+  (h11_parse, getv, mk_msgs, respbody, frame_*, notfound); live loop verified
+  by `scripts/llm_server.sh`.
+
+**J gotchas surfaced (loop-crash fixes):**
+- **jsocket `sdclose` is BROKEN in this build:** its `0=res closesocketJ <y`
+  passes a BOXED arg to the libc close foreign (15!:0), which domain-errors, so
+  every `sdclose` crashes the event loop after a response. `closefd` calls the
+  libc close directly with the UNBOXED fd (`'"libc.so.6" close i i'&(15!:0) y`),
+  then `rmconn` deregisters separately.
+- **Global `res=:` clobbers jsocket's `res` verb.** `sdselect` uses
+  `_1=res q=.selectJ(...)` where `res` is jsocket's global verb (`res=: >@:{.`).
+  A handler assigning `res=: <noun>` overwrites that verb -> the next sdselect
+  syntax-errors ("unexecutable fragment (noun noun)") and the loop crashes.
+  Renamed the server's `res=:` to `cres=:`.
+- **convert/json needs each value cell EXPLICITLY boxed with `<`** (`b1=. <MODEL`
+  ... `v=. b1,b2,b3,b4`), NOT a `;`-chained row — `MODEL ; 'model'` boxes each,
+  then appending a scalar re-boxes the whole list (nested), so `enc_json` drops
+  the last cell (e.g. `owned_by` 0). `v1_models` uses explicit `<` per cell.
+
+## Broadcastly adverb (arXiv:2609.16064, 2026-09)
+
+Ported `Broadcastly` (NumPy-style broadcasting via verb rank) into
+`kernels/jfloat.ijs` (from `reference/broadcastly.ijs`), verified against the
+paper's example (`1 4 1 1 6 + 1 2 3 1 1 5 6` -> `1 2 3 4 1 5 6`), broadcast
+pairs, and rejection of incompatible shapes; tested in `test_kernels.ijs`
+(32/32) and documented in `docs/J-KNOWLEDGE.md` ("Broadcasting via Verb Rank").
+
+**Measured (benchmarks, median of samples):** a modest win on LARGE
+broadcast-multiply (~1.4x at 256×8192 — Broadcastly avoids materializing the
+replicated vector that J's `$` copies), but equal-or-slower on the small
+per-layer broadcasts we actually do: `rms_norm_rows` ~1.05x (noisy),
+rope cos/sin ~4x slower (J's `$` is special-coded and near-free).
+
+**Rejected for correctness:** Broadcastly's `rms_norm_rows` changed the result
+(off by `sqrt(row_len)`) — it does not reproduce the manual `$`-replication
+exactly. So it's kept as an available tool, NOT wired into the hot kernels; the
+manual `$`/outer-product broadcasts are already optimal for our shapes.
+Revisit only if large-batched projections appear.

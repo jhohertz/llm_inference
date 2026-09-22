@@ -21,6 +21,7 @@ require 'llm/inference/gguf/quant'
 require 'llm/inference/kernels/jfloat'
 require 'llm/inference/tokenizers/tokenizer_llama3'
 require 'llm/inference/util/kv_cache'
+require 'llm/inference/util/session'
 require 'llm/inference/util/sampler'
 require 'llm/inference/util/models'
 

@@ -84,15 +84,56 @@ NB. ================================================================
 NB. Streaming incremental detokenizer (Phase 6 item 2)
 NB. Port of llama.cpp's streaming detokenizer: accumulate each token's raw
 NB. bytes, hold any incomplete trailing UTF-8 sequence, emit only complete
-NB. characters. State globals st_buf_g (held bytes) + st_arch_g.
+NB. characters. State globals st_buf_g (held bytes) + st_arch_g.  sess_cur_g is
+NB. the CURRENT session for the session-aware streaming callback ('' = serial,
+NB. use the globals; a session = read/write its st_buf/st_arch fields 5/6).
 NB. ================================================================
 st_buf_g =: ''
 st_arch_g =: ''
+sess_cur_g =: ''
 
 chat_stream_reset =: 3 : 0
   st_buf_g =: ''
   st_arch_g =: ''
   ''
+)
+
+NB. ---- Session-aware streaming detokenizer (Stage 2) ----
+NB.  A session-aware port of chat_stream_piece/chat_stream_reset that reads/writes
+NB.  the session's st_buf (field 5) / st_arch (field 6).  The streaming CALLBACK
+NB.  (chat_stream_cb) stays a global verb (verbs can't be boxed in the session);
+NB.  the session-aware path is the building block for batching, where the caller
+NB.  drives it per-session.  chat_stream_reset_s returns the updated session;
+NB.  chat_stream_piece_s returns <delta ; updated_sess>.
+chat_stream_reset_s =: 4 : 0
+  sess =. x
+  sess =. (<'') (5) } sess
+  sess =. (<'') (6) } sess
+  sess
+)
+
+NB. ---- Emit the text delta for one token, session-aware ----
+NB.  x = sess; y = <arch ; llm ; token>.  Reads/writes the session's st_buf/st_arch
+NB.  and returns <delta ; updated_sess> (delta = complete UTF-8 text, '' if a
+NB.  char is still incomplete).
+chat_stream_piece_s =: 4 : 0
+  sess =. x
+  arch =. > 0 { y
+  llm =. > 1 { y
+  token =. > 2 { y
+  bytes =. arch chat_tok_bytes (llm ; token)
+  buf =. (> 5 { sess) , bytes
+  sess =. (<buf) (5) } sess
+  sess =. (<arch) (6) } sess
+  hold =. utf8_tail buf
+  emit_n =. (# buf) - hold
+  if. emit_n > 0 do.
+    out =. emit_n {. buf
+    sess =. (<(emit_n }. buf)) (5) } sess
+    (<out) , <sess
+  else.
+    (<'') , <sess
+  end.
 )
 
 NB. ---- Stream arming helpers (external-locale callers, e.g. the chat TUI) ----
@@ -245,7 +286,13 @@ NB. byte-encoded vocab string that would leak into the delta tail).
 chat_stream_cb =: 3 : 0
   pred =. y
   if. (chat_cb_stop_g i. pred) < # chat_cb_stop_g do. pred return. end.
-  delta =. chat_cb_arch_g chat_stream_piece (chat_cb_llm_g ; pred)
+  if. 0 = # sess_cur_g do.
+    delta =. chat_cb_arch_g chat_stream_piece (chat_cb_llm_g ; pred)
+  else.
+    res =. sess_cur_g chat_stream_piece_s (chat_cb_arch_g ; chat_cb_llm_g ; pred)
+    delta =. > 0 { res
+    sess_cur_g =: > 1 { res
+  end.
   if. 0 < # delta do. chat_cb_g delta end.
   pred
 )
@@ -587,6 +634,182 @@ chat_completion =: 4 : 0
   (<content) , (<finish) , (<tcs)
 )
 
+NB. ---- Session-aware chat_completion (Stage 2) ----
+NB.  x = llm; y = <sess ; messages ; tools ; max_steps ; stream ; <params>.
+NB.  Session-aware port of chat_completion: reads/writes the session's ct_*
+NB.  (fields 1-4: ct_vars/ct_tools) + st_buf (field 5); the global callbacks
+NB.  (gen_cb_g/chat_cb_g/chat_cb_arch_g/chat_cb_llm_g/chat_cb_stop_g) stay
+NB.  global (verbs can't be boxed in the session).  Returns
+NB.  <content ; finish_reason ; tool_calls ; updated_sess>.
+chat_completion_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  messages =. > 1 { y
+  tools =. > 2 { y
+  max_steps =. > 3 { y
+  stream =. > 4 { y
+  params =. > 5 { y
+  if. 1 = # params do.
+    flat =. > > params
+  else.
+    flat =. > params
+  end.
+  temp =. 0 { flat
+  k =. 1 { flat
+  p =. 2 { flat
+  min_p =. 3 { flat
+  sess =. (<(chat_vars_obj '')) (2) } sess
+  sess =. (<tools) (4) } sess
+
+  arch =. llm_arch llm
+  prompt =. arch chat_prompt messages
+  tokens =. arch chat_tokenize (<llm) , <prompt
+  stop =. chat_stop_tokens llm
+  L =. # , > tokens
+
+  if. stream do.
+    chat_cb_arch_g =: arch
+    chat_cb_llm_g =: llm
+    chat_cb_stop_g =: stop
+    sess =. sess chat_stream_reset_s ''
+  else.
+    gen_cb_on_g =: 0
+  end.
+  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  gen_cb_on_g =: 0
+  if. stream do.
+    if. 0 < # sess_stbuf sess do. chat_cb_g sess_stbuf sess end.
+    sess =. sess chat_stream_reset_s ''
+  end.
+  gen =. L }. output
+  content =. arch chat_detokenize (<llm) , <gen
+  finish =. 'stop'
+  if. max_steps <: # gen do. finish =. 'length' end.
+  tcs =. chat_extract_tool_calls content
+  if. 0 < # tcs do.
+    finish =. 'tool_calls'
+    content =. ''
+  end.
+  (<content) , (<finish) , (<tcs) , <sess
+)
+
+NB. ---- Batched chat completion (Stage 3) ----
+NB.  x = llm; y = boxed list of B request records, each =
+NB.  <messages ; tools ; max_steps ; <params (temp;k;p;min_p)>>.
+NB.  gen_loop_batch shares ONE (max_steps; temp; k; p; min_p) across a whole
+NB.  batch, so records are grouped by IDENTICAL params; each group runs ONE
+NB.  gen_loop_batch (one forward per decode step over the group's B sequences —
+NB.  the B-axis KV cache).  Per record the prompt is rendered + tokenized with
+NB.  the real jinja template (exactly as chat_completion) and the output
+NB.  post-processed (strip prompt, detokenize, finish_reason, tool-call
+NB.  classification).  Returns a boxed list of B <content ; finish ; tcs> in
+NB.  INPUT ORDER.  kv_batch_g is reset to 1 on exit (the serial path expects it).
+chat_completion_batch =: 4 : 0
+  llm =. x
+  recs =. y
+  B =. # recs
+  if. 0 = B do. '' return. end.
+  arch =. llm_arch llm
+  stop =. chat_stop_tokens llm
+  NB. Pre-parse each record -> <msgs ; tools ; key ; temp ; k ; p ; min_p ; mx>.
+  parsed =. ''
+  i =. 0
+  while. i < B do.
+    r =. > i { recs
+    msgs =. > 0 { r
+    tools =. > 1 { r
+    mx =. > 2 { r
+    params =. > 3 { r
+    if. 1 = # params do. flat =. > > params else. flat =. > params end.
+    temp =. 0 { flat
+    k =. 1 { flat
+    p =. 2 { flat
+    min_p =. 3 { flat
+    key =. (": mx) , '|' , (": temp) , '|' , (": k) , '|' , (": p) , '|' , (": min_p)
+    parsed =. parsed , <(<msgs) , (<tools) , (<key) , (<temp) , (<k) , (<p) , (<min_p) , (<mx)
+    i =. i + 1
+  end.
+  NB. Group record indices by key (order-preserving); a group = <key ; idxs>.
+  groups =. ''
+  i =. 0
+  while. i < B do.
+    key =. > 2 { > i { parsed
+    placed =. 0
+    g =. 0
+    while. g < # groups do.
+      gkey =. > 0 { > g { groups
+      same =. 0
+      if. (# key) = # gkey do. same =. */ key = gkey end.
+      if. same do.
+        idxs =. > 1 { > g { groups
+        idxs =. idxs , <i
+        cell =. (<key) , <idxs
+        groups =. (<cell) g} groups
+        placed =. 1
+        break.
+      end.
+      g =. g + 1
+    end.
+    if. 1 ~: placed do.
+      idxs =. <i
+      cell =. (<key) , <idxs
+      groups =. groups , <cell
+    end.
+    i =. i + 1
+  end.
+  NB. Per group: render + tokenize each seq, ONE gen_loop_batch, post-process.
+  results =. B $ <''
+  g =. 0
+  while. g < # groups do.
+    idxs =. > 1 { > g { groups
+    Bg =. # idxs
+    i0 =. > {. idxs
+    r0 =. > i0 { parsed
+    temp =. > 3 { r0
+    k =. > 4 { r0
+    p =. > 5 { r0
+    min_p =. > 6 { r0
+    mx =. > 7 { r0
+    prompts_tok =. ''
+    Ls =. ''
+    j =. 0
+    while. j < Bg do.
+      i =. > j { idxs
+      r =. > i { parsed
+      ct_vars_g =: chat_vars_obj ''
+      ct_tools_g =. > 1 { r
+      prompt =. arch chat_prompt > 0 { r
+      tokens =. arch chat_tokenize (<llm) , <prompt
+      tok_list =. , > tokens
+      prompts_tok =. prompts_tok , <tok_list
+      Ls =. Ls , <(# tok_list)
+      j =. j + 1
+    end.
+    kv_batch_g =: Bg
+    output =. llm gen_loop_batch (prompts_tok ; mx ; temp ; k ; p ; min_p ; <stop)
+    j =. 0
+    while. j < Bg do.
+      i =. > j { idxs
+      L =. > j { Ls
+      gen =. (L) }. (> j { output)
+      content =. arch chat_detokenize (<llm) , <gen
+      finish =. 'stop'
+      if. mx <: # gen do. finish =. 'length' end.
+      tcs =. chat_extract_tool_calls content
+      if. 0 < # tcs do.
+        finish =. 'tool_calls'
+        content =. ''
+      end.
+      cell =. (<content) , (<finish) , (<tcs)
+      results =. (<cell) i} results
+      j =. j + 1
+    end.
+    g =. g + 1
+  end.
+  kv_batch_g =: 1
+  results
+)
+
 NB. ---- Tool dispatch registry (Phase 6 item 4) ----
 NB. chat_tool_fn_g is the global verb executed for each tool call. y = <name ;
 NB. args-JSON-string>. Returns the result STRING (fed back as a 'tool' message
@@ -827,6 +1050,114 @@ chat_core =: 4 : 0
   end.
 )
 
+NB. ================================================================
+NB.  Session-aware stateful chat (Stage 2 tail).  These are session-aware
+NB.  ports of chat_fresh / chat_core / chat_gen_stream / chat_fresh_stream /
+NB.  chat_core_stream: they read/write the session's chat_session (field 0),
+NB.  st_buf (field 5), and kv state (fields 9-13) instead of the globals, and
+NB.  return <answer ; updated_sess> (the caller rebinds the session).  The
+NB.  global callbacks (gen_cb_g / chat_cb_* / chat_cb_g) stay global — verbs
+NB.  can't be boxed in the session.
+NB. ================================================================
+
+NB. ---- Session-aware fresh chat turn ----
+NB.  x = llm; y = <sess ; messages ; max_steps ; temp ; k ; p ; min_p ; flat>.
+NB.  Renders the full history, generates fresh at the session's seq, stores the
+NB.  session's chat_session.  Returns <answer ; updated_sess>.
+chat_fresh_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  messages =. > 1 { y
+  max_steps =. > 2 { y
+  temp =. > 3 { y
+  k =. > 4 { y
+  p =. > 5 { y
+  min_p =. > 6 { y
+  flat =. > 7 { y
+  arch =. llm_arch llm
+  stop =. chat_stop_tokens llm
+  prompt =. arch chat_prompt messages
+  tokens =. arch chat_tokenize (<llm) , <prompt
+  L =. # , > tokens
+  sess_kv_bind sess
+  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  sess =. (<kv_pos_g) (10) } sess
+  gen =. L }. output
+  answer =. arch chat_detokenize (<llm) , <gen
+  messages =. messages , <('assistant') ; answer
+  cs =. (<arch) , (<messages) , (<output) , (<(# , > output)) , (<max_steps) , (<flat)
+  sess =. (<cs) (0) } sess
+  (<answer) , <sess
+)
+
+NB. ---- Session-aware core chat turn (stateful resume) ----
+NB.  x = llm; y = <sess ; msg ; max_steps ; <params>.  Resumes the KV cache via
+NB.  the session's chat_session (field 0) + kv state.  Returns <answer ;
+NB.  updated_sess>.
+chat_core_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  msg =. > 1 { y
+  max_steps =. > 2 { y
+  params =. > 3 { y
+  if. 1 = # params do.
+    flat =. > > params
+  else.
+    flat =. > params
+  end.
+  temp =. 0 { flat
+  k =. 1 { flat
+  p =. 2 { flat
+  min_p =. 3 { flat
+  sess =. (<(chat_vars_obj '')) (2) } sess
+  sess =. (<'') (4) } sess
+  arch =. llm_arch llm
+  cs =. > 0 { sess
+  if. 0 = # cs do.
+    NB. no session — start fresh with a single user message
+    messages =. <('user') ; msg
+    res =. llm chat_fresh_s ((<sess) , (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<flat))
+    res
+  else.
+    s_arch =. > 0 { cs
+    if. -. s_arch -: arch do.
+      NB. different model loaded — start over
+      messages =. <('user') ; msg
+      res =. llm chat_fresh_s ((<sess) , (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<flat))
+      res
+    else.
+      prev_messages =. > 1 { cs
+      prev_toks =. > 2 { cs
+      prev_len =. > 3 { cs
+      messages =. prev_messages , <('user') ; msg
+      prompt =. arch chat_prompt messages
+      tokens =. arch chat_tokenize (<llm) , <prompt
+      tok_list =. , > tokens
+      prev_flat =. , > prev_toks
+      stop =. chat_stop_tokens llm
+      if. (prev_len {. tok_list) -: prev_flat do.
+        NB. re-render prefix matches the stored token stream -> resume from cache
+        seg =. prev_len }. tok_list
+        L_seg =. # seg
+        sess_kv_bind sess
+        output =. llm gen_loop_core ((<"0 seg) ; prev_len ; max_steps ; temp ; k ; p ; min_p ; <stop)
+        sess =. (<kv_pos_g) (10) } sess
+        gen =. L_seg }. output
+        answer =. arch chat_detokenize (<llm) , <gen
+        total =. prev_toks , output
+        messages =. messages , <('assistant') ; answer
+        cs =. (<arch) , (<messages) , (<total) , (<(# , > total)) , (<max_steps) , (<flat)
+        sess =. (<cs) (0) } sess
+        (<answer) , <sess
+      else.
+        NB. tokenizer round-trip drift — fall back to a full fresh re-render
+        res =. llm chat_fresh_s ((<sess) , (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<flat))
+        res
+      end.
+    end.
+  end.
+)
+
 NB. ---- Crude console chat: llm chat 'next message' -> answer (default params) ----
 NB. Persistent: the session + KV cache carry across calls until chat_reset ''.
 chat =: 4 : 0
@@ -958,6 +1289,136 @@ chat_core_stream =: 4 : 0
         NB. (correct, just slower); the session resets to the new stream.
         chat_fallback_count =: chat_fallback_count + 1
         llm chat_fresh_stream (messages ; max_steps ; <flat) , <stop
+      end.
+    end.
+  end.
+)
+
+NB. ================================================================
+NB.  Session-aware stateful chat with STREAMING (Stage 2 tail).
+NB.  These mirror chat_gen_stream / chat_fresh_stream / chat_core_stream but
+NB.  drive the session-aware streaming callback (chat_stream_cb reads sess_cur_g
+NB.  — the session's st_buf/st_arch) and store the session's chat_session.  They
+NB.  set sess_cur_g before generating and clear it after; return
+NB.  <answer ; updated_sess> (or <output ; updated_sess> for gen_stream_s).
+NB. ================================================================
+
+NB. ---- Session-aware generate with STREAMING armed ----
+NB.  x = llm; y = <sess ; tokens ; start_pos ; max_steps ; <flat> ; stop>.
+NB.  Sets sess_cur_g so the streaming callback reads the session's st_buf.
+NB.  Returns <output ; updated_sess>.
+chat_gen_stream_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  tokens =. > 1 { y
+  start_pos =. > 2 { y
+  max_steps =. > 3 { y
+  flat =. > 4 { y
+  stop =. > 5 { y
+  temp =. 0 { flat
+  k =. 1 { flat
+  p =. 2 { flat
+  min_p =. 3 { flat
+  sess_cur_g =: sess
+  sess_kv_bind sess
+  output =. llm gen_loop_core (tokens ; start_pos ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  sess =. sess_cur_g
+  sess =. (<kv_pos_g) (10) } sess
+  sess_cur_g =: ''
+  sess =. sess chat_stream_reset_s ''
+  (<output) , <sess
+)
+
+NB. ---- Session-aware fresh full-render chat turn with STREAMING ----
+NB.  x = llm; y = <sess ; messages ; max_steps ; <flat> ; stop>.  Returns
+NB.  <answer ; updated_sess>.
+chat_fresh_stream_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  messages =. > 1 { y
+  max_steps =. > 2 { y
+  flat =. > 3 { y
+  stop =. > 4 { y
+  arch =. llm_arch llm
+  prompt =. arch chat_prompt messages
+  tokens =. arch chat_tokenize (<llm) , <prompt
+  L =. # , > tokens
+  out =. llm chat_gen_stream_s ((<sess) , (<tokens) , (<'') , (<max_steps) , (<flat) , (<stop))
+  output =. > 0 { out
+  sess =. > 1 { out
+  gen =. L }. output
+  answer =. arch chat_detokenize (<llm) , <gen
+  messages =. messages , <('assistant') ; answer
+  cs =. (<arch) , (<messages) , (<output) , (<(# , > output)) , (<max_steps) , (<flat)
+  sess =. (<cs) (0) } sess
+  (<answer) , <sess
+)
+
+NB. ---- Session-aware core stateful streaming chat turn ----
+NB.  x = llm; y = <sess ; msg ; max_steps ; <params>.  Returns <answer ;
+NB.  updated_sess>.
+chat_core_stream_s =: 4 : 0
+  llm =. x
+  sess =. > 0 { y
+  msg =. > 1 { y
+  max_steps =. > 2 { y
+  params =. > 3 { y
+  if. 1 = # params do.
+    flat =. > > params
+  else.
+    flat =. > params
+  end.
+  temp =. 0 { flat
+  k =. 1 { flat
+  p =. 2 { flat
+  min_p =. 3 { flat
+  sess =. (<(chat_vars_obj '')) (2) } sess
+  sess =. (<'') (4) } sess
+  arch =. llm_arch llm
+  stop =. chat_stop_tokens llm
+  chat_cb_arch_g =: arch
+  chat_cb_llm_g =: llm
+  chat_cb_stop_g =: stop
+  cs =. > 0 { sess
+  if. 0 = # cs do.
+    NB. no session — start fresh with a single user message, STREAMING
+    messages =. <('user') ; msg
+    res =. llm chat_fresh_stream_s ((<sess) , (<messages) , (<max_steps) , (<flat) , (<stop))
+    res
+  else.
+    s_arch =. > 0 { cs
+    if. -. s_arch -: arch do.
+      NB. different model loaded — start over
+      messages =. <('user') ; msg
+      res =. llm chat_fresh_stream_s ((<sess) , (<messages) , (<max_steps) , (<flat) , (<stop))
+      res
+    else.
+      prev_messages =. > 1 { cs
+      prev_toks =. > 2 { cs
+      prev_len =. > 3 { cs
+      messages =. prev_messages , <('user') ; msg
+      prompt =. arch chat_prompt messages
+      tokens =. arch chat_tokenize (<llm) , <prompt
+      tok_list =. , > tokens
+      prev_flat =. , > prev_toks
+      if. (prev_len {. tok_list) -: prev_flat do.
+        NB. re-render prefix matches the stored token stream -> resume, STREAMING
+        seg =. prev_len }. tok_list
+        L_seg =. # seg
+        out =. llm chat_gen_stream_s ((<sess) , (<(<"0 seg)) , (<prev_len) , (<max_steps) , (<flat) , (<stop))
+        output =. > 0 { out
+        sess =. > 1 { out
+        gen =. L_seg }. output
+        answer =. arch chat_detokenize (<llm) , <gen
+        total =. prev_toks , output
+        messages =. messages , <('assistant') ; answer
+        cs =. (<arch) , (<messages) , (<total) , (<(# , > total)) , (<max_steps) , (<flat)
+        sess =. (<cs) (0) } sess
+        (<answer) , <sess
+      else.
+        NB. tokenizer round-trip drift — fall back to a full fresh re-render
+        res =. llm chat_fresh_stream_s ((<sess) , (<messages) , (<max_steps) , (<flat) , (<stop))
+        res
       end.
     end.
   end.
