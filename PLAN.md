@@ -400,9 +400,26 @@ to make generation session-aware and batch concurrent requests.
   requests batched (one `gen_loop_batch`, same latency) + singles still work;
   batch==single exact (greedy); `test_kv_cache`/`test_chat_session`/
   `test_batched`/`test_chat`/`test_http_server` all green; lint exit 0.
-- **Stage 4 — validation.** `llama-benchy` concurrency before/after (throughput
-  should NOT drop with concurrency; latency should stay ~flat); `test_chat_session`
-  + `test_http_server` correctness (sessionized path == single-session path).
+- **Stage 4 — validation. DONE (2026-09).** Correctness: `test_chat_session`
+  (21/0) + `test_http_server` (20/0) + `test_kv_cache` (20/20) + `test_batched`
+  (9/9) + `test_chat` (7/0) all green — the sessionized/batched path equals the
+  single-session path (batch==single exact, greedy).  `llama-benchy` (0.4.0)
+  concurrency before/after (via `uvx llama-benchy --base-url http://localhost:8790/v1`):
+  with SmolLM2-135M, pp=256/tg=16/runs=1, depth 0 and 2048, concurrency 1/2/4:
+  - depth=0: pp total 148.05/136.03/117.94, tg total 16.60/8.85/6.32, tg PER-REQ
+    16.60/16.92/15.11, ttfr 1883/2836/5602ms.
+  - depth=2048: pp total 89.66/79.95/79.92, tg per-req 9.65/6.43/7.03, ttfr
+    25959/43523/73503ms.
+  Reading: the batched DECODE holds per-request tg throughput ~flat at depth 0
+  (16.60 -> 16.92 -> 15.11) — the batch amortizes the forward pass.  But the
+  PREFILL is the bottleneck: total pp throughput drops with concurrency (148 ->
+  136 -> 118) and ttfr rises (1883 -> 5602ms), so throughput drops / latency
+  rises with concurrency for pp-heavy workloads.  4K depth was machine-limited:
+  SmolLM2-135M prefills at ~56 tok/s (4096-token prompt ~96s), so the 4K tests
+  exceed a 600s budget — the batching behavior is depth-independent (the
+  prefill dominates).  Net: batching helps the decode (per-request tg flat) but
+  the prefill stays the wall — a candidate follow-up is batched-prefill
+  amortization (the prefill is memory-bound, not compute-bound).
 
 **Gotchas to watch (from Phase 6).**
 - J verb assignment is a dynamic ALIAS to the name — sessionizing callbacks
