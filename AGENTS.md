@@ -51,7 +51,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `tokenizers/tokenizer_llama3.ijs` / `tokenizers/tokenizer_gpt2.ijs` | BPE tokenizers (llama3-style; gpt2 byte-level) |
 | `tokenizers/tokenizer_spm.ijs` | **SentencePiece tokenizer** (llama.cpp `llm_tokenizer_spm` bigram-merge): max-heap over token scores, `▁`-escape, add_space_prefix prepend, `<0xXX>` byte fallback; used by ERNIE (model='llama' → SPM) |
 | `util/sampler.ijs` | Temperature / top-k / top-p / min-p sampling |
-| `util/chat.ijs` | **Chat-template inference**: real GGUF-jinja rendering (`chat_tmpl_render`, `ct_tmpl_g`/`ct_vars_g`/`ct_now_g`), `chat_generate`, OpenAI-shaped `chat_completion` + streaming (`chat_stream_start`/`stop`/`chat_stream_cb`), persistent console chat (`chat`/`chat_p` + `chat_session_g`), stateful streaming `chat_core_stream`, tool-use loop `chat_tool_loop`, prompt-token stripping, `chat_msg` helper |
+| `util/chat.ijs` | **Chat-template inference**: real GGUF-jinja rendering (`chat_tmpl_render`, `ct_tmpl_g`/`ct_vars_g`/`ct_now_g`), `chat_generate`, OpenAI-shaped `chat_completion` + streaming (`chat_stream_start`/`stop`/`chat_stream_cb`), persistent console chat (`chat`/`chat_p` via one global `session` noun), stateful streaming `chat_core_stream`, tool-use loop `chat_tool_loop`, prompt-token stripping, `chat_msg` helper. The serial chat verbs are thin wrappers over the `_s` session-aware versions; the `session` noun is canonical and `chat_session_g`/`ct_*_g`/`st_buf_g` are deprecated shims |
 | `util/models.ijs` | **Model catalog + spec resolution + downloader**: `model_path`/`model_download`/`model_target`/`model_list`/`model_roles`/`model_file`; registers `~models` as `~user/models` (per-user, NOT the install dir); downloads via `web/gethttp` |
 | `util/llmobj.ijs` | OOP proof: wrap a loaded LLM in a J object (`conew 'llmobj'`, `infer__obj`) |
 | `util/minja.ijs` | **minja port (Phase 5, DONE)**: Python-like Value model + Context, `coclass 'minja'` (self-contained, lift-out-able). Port of `reference/minja/include/minja/minja.hpp`. Full test-syntax.cpp parity; oracle = minja test-syntax.cpp, cross-check = Python jinja2 via `scripts/minja_goldens.py` |
@@ -144,7 +144,7 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   full history each call (stateless).
 - **Crude console chat (persistent, option B)**: `llm chat 'next message'` →
   answer text with per-arch default params; `llm chat_p ('msg' ; <temp;k;p;min_p>)`
-  for explicit params. The session (`chat_session_g`) + KV cache persist across
+  for explicit params. The session (the global `session` noun) + KV cache persist across
   calls — the next turn re-renders the history ONLY to tokenize the new segment,
   verifies the prefix matches the stored token stream, then **resumes from the
   KV cache** (ONE batched prefill of the new segment through `*_run_blocks_b`).

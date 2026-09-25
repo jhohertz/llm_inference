@@ -31,8 +31,13 @@ TUI)** — items 1-4 + tool-use loop are DONE, including the **stateful TUI
 (item 4: KV-cache-resume chat loop)**; the **network HTTP server is DONE**
 (`http/`: POST `/v1/chat/completions` plain + SSE, GET `/v1/models`, non-blocking
 jsocket loop; contract-tested in `tests/j/test_http_server.ijs`). Phase 6 is
-COMPLETE. Phase 4 (engineering stretch, low priority) plus a few open items
-below. The jpi fork was abandoned (2026-09).
+COMPLETE. **Multi-session & batched HTTP generation is COMPLETE** — all four
+stages plus the Stage 1 tail (gen_loop session-aware) and the Stage 2 end-state
+(serial verbs as thin wrappers over `_s` passing one global `session`) are done;
+the `session` noun is the canonical serial-path state and the legacy globals
+(`chat_session_g`, `ct_*_g`, `st_buf_g`) are deprecated shims. Phase 4
+(engineering stretch, low priority) plus a few open items below. The jpi fork
+was abandoned (2026-09).
 
 ## Roadmap — Planned Work
 
@@ -300,7 +305,7 @@ SSE server.
   (upstream marks BROKEN/TODO, not in CI), and test-fuzz.cpp (fuzztest property
   fuzzing, no J equivalent). All are upstream-gated/known-broken/fuzz-only.
 
-## Multi-session & batched HTTP generation (2026-09, IN PROGRESS)
+## Multi-session & batched HTTP generation (2026-09, COMPLETE)
 
 **Motivation.** The HTTP server (Phase 6) handles concurrent connections but
 *serializes* generation: each request is served one-at-a-time through the
@@ -344,10 +349,14 @@ to make generation session-aware and batch concurrent requests.
     session entity + session-aware KV verbs round-trip (k/v read-back correct),
     `sess_kv_bind` sets the globals, lint/load-probe gate passes, serial
     inference (SmolLM2-135M) intact.
-  - **Open (Stage 1 tail):** actually re-point `gen_loop_core`/`gen_loop_batch`
-    at a session (they currently read the globals that `sess_kv_bind` sets).
-    Deferred to Stage 3 (the batch driver), where the per-arch block-run verbs
-    become session-aware.
+  - **Done (2026-09):** re-pointed `gen_loop_core`/`gen_loop_batch` at a session
+    (Stage 1 tail, item 1): they now read `sess_cur_g`; when a session is set
+    they bind the session's kv state (`sess_kv_bind`) at entry and sync
+    `kv_pos`/`kv_meta` back into it before returning — callers pass a session
+    through the global instead of binding/syncing manually. The per-arch
+    block-run verbs stay global-based (bound via the internal bind);
+    `chat_tmpl_render` also reads the session's ct_* fields when `sess_cur_g`
+    is set. Serial path (empty `sess_cur_g`) unchanged.
 - **Stage 2 — chat/template/streaming sessionization (IN PROGRESS).** Move
   `chat_session_g`, `ct_*`, `st_buf`, callback globals into the session; add
   session-aware `chat_completion`/`chat_stream`/`chat_core_stream` that operate
@@ -376,12 +385,17 @@ to make generation session-aware and batch concurrent requests.
     you today?", turn 2 "The capital of France is Paris." — resume works, no
     OOM), serial `chat_core_stream` unchanged (sess_cur_g empty -> globals),
     lint gate passes.
-  - **End-state note:** the design goal is all-session-aware with ONE global
-    `session` for the serial path — the serial verbs (`chat_completion`/
-    `chat_core`/`chat_gen_stream`/`chat_fresh_stream`/`chat_core_stream`) can
-    later become thin wrappers over the `_s` versions passing the global
-    `session`. Deferred as a follow-up refactor (the `_s` verbs are the
-    canonical form; the serial verbs use the globals today).
+  - **Done (2026-09):** the serial verbs (`chat_completion`/`chat_core`/
+    `chat_gen_stream`/`chat_fresh_stream`/`chat_core_stream`) are now thin
+    wrappers over the `_s` versions passing ONE global `session` (Stage 2
+    end-state, item 2): a `session_ensure` lazily creates/syncs the global
+    session from the kv globals, each serial verb calls `session_ensure` + the
+    `_s` version, rebinds `session`, and returns the same shape. The legacy
+    globals (`chat_session_g`, `ct_*_g`, `st_buf_g`) are now DEPRECATED shims
+    kept for tests/external callers; the `session` noun is canonical.
+    `chat_reset` resets the global session; `test_chat_session` reads
+    `sess_chat session`. The remaining deprecation work is migrating
+    `chat_generate` + test_chat's renderer setup off the ct_*_g globals.
 - **Stage 3 — server batching. DONE (2026-09).** The server buffers concurrent
   complete requests in `PENDING` (each a 9-cell `<fd ; msgs ; tools ; temp ;
   top_p ; mx ; stream ; cid ; created>` record); `v1_chat` appends (no
