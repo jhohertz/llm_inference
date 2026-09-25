@@ -35,7 +35,9 @@ COMPLETE. **Multi-session & batched HTTP generation is COMPLETE** — all four
 stages plus the Stage 1 tail (gen_loop session-aware) and the Stage 2 end-state
 (serial verbs as thin wrappers over `_s` passing one global `session`) are done;
 the `session` noun is the canonical serial-path state and the legacy globals
-(`chat_session_g`, `ct_*_g`, `st_buf_g`) are deprecated shims. Phase 4
+(`chat_session_g`, `ct_vars_g`/`ct_tools_g`, `st_buf_g`/`st_arch_g`) are
+ELIMINATED (only `ct_tmpl_g` — the shared loaded template — and `ct_now_g` —
+the pinned-date determinism knob — remain). Phase 4
 (engineering stretch, low priority) plus a few open items below. The jpi fork
 was abandoned (2026-09).
 
@@ -391,11 +393,11 @@ to make generation session-aware and batch concurrent requests.
     end-state, item 2): a `session_ensure` lazily creates/syncs the global
     session from the kv globals, each serial verb calls `session_ensure` + the
     `_s` version, rebinds `session`, and returns the same shape. The legacy
-    globals (`chat_session_g`, `ct_*_g`, `st_buf_g`) are now DEPRECATED shims
-    kept for tests/external callers; the `session` noun is canonical.
-    `chat_reset` resets the global session; `test_chat_session` reads
-    `sess_chat session`. The remaining deprecation work is migrating
-    `chat_generate` + test_chat's renderer setup off the ct_*_g globals.
+    globals (`chat_session_g`, `ct_vars_g`/`ct_tools_g`, `st_buf_g`/`st_arch_g`)
+    are now ELIMINATED; the `session` noun is canonical. `chat_reset` resets the
+    global session; `test_chat_session` reads `sess_chat session`; `chat_tmpl_render`
+    reads ct_vars/ct_tools from `sess_cur_g` (empty fallback). Only `ct_tmpl_g`
+    (shared loaded template) and `ct_now_g` (pinned-date determinism knob) remain.
 - **Stage 3 — server batching. DONE (2026-09).** The server buffers concurrent
   complete requests in `PENDING` (each a 9-cell `<fd ; msgs ; tools ; temp ;
   top_p ; mx ; stream ; cid ; created>` record); `v1_chat` appends (no
