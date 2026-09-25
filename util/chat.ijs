@@ -90,17 +90,16 @@ NB. ================================================================
 NB. Streaming incremental detokenizer (Phase 6 item 2)
 NB. Port of llama.cpp's streaming detokenizer: accumulate each token's raw
 NB. bytes, hold any incomplete trailing UTF-8 sequence, emit only complete
-NB. characters. State globals st_buf_g (held bytes) + st_arch_g.  sess_cur_g is
-NB. the CURRENT session for the session-aware streaming callback ('' = serial,
-NB. use the globals; a session = read/write its st_buf/st_arch fields 5/6).
+NB. characters. The session's st_buf (field 5) holds the held bytes, st_arch
+NB. (field 6) the arch.  sess_cur_g is the CURRENT session for the streaming
+NB. callback; the serial path always sets it (via the _s verbs), so the
+NB. session-aware piece_s is the only streaming path.
 NB. ================================================================
-st_buf_g =: ''
-st_arch_g =: ''
 sess_cur_g =: ''
 
 NB. ---- Ensure the serial-path global session is a real session, synced from
 NB. ---- the current kv globals (callers/tests set kv_max_seq_g etc.).  The
-NB. ---- legacy globals (chat_session_g, ct_*_g, st_buf_g) are DEPRECATED shims
+NB. ---- legacy globals (ct_*_g) are DEPRECATED shims
 NB. ---- kept for tests/external callers; the session noun is the canonical state.
 session_ensure =: 3 : 0
   if. 0 = # session do.
@@ -111,12 +110,6 @@ session_ensure =: 3 : 0
   session =: (<kv_batch_g) (11) } session
   session =: (<kv_max_seq_g) (12) } session
   session =: (<kv_meta) (13) } session
-  ''
-)
-
-chat_stream_reset =: 3 : 0
-  st_buf_g =: ''
-  st_arch_g =: ''
   ''
 )
 
@@ -262,28 +255,6 @@ utf8_tail =: 3 : 0
   if. have < exp do. have else. 0 end.
 )
 
-NB. ---- Emit the text delta for one token (streaming) ----
-NB. x = arch; y = <llm ; token>. Appends the token's bytes to st_buf_g and
-NB. returns the complete UTF-8 text emitted ('' if a char is still incomplete).
-chat_stream_piece =: 4 : 0
-  arch =. x
-  llm =. > 0 { y
-  token =. > 1 { y
-  st_arch_g =: arch
-  bytes =. arch chat_tok_bytes (llm ; token)
-  st_buf_g =: st_buf_g , bytes
-  buf =. st_buf_g
-  hold =. utf8_tail buf
-  emit_n =. (# buf) - hold
-  if. emit_n > 0 do.
-    out =. emit_n {. buf
-    st_buf_g =: emit_n }. buf
-    out
-  else.
-    ''
-  end.
-)
-
 NB. ---- Streaming chat completion callback wiring ----
 NB. chat_stream_cb is the per-token streaming callback the caller installs as
 NB. gen_cb_g (with gen_cb_on_g=1). It reads arch/llm from globals, emits each
@@ -308,13 +279,9 @@ NB. byte-encoded vocab string that would leak into the delta tail).
 chat_stream_cb =: 3 : 0
   pred =. y
   if. (chat_cb_stop_g i. pred) < # chat_cb_stop_g do. pred return. end.
-  if. 0 = # sess_cur_g do.
-    delta =. chat_cb_arch_g chat_stream_piece (chat_cb_llm_g ; pred)
-  else.
-    res =. sess_cur_g chat_stream_piece_s (chat_cb_arch_g ; chat_cb_llm_g ; pred)
-    delta =. > 0 { res
-    sess_cur_g =: > 1 { res
-  end.
+  res =. sess_cur_g chat_stream_piece_s (chat_cb_arch_g ; chat_cb_llm_g ; pred)
+  delta =. > 0 { res
+  sess_cur_g =: > 1 { res
   if. 0 < # delta do. chat_cb_g delta end.
   pred
 )
@@ -924,7 +891,7 @@ NB. Chat session (persistent multi-turn — option B)
 NB. The crude console chat: `llm chat 'next message'` continues the
 NB. conversation, reusing the KV cache + token stream across calls.
 NB. ================================================================
-NB. chat_session_g = '' (no session) or
+NB. The serial-path chat state is the session's field 0 (`sess_chat session`):
 NB.   <arch; messages; total_tokens; cur_pos; max_steps; params>
 NB.   - messages: boxed list of <role ; content> message boxes
 NB.   - total_tokens: boxed list of ALL tokens processed (prompt + generated)
@@ -934,7 +901,6 @@ NB. The KV cache lives in kv_cache_g (the global); the session NEVER holds a
 NB. cache reference — a second ref would defeat the in-place amend. One active
 NB. session per J session; multi-session support can install a session's cache
 NB. into kv_cache_g on switch later.
-chat_session_g =: ''
 
 NB. ---- path counters (tests: assert the resume path actually runs) ----
 chat_resume_count =: 0
@@ -943,7 +909,6 @@ chat_fallback_count =: 0
 NB. ---- Reset the chat session (clears session + KV cache) ----
 chat_reset =: 3 : 0
   session =: 0 $ <''
-  chat_session_g =: ''
   kv_reset ''
   ''
 )
@@ -952,29 +917,8 @@ NB. ---- Fresh full-render chat turn (stateless helper) ----
 NB. x = llm; y = <messages; max_steps; temp; k; p; min_p; flat>
 NB. Renders the FULL message history, generates fresh, stores the session.
 NB. Returns the answer text.
-chat_fresh =: 4 : 0
-  llm =. x
-  messages =. > 0 { y
-  max_steps =. > 1 { y
-  temp =. > 2 { y
-  k =. > 3 { y
-  p =. > 4 { y
-  min_p =. > 5 { y
-  flat =. > 6 { y
-  arch =. llm_arch llm
-  stop =. chat_stop_tokens llm
-  prompt =. chat_prompt messages
-  tokens =. arch chat_tokenize (<llm) , <prompt
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  answer =. arch chat_detokenize (<llm) , <gen
-  NB. keep the assistant answer in the history (the next turn's re-render must
-  NB. include it, else the prefix check fails and persistence can't engage)
-  messages =. messages , <('assistant') ; answer
-  chat_session_g =: (<arch) , (<messages) , (<output) , (<(# , > output)) , (<max_steps) , (<flat)
-  answer
-)
+NB. (chat_fresh is superseded by chat_fresh_s — the serial path uses the _s
+NB. verbs via the wrappers; the global-based chat_fresh was removed.)
 
 NB. ---- Core chat turn: persistent session if one exists ----
 NB. x = llm; y = <msg; max_steps; <params>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
@@ -1123,7 +1067,7 @@ NB. ================================================================
 NB. Phase 6 item 4: STATEFUL chat with STREAMING (the stateful TUI path).
 NB. chat_core (above) resumes the KV cache but never streams; chat_completion
 NB. streams but re-renders the full history each turn. chat_core_stream combines
-NB. both: persistent session (chat_session_g) + KV-cache resume, and arms the
+NB. both: persistent session (the global `session` noun) + KV-cache resume, and arms the
 NB. per-token streaming callback (mirrors chat_completion's stream mode).
 NB. The caller must chat_stream_start '' + set chat_cb_g (its delta consumer)
 NB. before calling, and chat_stream_stop '' after. Returns the answer text.
