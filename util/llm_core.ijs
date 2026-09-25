@@ -9,6 +9,7 @@ require 'llm/inference/kernels/jfloat'
 require 'llm/inference/gguf/gguf'
 require 'llm/inference/util/kv_cache'
 require 'llm/inference/util/sampler'
+require 'dict'
 
 NB. ---- Prefill chunk size (tunable) ----
 NB. Fresh prompts are prefilled in chunks of this many tokens to bound peak
@@ -28,15 +29,41 @@ gen_cb_on_g =: 0
 gen_cb_g =: ]
 
 NB. ---- llm noun layout (shared across architectures) ----
-NB. llm = <path; ti; _; tokenizer; mi; kv_cache; tds; all_tensors; block_data; arch>
-llm_path        =: >@(0&{)
-llm_ti          =: >@(1&{)
-llm_mi          =: >@(4&{)
-llm_kv_cache    =: >@(5&{)   NB. llm[5]=<k;v>
-llm_tds         =: >@(6&{)
-llm_all_tensors =: >@(7&{)
-llm_block_data  =: >@(8&{)
-llm_arch        =: >@(9&{)  NB. arch string ('gemma3'|'llama'|'qwen2')
+NB. llm = <path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
+NB.       block_data; kv_data; arch>
+llm_path          =: >@(0&{)
+llm_ti            =: >@(1&{)
+llm_default_params =: >@(2&{)   NB. chat sampling defaults <temp;k;p;min_p>
+llm_mi            =: >@(4&{)
+llm_kv_cache      =: >@(5&{)   NB. llm[5]=<k;v>
+llm_tds           =: >@(6&{)
+llm_all_tensors   =: >@(7&{)
+llm_block_data    =: >@(8&{)
+llm_kv_data       =: >@(9&{)   NB. decoded-KV dict (query via kv_get)
+llm_arch          =: >@(10&{)  NB. arch string ('gemma3'|'llama'|'qwen2')
+
+NB. ---- Query a decoded KV by name from a kv_data dict ----
+NB. x = key name; y = kv_data dict.  Returns the decoded value (opened), or a:
+NB. (absent).  Used by kv_get and by loaders extracting arch config from kv_data.
+dict_get =: 4 : 0
+  name =. x
+  dict =. y
+  if. 0 = # dict do. a: return. end.
+  if. has__dict (<name) do.
+    > get__dict (<name)
+  else.
+    a:
+  end.
+)
+
+NB. ---- Query a decoded KV by name from the llm's kv_data dict ----
+NB. x = key name; y = llm.  Returns the decoded value (opened), or a: (absent).
+NB. The kv_data dict is built at load time by build_kv_dict (all GGUF KVs).
+kv_get =: 4 : 0
+  name =. x
+  llm =. y
+  name dict_get llm_kv_data llm
+)
 
 NB. ---- Canonicalize token_embd.weight to transposed (emb, vocab) storage ----
 NB. J's matvec (m,n)x(n,) is ~4.7x slower than the vector-matrix (n,)x(n,m), so
@@ -66,18 +93,81 @@ emb_canonical =: 3 : 0
 )
 
 NB. ---- mi accessors (per-arch modules extend this) ----
-mi_block_count =: >@(0&{)
-mi_context_len =: >@(1&{)
-mi_emb_len     =: >@(2&{)
-mi_n_heads     =: >@(3&{)
-mi_n_heads_kv  =: >@(4&{)
-mi_head_dim    =: >@(5&{)
-mi_rope_freq   =: >@(6&{)
-mi_vocab_size  =: >@(7&{)
-mi_rms_eps     =: >@(8&{)
-mi_n_ff        =: >@(9&{)
-mi_cos_tab     =: >@(10&{)
-mi_sin_tab     =: >@(11&{)
+NB. The mi is a dict of named hparams (built by build_mi_dict + the arch loader's
+NB. named puts). Each accessor takes the mi dict ref as y and opens the named value.
+mi_block_count =: 3 : 0
+  d =. y
+  > get__d (<'block_count')
+)
+mi_context_len =: 3 : 0
+  d =. y
+  > get__d (<'context_len')
+)
+mi_emb_len     =: 3 : 0
+  d =. y
+  > get__d (<'emb_len')
+)
+mi_n_heads     =: 3 : 0
+  d =. y
+  > get__d (<'n_heads')
+)
+mi_n_heads_kv  =: 3 : 0
+  d =. y
+  > get__d (<'n_heads_kv')
+)
+mi_head_dim    =: 3 : 0
+  d =. y
+  > get__d (<'head_dim')
+)
+mi_rope_freq   =: 3 : 0
+  d =. y
+  > get__d (<'rope_freq')
+)
+mi_vocab_size  =: 3 : 0
+  d =. y
+  > get__d (<'vocab_size')
+)
+mi_rms_eps     =: 3 : 0
+  d =. y
+  > get__d (<'rms_eps')
+)
+mi_n_ff        =: 3 : 0
+  d =. y
+  > get__d (<'n_ff')
+)
+mi_cos_tab     =: 3 : 0
+  d =. y
+  > get__d (<'cos_tab')
+)
+mi_sin_tab     =: 3 : 0
+  d =. y
+  > get__d (<'sin_tab')
+)
+mi_attn_scale  =: 3 : 0
+  d =. y
+  > get__d (<'attn_scale')
+)
+mi_resid_scale =: 3 : 0
+  d =. y
+  > get__d (<'resid_scale')
+)
+
+NB. ---- Build a named-hparams mi dict from the boxed mi noun (indices 0-9) ----
+NB. y = the boxed mi noun from *_extract_hparams:
+NB.   <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim;
+NB.    rope_freq; vocab_size; rms_eps; n_ff>.  Returns the dict locale ref.
+NB. The arch loader then puts the rope tables + scale fields + arch-specific
+NB. fields (named) into it, and the mi_* accessors query by name.
+build_mi_dict =: 3 : 0
+  mi =. y
+  NB. 'hash concurrent': J9.8 runs matmuls on worker threads; concurrent dicts
+  NB. are the documented thread-safe index type.  dict_new (gguf.ijs) retries
+  NB. the intermittent create deadlock.
+  d =. dict_new 'hash concurrent' ,&< ('keytype';'boxed'),:('valuetype';'boxed')
+  keys =. 'block_count' ; 'context_len' ; 'emb_len' ; 'n_heads' ; 'n_heads_kv' ; 'head_dim' ; 'rope_freq' ; 'vocab_size' ; 'rms_eps' ; 'n_ff'
+  mi put__d keys
+  d
+)
 
 NB. ---- ti_row accessors ----
 ti_dims       =: >@(1&{)

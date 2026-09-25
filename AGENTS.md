@@ -285,7 +285,8 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   `attention.scale` 0.015625 (scores, NOT 1/sqrt(hd)), `logit_scale` (lm_head
   logits /scale; 4 on 4.0, 10 on 4.1 — so
   `gen_loop_core` has a per-arch `logit_div` applied after `output_head`).
-  Stored in mi at indices 12..15 (`granite_mi_*`). `head_count_kv` is an ARRAY
+  Stored in mi as NAMED dict keys (`granite_mi_*` / `mi_attn_scale` /
+  `mi_resid_scale` — the mi is a jdict, see below). `head_count_kv` is an ARRAY
   KV (all 4s) on granite-4.0 — take `{.` of `kv_array`; but granite-4.1/4.2+
   stores it as a scalar UINT (vt=4), so `kv_array` is empty and we fall back to
   `kv_uint` (the loader handles both). Tied
@@ -338,7 +339,12 @@ onto that arch's verbs — playsound-style, so the inference path has no per-cal
 dispatch. Generic `infer`/`generate`/`infer_simple`/`generate_simple` follow the
 **last-loaded** model (one current arch per session); per-arch verbs (`gem3_*`,
 `llama_*`, `qw2_*`) are the precise entry points. The llm noun carries its arch at
-index 9 (`llm_arch`). e.g.
+index 10 (`llm_arch`); it is 11 elements: `<path; ti; default_params;
+tokenizer; mi; kv_cache; tds; all_tensors; block_data; kv_data; arch>` where
+`default_params` (index 2) is the chat sampling defaults and `kv_data` (index 9)
+is a jdict of all decoded GGUF KVs (query via `kv_get`/`dict_get`). The `mi`
+is a jdict of named hparams (built by `build_mi_dict` + named puts; the
+`mi_*`/`granite_mi_*` accessors query by name, not index). e.g.
 `llm infer_simple_inference_ 'hello'`,
 `llm qw2_infer_inference_ ('hello' ; <0 0 0.95 0.0)`.
 
@@ -385,6 +391,18 @@ read it on a need-to-know basis for the J-specific task at hand.
 AGENTS.md keeps only the operational essentials (file map, how to run,
 interface, parser API, debug). Deferred ideas about applying an idiom to this
 codebase are surfaced in **PLAN.md** ("Deferred J-idiom applications").
+
+**jdict (data/dict) gotchas in this J9.8 build** (the mi / kv_data dicts):
+the single-put (`1 key`) path is broken — it raises a domain/length/rank
+error, so **always use a multi-put of 2+ keys** (`(vals) put__d 'k1' ; 'k2'` —
+parenthesize the values side; the keys side is a `;` chain). The resize path
+crashes (`16!:_8`), so size `initcapacity` up-front; `initcapacity` must be an
+INTEGER scalar (J's `%` returns a float — `count =. <. (#kvs) % 4` — a float
+cap silently makes `put` raise a rank error). Use `'hash concurrent'` (the
+documented thread-safe index type; J9.8 runs matmuls on worker threads) and
+create via `dict_new` (gguf.ijs), which retries the intermittent `conew`
+"would deadlock". `get`/`has` single-key forms are fine (`get__d <'k'`,
+`has__d <'k'>`).
 - Ch 30 modifiers (locale-leak, soporific, playsound dispatch) → J-KNOWLEDGE.md
 - Ch 35 performance & measurement → J-KNOWLEDGE.md
 - Ch 36 tacit accessors `>@(n&{)` → J-KNOWLEDGE.md (used for `llm_*`/`mi_*`/`ti_*`

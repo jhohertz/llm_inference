@@ -31,19 +31,25 @@ NB. Optional epoch-seconds override for the `now` template variable (0 = use
 NB. current time). Lets tests pin a stable date (e.g. 1721952000 = 26 Jul 2024).
 ct_now_g =: 0
 
-NB. ---- Dispatch helpers (arch string -> arch verb) ----
-chat_prompt =: 4 : 0
-  select. x
-  case. 'gemma3' do. gem3_chat_prompt y
-  case. 'qwen2'  do. qw2_chat_prompt y
-  case. 'qwen3'  do. qw3_chat_prompt y
-  case. 'qwen35' do. qw35_chat_prompt y
-  case. 'llama'  do. llama_chat_prompt y
-  case. 'granite' do. granite_chat_prompt y
-  case. 'ernie4_5' do. ernie_chat_prompt y
-  case. 'lfm2' do. lf2_chat_prompt y
-  end.
+NB. ---- Shared chat prompt ----
+NB. chat_prompt: monadic verb; y = messages (boxed list of <role ; content>).
+NB. The arch is implicit — each arch loader sets ct_tmpl_g (the real GGUF jinja
+NB. template) from the model file, and chat_tmpl_render reads it. All 8 arch
+NB. renderers are byte-identical, so one shared verb serves them; the per-arch
+NB. names (gem3_chat_prompt etc.) are aliases so tests/direct callers keep
+NB. working. (Called as `chat_prompt messages` — monadic; the arch is implicit.)
+chat_prompt =: 3 : 0
+  messages =. y
+  chat_tmpl_render messages
 )
+gem3_chat_prompt =: chat_prompt
+qw2_chat_prompt =: chat_prompt
+qw3_chat_prompt =: chat_prompt
+qw35_chat_prompt =: chat_prompt
+llama_chat_prompt =: chat_prompt
+granite_chat_prompt =: chat_prompt
+ernie_chat_prompt =: chat_prompt
+lf2_chat_prompt =: chat_prompt
 chat_tokenize =: 4 : 0
   select. x
   case. 'gemma3' do. llama3_tokenize y
@@ -296,18 +302,6 @@ chat_stream_cb =: 3 : 0
   if. 0 < # delta do. chat_cb_g delta end.
   pred
 )
-chat_default_params =: 3 : 0
-  select. y
-  case. 'gemma3' do. gem3_default_params
-  case. 'qwen2'  do. qw2_default_params
-  case. 'qwen3'  do. qw3_default_params
-  case. 'qwen35' do. qw35_default_params
-  case. 'llama'  do. llama_default_params
-  case. 'granite' do. granite_default_params
-  case. 'ernie4_5' do. ernie_default_params
-  case. 'lfm2' do. lf2_default_params
-  end.
-)
 chat_stop_tokens =: 3 : 0
   llm =. y
   arch =. llm_arch llm
@@ -439,7 +433,7 @@ chat_generate =: 4 : 0
   ct_tools_g =: tools
 
   arch =. llm_arch llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
   L =. # , > tokens
@@ -456,7 +450,7 @@ chat_generate_simple =: 4 : 0
   messages =. > 0 { y
   max_steps =. > 1 { y
   arch =. llm_arch llm
-  params =. chat_default_params arch
+  params =. llm_default_params llm
   llm chat_generate (messages ; max_steps ; <params)
 )
 
@@ -575,6 +569,29 @@ NB.                <tool_call> marker in the content classifies as 'tool_calls'
 NB.                and the tool_calls are extracted; content is nulled)
 NB.   tool_calls   = boxed list of OpenAI-shaped tool_call minja Values
 NB.                ({type; function:<name; arguments-JSON>; id}), '' if none.
+NB. ---- Shared post-processing (chat_completion / chat_completion_batch) ----
+NB.  x = arch; y = <llm ; gen ; max_steps>.  Detokenizes gen (the post-prompt
+NB.  token stream), sets finish_reason ('stop'/'length'/'tool_calls'), nulls
+NB.  content on tool-calls.  Returns <content ; finish ; tcs>.  Both the serial
+NB.  and batched chat completions use this identical block.
+chat_postprocess =: 4 : 0
+  arch =. x
+  llm =. > 0 { y
+  gen =. > 1 { y
+  max_steps =. > 2 { y
+  content =. arch chat_detokenize (<llm) , <gen
+  finish =. 'stop'
+  if. max_steps <: # gen do. finish =. 'length' end.
+  NB. Phase 6 item 3: tool-call classification. A <tool_call> marker classifies
+  NB. as 'tool_calls', nulls the text content, and extracts the tool_calls.
+  tcs =. chat_extract_tool_calls content
+  if. 0 < # tcs do.
+    finish =. 'tool_calls'
+    content =. ''
+  end.
+  (<content) , (<finish) , (<tcs)
+)
+
 chat_completion =: 4 : 0
   llm =. x
   messages =. > 0 { y
@@ -595,7 +612,7 @@ chat_completion =: 4 : 0
   ct_tools_g =: tools
 
   arch =. llm_arch llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
   L =. # , > tokens
@@ -620,18 +637,7 @@ chat_completion =: 4 : 0
     chat_stream_reset ''
   end.
   gen =. L }. output
-  content =. arch chat_detokenize (<llm) , <gen
-  finish =. 'stop'
-  if. max_steps <: # gen do. finish =. 'length' end.
-  NB. Phase 6 item 3: tool-call classification. If the generated content carries
-  NB. a <tool_call> marker, classify as 'tool_calls', null the text content
-  NB. (OpenAI convention), and extract the tool_calls (OpenAI-shaped).
-  tcs =. chat_extract_tool_calls content
-  if. 0 < # tcs do.
-    finish =. 'tool_calls'
-    content =. ''
-  end.
-  (<content) , (<finish) , (<tcs)
+  arch chat_postprocess (<llm) , (<gen) , <max_steps
 )
 
 NB. ---- Session-aware chat_completion (Stage 2) ----
@@ -662,7 +668,7 @@ chat_completion_s =: 4 : 0
   sess =. (<tools) (4) } sess
 
   arch =. llm_arch llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
   L =. # , > tokens
@@ -778,7 +784,7 @@ chat_completion_batch =: 4 : 0
       r =. > i { parsed
       ct_vars_g =: chat_vars_obj ''
       ct_tools_g =. > 1 { r
-      prompt =. arch chat_prompt > 0 { r
+      prompt =. chat_prompt > 0 { r
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prompts_tok =. prompts_tok , <tok_list
@@ -792,15 +798,7 @@ chat_completion_batch =: 4 : 0
       i =. > j { idxs
       L =. > j { Ls
       gen =. (L) }. (> j { output)
-      content =. arch chat_detokenize (<llm) , <gen
-      finish =. 'stop'
-      if. mx <: # gen do. finish =. 'length' end.
-      tcs =. chat_extract_tool_calls content
-      if. 0 < # tcs do.
-        finish =. 'tool_calls'
-        content =. ''
-      end.
-      cell =. (<content) , (<finish) , (<tcs)
+      cell =. arch chat_postprocess (<llm) , (<gen) , <mx
       results =. (<cell) i} results
       j =. j + 1
     end.
@@ -920,7 +918,7 @@ chat_completion_simple =: 4 : 0
   max_steps =. > 2 { y
   stream =. > 3 { y
   arch =. llm_arch llm
-  params =. chat_default_params arch
+  params =. llm_default_params llm
   llm chat_completion (messages ; tools ; max_steps ; stream ; <params)
 )
 
@@ -973,7 +971,7 @@ chat_fresh =: 4 : 0
   flat =. > 6 { y
   arch =. llm_arch llm
   stop =. chat_stop_tokens llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
   output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
@@ -1023,7 +1021,7 @@ chat_core =: 4 : 0
       prev_toks =. > 2 { s
       prev_len =. > 3 { s
       messages =. prev_messages , <('user') ; msg
-      prompt =. arch chat_prompt messages
+      prompt =. chat_prompt messages
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prev_flat =. , > prev_toks
@@ -1076,7 +1074,7 @@ chat_fresh_s =: 4 : 0
   flat =. > 7 { y
   arch =. llm_arch llm
   stop =. chat_stop_tokens llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
   sess_kv_bind sess
@@ -1130,7 +1128,7 @@ chat_core_s =: 4 : 0
       prev_toks =. > 2 { cs
       prev_len =. > 3 { cs
       messages =. prev_messages , <('user') ; msg
-      prompt =. arch chat_prompt messages
+      prompt =. chat_prompt messages
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prev_flat =. , > prev_toks
@@ -1164,7 +1162,7 @@ chat =: 4 : 0
   llm =. x
   msg =. y
   arch =. llm_arch llm
-  params =. chat_default_params arch
+  params =. llm_default_params llm
   llm chat_core (msg ; 100000 ; <params)
 )
 
@@ -1216,7 +1214,7 @@ chat_fresh_stream =: 4 : 0
   flat =. > 2 { y
   stop =. > 3 { y
   arch =. llm_arch llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
   output =. llm chat_gen_stream (tokens ; '' ; max_steps ; <flat) , <stop
@@ -1268,7 +1266,7 @@ chat_core_stream =: 4 : 0
       prev_toks =. > 2 { s
       prev_len =. > 3 { s
       messages =. prev_messages , <('user') ; msg
-      prompt =. arch chat_prompt messages
+      prompt =. chat_prompt messages
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prev_flat =. , > prev_toks
@@ -1340,7 +1338,7 @@ chat_fresh_stream_s =: 4 : 0
   flat =. > 3 { y
   stop =. > 4 { y
   arch =. llm_arch llm
-  prompt =. arch chat_prompt messages
+  prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
   out =. llm chat_gen_stream_s ((<sess) , (<tokens) , (<'') , (<max_steps) , (<flat) , (<stop))
@@ -1397,7 +1395,7 @@ chat_core_stream_s =: 4 : 0
       prev_toks =. > 2 { cs
       prev_len =. > 3 { cs
       messages =. prev_messages , <('user') ; msg
-      prompt =. arch chat_prompt messages
+      prompt =. chat_prompt messages
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prev_flat =. , > prev_toks

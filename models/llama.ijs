@@ -131,7 +131,7 @@ llama_attention =: 4 : 0
   K =. K rope_apply2_t rope_t
 
   NB. Llama scales Q by 1/sqrt(head_dim) before attention
-  Q =. Q % head_dim ^ 0.5
+  Q =. Q * mi_attn_scale mi
 
   NB. Write K,V (n_kv, hd) to cache, read all up to pos
   kv_write ((<layer) , (<pos) , (<K) , (<V))
@@ -217,7 +217,7 @@ llama_attention_b =: 4 : 0
   K =. (L, n_heads_kv, head_dim) $ , (1 2 3 0 |: (Ka_out ,: Kb_out))
 
   NB. Llama scales Q by 1/sqrt(head_dim)
-  Q =. Q % head_dim ^ 0.5
+  Q =. Q * mi_attn_scale mi
 
   NB. RESUME: prepend the cache prefix (positions 0..start_pos-1, already
   NB. norm'd + RoPE'd) so this batch attends to the full history.
@@ -277,13 +277,14 @@ llama_block_forward =: 4 : 0
   input =. hidden
   attn_result =. hidden llama_attention ((<block_data) , (<pos) , (<mi) , (<layer))
   attn_out =. > 0 { attn_result
+  attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + input
   ffn_norm_w =. llama_bd_ff_norm block_data
   ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. (llama_bd_ff_gate block_data) linear_r ffn_in
   up =. (llama_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (llama_bd_ff_down block_data) linear_r (gate swiglu up)
-  output =. ffn_raw + sa_out
+  output =. (ffn_raw * mi_resid_scale mi) + sa_out
   (<output)
 )
 
@@ -299,13 +300,14 @@ llama_block_forward_b =: 4 : 0
   input =. hidden
   attn_result =. hidden llama_attention_b ((<block_data) , (<mi) , (<layer) , (<start_pos) , <rope)
   attn_out =. > 0 { attn_result
+  attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + input
   ffn_norm_w =. llama_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. |: ((llama_bd_ff_gate block_data) (+/ .* ) |: ffn_in)   NB. (L, n_ff)
   up =. |: ((llama_bd_ff_up block_data) (+/ .* ) |: ffn_in)
   ffn_raw =. |: ((llama_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
-  output =. ffn_raw + sa_out
+  output =. (ffn_raw * mi_resid_scale mi) + sa_out
   (<output)
 )
 
@@ -435,7 +437,7 @@ llama_attention_bd =: 4 : 0
   K =. (B, n_heads_kv, head_dim) $ , (1 2 3 0 |: (Ka_out ,: Kb_out))
 
   NB. Llama scales Q by 1/sqrt(head_dim)
-  Q =. Q % head_dim ^ 0.5
+  Q =. Q * mi_attn_scale mi
 
   NB. Per-sequence: write K/V at pos[b], read the window, scores/softmax/output
   NB. Vectorized path fires when all B sequences share one position (common
@@ -513,13 +515,14 @@ llama_block_forward_bd =: 4 : 0
   input =. hidden
   attn_result =. hidden llama_attention_bd ((<block_data) , (<pos) , (<mi) , (<layer))
   attn_out =. > 0 { attn_result
+  attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + input
   ffn_norm_w =. llama_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. |: ((llama_bd_ff_gate block_data) (+/ .* ) |: ffn_in)   NB. (B, n_ff)
   up =. |: ((llama_bd_ff_up block_data) (+/ .* ) |: ffn_in)
   ffn_raw =. |: ((llama_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
-  output =. ffn_raw + sa_out
+  output =. (ffn_raw * mi_resid_scale mi) + sa_out
   (<output)
 )
 
@@ -564,9 +567,16 @@ llama_load =: 3 : 0
   ti_end_offset =. > ((n_tensors * 6) - 1) { ti
   tds =. 32 * <. (ti_end_offset + 31) % 32
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. llama_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
+  NB. Default attention/residual scales: 1/sqrt(hd) and 1. Granite overrides
+  NB. these with its GGUF scale KVs; the shared forward verbs read them.
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
+  head_dim =. mi_head_dim mi
+  ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
@@ -594,7 +604,7 @@ llama_load =: 3 : 0
   block_count =. mi_block_count mi
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -604,6 +614,7 @@ llama_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Generic tokenize/detokenize (llama arch) ----
@@ -747,12 +758,8 @@ NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.
 NB. Renders the real GGUF jinja chat_template (tokenizer.chat_template) via
 NB. chat_tmpl_render for both SmolLM2 and Llama-3.2 (the llama arch).
-llama_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
 
-llama_default_params =: 0 0 0.95 0.0
+
 NB. Stop token: EOS (SmolLM2 <|im_end|>=2; Llama-3.2 <|eot_id|>=128009).
 llama_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y

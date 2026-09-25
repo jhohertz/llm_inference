@@ -49,7 +49,7 @@ NB. ---- Generic model loader: detect arch -> arch-specific loader ----
 NB. Loads the GGUF, finds its architecture, hands off to that arch's loader,
 NB. then maps the generic infer/generate entry points onto the arch's verbs —
 NB. so the inference path has no per-call dispatch. The llm noun carries its
-NB. arch at index 9 (llm_arch) for later OOP/interface work.
+NB. arch at index 10 (llm_arch) for later OOP/interface work.
 NB. The file is memory-mapped ONCE here (mmap_gguf); detect_arch and the
 NB. arch loader parse from the mapped raw. The mapping is unmap'd after
 NB. load (one model per load) — the llm noun never holds the mapped-raw ref,

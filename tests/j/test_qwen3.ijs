@@ -82,15 +82,15 @@ test_qwen3 =: 3 : 0
   echo '  Workspace after load: ' , fmt_bytes mem_after_load
   echo ''
 
-  NB. --- llm structure: 9 core + block_data + arch = 10 ---
+  NB. --- llm structure: 9 core + block_data + kv_data + arch = 11 ---
   tc =. tc + 1
-  if. 10 = # llm do.
+  if. 11 = # llm do.
     pc =. pc + 1
-    echo 'PASS: llm has 10 elements'
+    echo 'PASS: llm has 11 elements'
   else.
     fc =. fc + 1
-    fl =. fl , 'llm has 10 elements', LF
-    echo 'FAIL: llm has 10 elements'; echo '  got: '; echo # llm
+    fl =. fl , 'llm has 11 elements', LF
+    echo 'FAIL: llm has 11 elements'; echo '  got: '; echo # llm
   end.
 
   mi =. llm_mi llm

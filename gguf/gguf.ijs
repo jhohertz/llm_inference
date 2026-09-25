@@ -25,6 +25,7 @@ NB. index list, `] {~ idx` fetches (x+i.n){y. `(_k) 3!:4` decodes, `0 {`
 NB. extracts the scalar.
 coclass 'inference'
 require 'jmf'
+require 'dict'   NB. J dict addon (data/dict) — kv_data dict for KVs
 cocurrent 'inference'
 
 NB. ---- Memory-mapped GGUF file (jmf addon) ----
@@ -444,7 +445,7 @@ kv_float =: 4 : 0
     else.
       nb =. 8
     end.
-    _1(3!:5) (vo + i.nb) { raw
+    {. _1(3!:5) (vo + i.nb) { raw
   else.
     _1
   end.
@@ -512,6 +513,86 @@ kv_array =: 4 : 0
   else.
     $0
   end.
+)
+
+NB. ---- Decode one KV value by type (for the kv_data dict) ----
+NB. x = key; y = <kvs; raw> = kvs_ctx.  Returns the decoded value (unboxed).
+NB. Dispatches on the GGUF value type (vt): uint/int/float/string/array/bool.
+kv_value =: 4 : 0
+  'kvs raw' =. y
+  idx =. x find_kv_idx kvs
+  if. 0 > idx do. a: return. end.
+  vt =. > ((idx*4)+1) { kvs
+  vo =. > ((idx*4)+2) { kvs
+  if. (4 = vt) +. (5 = vt) +. (10 = vt) do.
+    x kv_uint y
+  elseif. (6 = vt) +. (12 = vt) do.
+    x kv_float y
+  elseif. 8 = vt do.
+    x kv_string y
+  elseif. 9 = vt do.
+    x kv_array y
+  elseif. (7 = vt) +. (0 = vt) +. (1 = vt) do.
+    vo { raw
+  elseif. (2 = vt) +. (3 = vt) do.
+    {. (_1) 3!:4 (vo + i.2) { raw
+  elseif. 11 = vt do.
+    vo le64 raw
+  else.
+    vo le64 raw
+  end.
+)
+
+NB. ---- Create a 'hash concurrent' dict, retrying the intermittent deadlock ----
+NB. y = params box array (the 'hash concurrent' ,&< pairs structure).  The dict
+NB. addon's create intermittently raises "would deadlock" in this J9.8 build
+NB. (a catchable error in `conew 'jdict'`); retry up to 6 times.  Returns the
+NB. dict locale ref ('' if all attempts failed — a downstream error then
+NB. surfaces, since 6 consecutive deadlocks is vanishingly unlikely).
+dict_new =: 3 : 0
+  n =. 0
+  r =. ''
+  ok =. 0
+  while. (n < 6) *. 0 = ok do.
+    try.
+      r =. y conew 'jdict'
+      ok =. 1
+    catch.
+      n =. n + 1
+    end.
+  end.
+  r
+)
+
+NB. ---- Build a kv_data dict from all parsed KVs (decoded by type) ----
+NB. y = kvs_ctx = <kvs_flat; raw_bytes>.  Decodes EVERY KV into a J dict
+NB. (boxed keys + boxed values), keyed by the GGUF key name.  Returns the dict
+NB. locale ref.  Caller stores it in the llm noun (llm_kv_data) and queries it
+NB. via kv_get; destroy__kv_data '' frees it (caller should on reload).
+build_kv_dict =: 3 : 0
+  data =. y
+  kvs =. > 0 { data
+  raw =. > 1 { data
+  count =. <. (#kvs) % 4
+  NB. initcapacity sized above the KV count: the dict addon's resize path
+  NB. crashes in this J9.8 build (see tokenizer_llama3.ijs), so never exceed it.
+  NB. count is floored to an INTEGER (J's % returns a float, and the dict
+  NB. addon requires an integer scalar initcapacity — a float cap makes the
+  NB. put raise a rank error).  dict_new retries the intermittent deadlock.
+  p =. 3 2 $ ('keytype' ; 'boxed' ; 'valuetype' ; 'boxed' ; 'initcapacity' ; (2 * count))
+  dict =. dict_new 'hash concurrent' ,&< p
+  keys =. ''
+  vals =. ''
+  i =. 0
+  while. i < count do.
+    key =. > (i*4) { kvs
+    val =. key kv_value data
+    keys =. keys , <key
+    vals =. vals , <val
+    i =. i + 1
+  end.
+  vals put__dict keys
+  dict
 )
 
 NB. Get string array from KV pair by key

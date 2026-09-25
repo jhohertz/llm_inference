@@ -56,13 +56,13 @@ test_gemma3 =: 3 : 0
 
   NB. --- Test llm structure ---
   tc =. tc + 1
-  if. 10 = # llm do.
+  if. 11 = # llm do.
     pc =. pc + 1
-    echo 'PASS: llm has 10 elements'
+    echo 'PASS: llm has 11 elements'
   else.
     fc =. fc + 1
-    fl =. fl , 'llm has 10 elements', LF
-    echo 'FAIL: llm has 10 elements'; echo '  got: '; echo # llm
+    fl =. fl , 'llm has 11 elements', LF
+    echo 'FAIL: llm has 11 elements'; echo '  got: '; echo # llm
   end.
 
   tc =. tc + 1

@@ -323,6 +323,24 @@ NB.  B delta streams is hard — plain JSON first).  Called once per select cycl
 NB.  (after the ready-fd loop), so a lone request is flushed in the same cycle
 NB.  it arrives (no added latency) and concurrent requests (ready in the same
 NB.  cycle) share a batch.  Returns ''.
+NB. ---- send_resp (used by flush_pending) ----
+NB.  y = <fd ; rec ; cres>.  Builds + sends the non-stream JSON response for one
+NB.  buffered record (cres = <content ; finish ; tcs>).  Shared by the batched
+NB.  and single request paths.  Returns ''.
+send_resp =: 3 : 0
+  fd =. > 0 { y
+  rec =. > 1 { y
+  cres =. > 2 { y
+  ct =. > 0 { cres
+  fin =. > 1 { cres
+  tcs =. > 2 { cres
+  bdy =. respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
+  hd =. 'Content-Type: application/json' , CRLF
+  lst =. '200' ; 'OK' ; hd ; bdy
+  fd finish (h11_simple lst)
+  ''
+)
+
 flush_pending =: 3 : 0
   if. 0 = # PENDING do. '' return. end.
   recs=: PENDING
@@ -356,13 +374,7 @@ flush_pending =: 3 : 0
       rec=: > i { ns
       fd=: > 0 { rec
       cres=: > i { results
-      ct=: > 0 { cres
-      fin=: > 1 { cres
-      tcs=: > 2 { cres
-      bdy=: respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
-      hd=: 'Content-Type: application/json' , CRLF
-      lst=: '200' ; 'OK' ; hd ; bdy
-      fd finish (h11_simple lst)
+      send_resp fd ; rec ; cres
       i=: i + 1
     end.
   elseif. 1 = # ns do.
@@ -370,13 +382,7 @@ flush_pending =: 3 : 0
     fd=: > 0 { rec
     params=: (> 3 { rec) ; 0 ; (> 4 { rec) ; 0
     cres=: LLM chat_completion ((> 1 { rec) ; (> 2 { rec) ; (> 5 { rec) ; 0 ; <params)
-    ct=: > 0 { cres
-    fin=: > 1 { cres
-    tcs=: > 2 { cres
-    bdy=: respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
-    hd=: 'Content-Type: application/json' , CRLF
-    lst=: '200' ; 'OK' ; hd ; bdy
-    fd finish (h11_simple lst)
+    send_resp fd ; rec ; cres
   end.
   i=: 0
   while. i < # s do.
@@ -390,7 +396,7 @@ flush_pending =: 3 : 0
 
 NB. ============================================================
 NB.  maybe_flush  ->  called once per select cycle.  Flushes PENDING only when
-NB.  the batch window has elapsed (now - BATCH_START >= BATCH_WINDOW) or the
+NB.  the batch window has elapsed (BATCH_CYCLES >: BATCH_WAIT, ~60ms) or the
 NB.  batch is full (>= BATCH_MAX).  Otherwise it leaves the requests buffered so
 NB.  concurrent requests arriving while the loop is free can join the batch.
 NB.  Returns ''.

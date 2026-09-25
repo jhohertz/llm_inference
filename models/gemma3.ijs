@@ -13,7 +13,10 @@ NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
 NB. ---- Gemma3-specific mi accessor ----
 NB. mi layout matches llm_core (indices 0-11: block_count..sin_tab); swa appended at 12.
-mi_swa         =: >@(12&{)
+mi_swa         =: 3 : 0
+  d =. y
+  > get__d (<'swa')
+)
 
 NB. ---- block_data accessors (gemma3-specific) ----
 NB. block_data = <attn_q; attn_o; q_norm; k_norm; attn_pn; ff_norm; ff_gate; ff_up; ff_down; ff_pn; attn_norm; n_heads; head_dim; rope_freq; n_heads_kv; n_ff; fused_ff_gu; fused_qkv; cos_tab; sin_tab; swa_l>
@@ -681,14 +684,17 @@ gem3_load =: 3 : 0
   tds =. 32 * <. (ti_end_offset + 31) % 32
   
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. gem3_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
 
   NB. Precompute RoPE cos/sin tables for all positions (removes per-token trig)
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
-  NB. Gemma3-specific sliding window appended after sin_tab (index 12)
+  NB. Gemma3-specific sliding window
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   swa =. 'gemma3.attention.sliding_window' gem3_kv_uint kvs_ctx
-  mi =. mi , <swa
+  ((> 0 { rope_tables) ; (> 1 { rope_tables) ; swa) put__mi 'cos_tab' ; 'sin_tab' ; 'swa'
   
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
@@ -720,7 +726,7 @@ gem3_load =: 3 : 0
   NB. Must box EVERY element to prevent razing during , concatenation
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <1.0 64 0.95 0.001   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -730,6 +736,7 @@ gem3_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. gem3_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Single-token inference for Gemma3 ----
@@ -881,11 +888,7 @@ NB. (2-item boxed list, built with (role) ; content). Renders the gemma3 chat
 NB. template: assistant role -> 'model', content trimmed (template `| trim`),
 NB. generation prompt '<start_of_turn>model' appended. BOS is added by the
 NB. llama3 tokenizer (llama.cpp also prepends bos for gemma chat).
-gem3_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
-gem3_default_params =: 1.0 64 0.95 0.001
+
 NB. Stop tokens: <end_of_turn> (EOS) and <eos> (token 1) — per gemma params file.
 gem3_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y

@@ -61,12 +61,30 @@ qw35_extract_hparams =: 3 : 0
 )
 
 NB. ---- qwen35-specific mi accessors (shared mi_* cover indices 0..11) ----
-qw35_mi_key_len     =: >@(12&{)
-qw35_mi_n_rot       =: >@(13&{)
-qw35_mi_ssm_d_inner =: >@(14&{)
-qw35_mi_ssm_d_state =: >@(15&{)
-qw35_mi_ssm_dt_rank =: >@(16&{)
-qw35_mi_ssm_n_group =: >@(17&{)
+qw35_mi_key_len     =: 3 : 0
+  d =. y
+  > get__d (<'key_len')
+)
+qw35_mi_n_rot       =: 3 : 0
+  d =. y
+  > get__d (<'n_rot')
+)
+qw35_mi_ssm_d_inner =: 3 : 0
+  d =. y
+  > get__d (<'ssm_d_inner')
+)
+qw35_mi_ssm_d_state =: 3 : 0
+  d =. y
+  > get__d (<'ssm_d_state')
+)
+qw35_mi_ssm_dt_rank =: 3 : 0
+  d =. y
+  > get__d (<'ssm_dt_rank')
+)
+qw35_mi_ssm_n_group =: 3 : 0
+  d =. y
+  > get__d (<'ssm_n_group')
+)
 
 NB. ---- block_data accessors ----
 NB. Shared (all layers): <attn_norm; post_norm; ffn_gate; ffn_up; ffn_down;
@@ -898,12 +916,13 @@ qw35_load =: 3 : 0
   ti_end_offset =. > ((n_tensors * 6) - 1) { ti
   tds =. 32 * <. (ti_end_offset + 31) % 32
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. qw35_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
   NB. vocab from token_embd dims (qwen35 has no vocab_size KV)
   te_dims =. > ((0 * 6) + 1) { ti
   vocab =. {: te_dims
-  mi =. (<vocab) 7} mi
-  NB. qwen35-specific config fields (indices 12..17): key_len, n_rot, ssm_*
+  NB. qwen35-specific config fields: key_len, n_rot, ssm_*
   key_len =. 'qwen35.attention.key_length' qw35_kv_uint kvs_ctx
   n_rot =. 'qwen35.rope.dimension_count' qw35_kv_uint kvs_ctx
   ssm_d_inner =. 'qwen35.ssm.inner_size' qw35_kv_uint kvs_ctx
@@ -911,8 +930,10 @@ qw35_load =: 3 : 0
   ssm_dt_rank =. 'qwen35.ssm.time_step_rank' qw35_kv_uint kvs_ctx
   ssm_n_group =. 'qwen35.ssm.group_count' qw35_kv_uint kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (<n_rot) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
-  mi =. mi , (<"0) key_len , n_rot , ssm_d_inner , ssm_d_state , ssm_dt_rank , ssm_n_group
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
+  NB. vocab_size overwrites the build_mi_dict placeholder (qwen35 has no KV).
+  (vocab ; (> 0 { rope_tables) ; (> 1 { rope_tables) ; key_len ; n_rot ; ssm_d_inner ; ssm_d_state ; ssm_dt_rank ; ssm_n_group) put__mi 'vocab_size' ; 'cos_tab' ; 'sin_tab' ; 'key_len' ; 'n_rot' ; 'ssm_d_inner' ; 'ssm_d_state' ; 'ssm_dt_rank' ; 'ssm_n_group'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
@@ -939,7 +960,7 @@ qw35_load =: 3 : 0
   block_count =. mi_block_count mi
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -949,6 +970,7 @@ qw35_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. qw35_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Infer (raw single forward, no chat template) ----
@@ -1000,10 +1022,7 @@ NB. The real template (GGUF tokenizer.chat_template) renders the generation
 NB. prompt with angle-bracket tags: thinking LF LF response LF LF (default) or
 NB. thinking LF (enable_thinking=true). Rendered via chat_tmpl_render.
 
-qw35_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
+
 
 NB. ---- Generate (chat-template single turn) ----
 qw35_generate =: 4 : 0
@@ -1065,8 +1084,7 @@ qw35_generate_batch =: 4 : 0
   answers
 )
 
-NB. ---- Per-arch defaults + stop tokens ----
-qw35_default_params =: 0 0 0.95 0.0
+NB. ---- Stop tokens ----
 qw35_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y
   tokenizer_eos_g tk

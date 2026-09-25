@@ -15,7 +15,11 @@ module that consumes the parser and implements the forward pass.
 The generic entry `load_gguf_to_llm` reads the model's `general.architecture`
 KV once (`detect_arch`) and playsound-style maps `infer`/`generate` onto the
 loaded arch's verbs (`gem3_*` / `llama_*` / `qw2_*`) — the check is made at load
-time, not at each call. The llm noun carries its arch at index 9 (`llm_arch`).
+time, not at each call. The llm noun carries its arch at index 10 (`llm_arch`);
+it is 11 elements: `<path; ti; default_params; tokenizer; mi; kv_cache; tds;
+all_tensors; block_data; kv_data; arch>` — `mi` is a jdict of named hparams
+(queried via the `mi_*`/`granite_mi_*` accessors), and `kv_data` is a jdict of
+all decoded GGUF KVs (queried via `kv_get`/`dict_get`).
 
 ```
 inference.ijs (entry point)   — all code lives in the 'inference' locale
@@ -730,7 +734,7 @@ always-emitted system block + dynamic "Today Date" via `strftime_now`).
 Standard decoder, GQA (16→4), SwiGLU, interleaved RoPE (NORM, full head_dim
 rotary, freq_base 1e7), separate QKV/O weights, no q/k norm, **tied
   embeddings** (no `output.weight`). The Granite scaling scheme (read from
-  KVs, stored in mi at indices 12..15, data-driven per model — 4.0/4.1/4.2):
+  KVs, stored in mi as NAMED dict keys, data-driven per model — 4.0/4.1/4.2):
   input embeddings *12 (`embedding_scale`),
   per layer `attn_out*resid + input` then `ffn_out*resid + that`
   (`residual_scale`; 0.263 on 4.0, 0.22 on 4.1), Q*K^T scores *0.015625

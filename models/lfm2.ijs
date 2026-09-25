@@ -717,9 +717,13 @@ lf2_load =: 3 : 0
   ti_end_offset =. > ((n_tensors * 6) - 1) { ti
   tds =. 32 * <. (ti_end_offset + 31) % 32
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. lf2_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
+  ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
@@ -747,7 +751,7 @@ lf2_load =: 3 : 0
   block_count =. mi_block_count mi
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -757,6 +761,7 @@ lf2_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. lf2_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Tokenize/detokenize (gpt2 BPE + llama3 pre, BOS prepended) ----
@@ -903,12 +908,8 @@ NB. qwen-style: {{bos_token}} + <|im_start|>role\n content <|im_end|>\n per
 NB. message + generation prompt <|im_start|>assistant\n. No default system
 NB. block. {{bos_token}} is rendered as '' — lf2_tokenize prepends BOS so the
 NB. token stream matches llama.cpp (bos once).
-lf2_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
 
-lf2_default_params =: 0 0 0.95 0.0
+
 NB. Stop tokens: EOS = <|im_end|> (7).
 lf2_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y
