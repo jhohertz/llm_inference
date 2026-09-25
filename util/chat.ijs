@@ -400,11 +400,17 @@ chat_tmpl_render =: 3 : 0
     vals =. vals , < mv
   end.
   msgs =. mkarr_minja_ vals
-  extra =. ct_vars_g
+  if. 0 = # sess_cur_g do.
+    extra =. ct_vars_g
+    now =. ct_now_g
+    tools =. ct_tools_g
+  else.
+    extra =. sess_vars sess_cur_g
+    now =. sess_now sess_cur_g
+    tools =. sess_tools sess_cur_g
+  end.
   if. '' -: extra do. extra =. mkobj_minja_ '' end.
-  now =. ct_now_g
   if. 0 = now do. now =. (days_from_civil (3 {. (6!:0 ''))) * 86400 end.
-  tools =. ct_tools_g
   if. '' -: tools do. tools =. mknull_minja_ '' else. tools =. ct_parse_json_chatpl_ tools end.
   inputs =. ((<msgs) , (<tools) , (<1) , (<extra) , (<now) , (<'') , (<''))
   src =. ct_tmpl_g
@@ -668,6 +674,7 @@ chat_completion_s =: 4 : 0
   sess =. (<tools) (4) } sess
 
   arch =. llm_arch llm
+  sess_cur_g =: sess
   prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
@@ -678,11 +685,14 @@ chat_completion_s =: 4 : 0
     chat_cb_llm_g =: llm
     chat_cb_stop_g =: stop
     sess =. sess chat_stream_reset_s ''
+    sess_cur_g =: sess
   else.
     gen_cb_on_g =: 0
   end.
   output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
   gen_cb_on_g =: 0
+  sess =. sess_cur_g
+  sess_cur_g =: ''
   if. stream do.
     if. 0 < # sess_stbuf sess do. chat_cb_g sess_stbuf sess end.
     sess =. sess chat_stream_reset_s ''
@@ -1074,12 +1084,13 @@ chat_fresh_s =: 4 : 0
   flat =. > 7 { y
   arch =. llm_arch llm
   stop =. chat_stop_tokens llm
+  sess_cur_g =: sess
   prompt =. chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
-  sess_kv_bind sess
   output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  sess =. (<kv_pos_g) (10) } sess
+  sess =. sess_cur_g
+  sess_cur_g =: ''
   gen =. L }. output
   answer =. arch chat_detokenize (<llm) , <gen
   messages =. messages , <('assistant') ; answer
@@ -1109,6 +1120,7 @@ chat_core_s =: 4 : 0
   min_p =. 3 { flat
   sess =. (<(chat_vars_obj '')) (2) } sess
   sess =. (<'') (4) } sess
+  sess_cur_g =: sess
   arch =. llm_arch llm
   cs =. > 0 { sess
   if. 0 = # cs do.
@@ -1137,9 +1149,9 @@ chat_core_s =: 4 : 0
         NB. re-render prefix matches the stored token stream -> resume from cache
         seg =. prev_len }. tok_list
         L_seg =. # seg
-        sess_kv_bind sess
         output =. llm gen_loop_core ((<"0 seg) ; prev_len ; max_steps ; temp ; k ; p ; min_p ; <stop)
-        sess =. (<kv_pos_g) (10) } sess
+        sess =. sess_cur_g
+        sess_cur_g =: ''
         gen =. L_seg }. output
         answer =. arch chat_detokenize (<llm) , <gen
         total =. prev_toks , output
@@ -1318,10 +1330,8 @@ chat_gen_stream_s =: 4 : 0
   p =. 2 { flat
   min_p =. 3 { flat
   sess_cur_g =: sess
-  sess_kv_bind sess
   output =. llm gen_loop_core (tokens ; start_pos ; max_steps ; temp ; k ; p ; min_p ; <stop)
   sess =. sess_cur_g
-  sess =. (<kv_pos_g) (10) } sess
   sess_cur_g =: ''
   sess =. sess chat_stream_reset_s ''
   (<output) , <sess
@@ -1377,6 +1387,7 @@ chat_core_stream_s =: 4 : 0
   chat_cb_arch_g =: arch
   chat_cb_llm_g =: llm
   chat_cb_stop_g =: stop
+  sess_cur_g =: sess
   cs =. > 0 { sess
   if. 0 = # cs do.
     NB. no session — start fresh with a single user message, STREAMING

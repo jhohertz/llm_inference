@@ -307,6 +307,7 @@ gen_loop_core =: 4 : 0
   stop_list =. > 7 { y
   cb =. ''
   if. gen_cb_on_g do. cb =. gen_cb_g end.
+  if. 0 < # sess_cur_g do. sess_kv_bind sess_cur_g end.
 
   arch =. llm_arch llm
   mi =. llm_mi llm
@@ -451,6 +452,10 @@ gen_loop_core =: 4 : 0
     gen_step =. gen_step + 1
   end.
   (pre_s , gen_s) report_timing (L , gen_step)
+  if. 0 < # sess_cur_g do.
+    sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
+    sess_cur_g =: (<kv_meta) (13) } sess_cur_g
+  end.
   output
 )
 
@@ -472,6 +477,7 @@ gen_loop_batch =: 4 : 0
   min_p =. > 5 { y
   stop_list =. > 6 { y
   B =. # prompts_tok
+  if. 0 < # sess_cur_g do. sess_kv_bind sess_cur_g end.
 
   arch =. llm_arch llm
   mi =. llm_mi llm
@@ -617,6 +623,10 @@ gen_loop_batch =: 4 : 0
     gen_step =. gen_step + 1
   end.
   (pre_s , gen_s) report_timing (B , gen_step)
+  if. 0 < # sess_cur_g do.
+    sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
+    sess_cur_g =: (<kv_meta) (13) } sess_cur_g
+  end.
   outputs
 )
 
