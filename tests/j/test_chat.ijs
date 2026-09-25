@@ -12,6 +12,8 @@ load './models/gemma3.ijs'
 load './models/qwen2.ijs'
 load './models/qwen35.ijs'
 load './models/llama.ijs'
+load './util/kv_cache.ijs'
+load './util/session.ijs'
 load './util/chat.ijs'
 load './util/models.ijs'
 load './tests/j/test_harness.ijs'
@@ -65,7 +67,7 @@ test_arch_prompt =: 3 : 0
 
 NB. ---- chat_tmpl_render tools wiring (upstream tool_use golden) ----
 NB. Feeds the real llama-3.1 tool template a tool_use context through the
-NB. shared renderer (ct_tools_g JSON -> template `tools` input, pre-built
+NB. shared renderer (session ct_tools JSON -> template `tools` input, pre-built
 NB. message Values for tool_calls/typed content), and checks the output
 NB. matches the upstream golden exactly (chat_tmpl_render uses '' bos/eos,
 NB. so the <|startoftext|> marker is prepended to the render for the oracle).
@@ -86,19 +88,21 @@ test_tools_render =: 3 : 0
       extra =. ((<k) , <(k obj_get_minja_ c)) obj_set_minja_ extra
     end.
   end.
-  ct_vars_g =: extra
-  ct_tools_g =: dumpc_minja_ ((<tools) , (<_1) , (<0) , (<1))
+  sess =. session_new ''
+  sess =. (<extra) (2) } sess
+  sess =. (<(dumpc_minja_ ((<tools) , (<_1) , (<0) , (<1)))) (4) } sess
+  sess_cur_g =: sess
   out =. chat_tmpl_render messages
   gold =. 1!:1 < 'tests/j/goldens/meta-llama-Llama-3.1-8B-Instruct-tool_use.txt'
   assert_test (((('<|startoftext|>') , out) -: gold)) ; 'chat_tmpl_render tools wiring == upstream tool_use golden'
 
   NB. regression: no tools -> the tool-dump section is skipped
-  ct_tools_g =: ''
+  sess =. (<'') (4) } sess
+  sess_cur_g =: sess
   out0 =. chat_tmpl_render messages
   assert_test ((-. ('You have access to the following functions' e. out0))) ; 'chat_tmpl_render no-tools drops tool dump'
   assert_test (('You have access to the following functions' e. out)) ; 'chat_tmpl_render tools adds tool dump'
-  ct_tools_g =: ''
-  ct_vars_g =: ''
+  sess_cur_g =: ''
   ct_tmpl_g =: ''
   ''
 )

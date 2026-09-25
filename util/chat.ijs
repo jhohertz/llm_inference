@@ -16,19 +16,13 @@ require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 require 'convert/pjson'   NB. tool-call JSON extraction (dec/enc)
 
-NB. ---- Real GGUF chat-template + template variables (chat layer globals) ----
+NB. ---- Real GGUF chat-template + template variables ----
 NB. ct_tmpl_g: the real jinja template pulled from the GGUF by the arch
 NB. loader ('' = none -> bespoke fallback). Reset per load in inference.ijs.
-NB. ct_vars_g: minja obj (Value) holding extra template variables
-NB. (enable_thinking etc.), passed as `extra` to ct_apply.
+NB. ct_vars/ct_tools now live in the session (fields 2/4); chat_tmpl_render
+NB. reads them from sess_cur_g. ct_now_g is the pinned-date determinism knob
+NB. (0 = live time; tests pin e.g. 1721952000 = 26 Jul 2024).
 ct_tmpl_g =: ''
-ct_vars_g =: ''
-NB. ct_tools_g: JSON string of tool definitions (OpenAI-style function schemas),
-NB. passed to the template as the `tools` input. '' = no tools (renders null).
-NB. Reset per call (chat_generate) / per load (inference.ijs).
-ct_tools_g =: ''
-NB. Optional epoch-seconds override for the `now` template variable (0 = use
-NB. current time). Lets tests pin a stable date (e.g. 1721952000 = 26 Jul 2024).
 ct_now_g =: 0
 
 NB. ---- Shared chat prompt ----
@@ -348,7 +342,8 @@ chat_vars_obj =: 3 : 0
 NB. ---- Real GGUF chat-template render (shared across arches) ----
 NB. y = messages: boxed list of <role ; content>. Renders the real jinja
 NB. template stored in ct_tmpl_g (set by the arch loader from the GGUF) via the
-NB. minja/chat_template port, with ct_vars_g as extra template variables.
+NB. minja/chat_template port, with session ct_vars/ct_tools (fields 2/4) as the
+NB. extra template variables / tools input.
 NB. Returns the rendered prompt string ('' if no template).
 days_from_civil =: 3 : 0
   'y m d' =. y
@@ -383,15 +378,13 @@ chat_tmpl_render =: 3 : 0
     vals =. vals , < mv
   end.
   msgs =. mkarr_minja_ vals
-  if. 0 = # sess_cur_g do.
-    extra =. ct_vars_g
-    now =. ct_now_g
-    tools =. ct_tools_g
-  else.
+  extra =. ''
+  tools =. ''
+  if. 0 < # sess_cur_g do.
     extra =. sess_vars sess_cur_g
-    now =. sess_now sess_cur_g
     tools =. sess_tools sess_cur_g
   end.
+  now =. ct_now_g
   if. '' -: extra do. extra =. mkobj_minja_ '' end.
   if. 0 = now do. now =. (days_from_civil (3 {. (6!:0 ''))) * 86400 end.
   if. '' -: tools do. tools =. mknull_minja_ '' else. tools =. ct_parse_json_chatpl_ tools end.
@@ -418,8 +411,15 @@ chat_generate =: 4 : 0
   min_p =. > 5 { args
   tmpl_vars =. > 6 { args
   tools =. > 7 { args
-  ct_vars_g =: chat_vars_obj tmpl_vars
-  ct_tools_g =: tools
+  sess =. session_new ''
+  sess =. (<(chat_vars_obj tmpl_vars)) (2) } sess
+  sess =. (<tools) (4) } sess
+  sess =. (<kv_seq_g) (9) } sess
+  sess =. (<kv_pos_g) (10) } sess
+  sess =. (<kv_batch_g) (11) } sess
+  sess =. (<kv_max_seq_g) (12) } sess
+  sess =. (<kv_meta) (13) } sess
+  sess_cur_g =: sess
 
   arch =. llm_arch llm
   prompt =. chat_prompt messages
@@ -428,6 +428,7 @@ chat_generate =: 4 : 0
   L =. # , > tokens
 
   output =. llm chat_gen_loop (tokens ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  sess_cur_g =: ''
   gen =. L }. output   NB. drop the prompt tokens — answer only
   arch chat_detokenize (<llm) , <gen
 )
@@ -736,12 +737,14 @@ chat_completion_batch =: 4 : 0
     mx =. > 7 { r0
     prompts_tok =. ''
     Ls =. ''
+    sess =. session_new ''
     j =. 0
     while. j < Bg do.
       i =. > j { idxs
       r =. > i { parsed
-      ct_vars_g =: chat_vars_obj ''
-      ct_tools_g =. > 1 { r
+      sess =. (<(chat_vars_obj '')) (2) } sess
+      sess =. (> 1 { r) (4) } sess
+      sess_cur_g =: sess
       prompt =. chat_prompt > 0 { r
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
@@ -749,6 +752,7 @@ chat_completion_batch =: 4 : 0
       Ls =. Ls , <(# tok_list)
       j =. j + 1
     end.
+    sess_cur_g =: ''
     kv_batch_g =: Bg
     output =. llm gen_loop_batch (prompts_tok ; mx ; temp ; k ; p ; min_p ; <stop)
     j =. 0
