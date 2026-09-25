@@ -98,6 +98,22 @@ st_buf_g =: ''
 st_arch_g =: ''
 sess_cur_g =: ''
 
+NB. ---- Ensure the serial-path global session is a real session, synced from
+NB. ---- the current kv globals (callers/tests set kv_max_seq_g etc.).  The
+NB. ---- legacy globals (chat_session_g, ct_*_g, st_buf_g) are DEPRECATED shims
+NB. ---- kept for tests/external callers; the session noun is the canonical state.
+session_ensure =: 3 : 0
+  if. 0 = # session do.
+    session =: session_new ''
+  end.
+  session =: (<kv_seq_g) (9) } session
+  session =: (<kv_pos_g) (10) } session
+  session =: (<kv_batch_g) (11) } session
+  session =: (<kv_max_seq_g) (12) } session
+  session =: (<kv_meta) (13) } session
+  ''
+)
+
 chat_stream_reset =: 3 : 0
   st_buf_g =: ''
   st_arch_g =: ''
@@ -605,45 +621,10 @@ chat_completion =: 4 : 0
   max_steps =. > 2 { y
   stream =. > 3 { y
   params =. > 4 { y
-  if. 1 = # params do.
-    flat =. > > params
-  else.
-    flat =. > params
-  end.
-  temp =. 0 { flat
-  k =. 1 { flat
-  p =. 2 { flat
-  min_p =. 3 { flat
-  ct_vars_g =: chat_vars_obj ''
-  ct_tools_g =: tools
-
-  arch =. llm_arch llm
-  prompt =. chat_prompt messages
-  tokens =. arch chat_tokenize (<llm) , <prompt
-  stop =. chat_stop_tokens llm
-  L =. # , > tokens
-
-  if. stream do.
-    NB. Streaming: the CALLER sets gen_cb_g (per-token callback) + gen_cb_on_g=1
-    NB. before calling — e.g. gen_cb_g = chat_stream_cb with chat_cb_g as the
-    NB. delta consumer. We provide the arch/llm globals chat_stream_cb needs and
-    NB. reset the incremental detokenizer.
-    chat_cb_arch_g =: arch
-    chat_cb_llm_g =: llm
-    chat_cb_stop_g =: stop
-    chat_stream_reset ''
-  else.
-    gen_cb_on_g =: 0
-  end.
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen_cb_on_g =: 0
-  if. stream do.
-    NB. flush any held incomplete UTF-8 so the delta stream is complete
-    if. 0 < # st_buf_g do. chat_cb_g st_buf_g end.
-    chat_stream_reset ''
-  end.
-  gen =. L }. output
-  arch chat_postprocess (<llm) , (<gen) , <max_steps
+  session_ensure ''
+  res =. llm chat_completion_s ((<session) , (<messages) , (<tools) , (<max_steps) , (<stream) , (<params))
+  session =: > 3 { res
+  (<> 0 { res) , (<> 1 { res) , (<> 2 { res)
 )
 
 NB. ---- Session-aware chat_completion (Stage 2) ----
@@ -961,6 +942,7 @@ chat_fallback_count =: 0
 
 NB. ---- Reset the chat session (clears session + KV cache) ----
 chat_reset =: 3 : 0
+  session =: 0 $ <''
   chat_session_g =: ''
   kv_reset ''
   ''
@@ -1001,61 +983,10 @@ chat_core =: 4 : 0
   msg =. > 0 { y
   max_steps =. > 1 { y
   params =. > 2 { y
-  if. 1 = # params do.
-    flat =. > > params
-  else.
-    flat =. > params
-  end.
-  temp =. 0 { flat
-  k =. 1 { flat
-  p =. 2 { flat
-  min_p =. 3 { flat
-  NB. persistent chat takes no tmpl_vars/tools — clear any from chat_generate.
-  ct_vars_g =: ''
-  ct_tools_g =: ''
-  arch =. llm_arch llm
-
-  if. 0 = # chat_session_g do.
-    NB. no session — start fresh with a single user message
-    messages =. <('user') ; msg
-    llm chat_fresh (messages ; max_steps ; temp ; k ; p ; min_p ; <flat)
-  else.
-    s =. chat_session_g
-    s_arch =. > 0 { s
-    if. -. s_arch -: arch do.
-      NB. different model loaded — start over
-      messages =. <('user') ; msg
-      llm chat_fresh (messages ; max_steps ; temp ; k ; p ; min_p ; <flat)
-    else.
-      prev_messages =. > 1 { s
-      prev_toks =. > 2 { s
-      prev_len =. > 3 { s
-      messages =. prev_messages , <('user') ; msg
-      prompt =. chat_prompt messages
-      tokens =. arch chat_tokenize (<llm) , <prompt
-      tok_list =. , > tokens
-      prev_flat =. , > prev_toks
-      stop =. chat_stop_tokens llm
-      if. (prev_len {. tok_list) -: prev_flat do.
-        NB. re-render prefix matches the stored token stream -> resume from cache
-        chat_resume_count =: chat_resume_count + 1
-        seg =. prev_len }. tok_list
-        L_seg =. # seg
-        output =. llm gen_loop_core ((<"0 seg) ; prev_len ; max_steps ; temp ; k ; p ; min_p ; <stop)
-        gen =. L_seg }. output
-        answer =. arch chat_detokenize (<llm) , <gen
-        total =. prev_toks , output
-        messages =. messages , <('assistant') ; answer
-        chat_session_g =: (<arch) , (<messages) , (<total) , (<(# , > total)) , (<max_steps) , (<flat)
-        answer
-      else.
-        NB. tokenizer round-trip drift — fall back to a full fresh re-render
-        NB. (correct, just slower); the session resets to the new stream.
-        chat_fallback_count =: chat_fallback_count + 1
-        llm chat_fresh (messages ; max_steps ; temp ; k ; p ; min_p ; <flat)
-      end.
-    end.
-  end.
+  session_ensure ''
+  res =. llm chat_core_s ((<session) , (<msg) , (<max_steps) , (<params))
+  session =: > 1 { res
+  > 0 { res
 )
 
 NB. ================================================================
@@ -1147,6 +1078,7 @@ chat_core_s =: 4 : 0
       stop =. chat_stop_tokens llm
       if. (prev_len {. tok_list) -: prev_flat do.
         NB. re-render prefix matches the stored token stream -> resume from cache
+        chat_resume_count =: chat_resume_count + 1
         seg =. prev_len }. tok_list
         L_seg =. # seg
         output =. llm gen_loop_core ((<"0 seg) ; prev_len ; max_steps ; temp ; k ; p ; min_p ; <stop)
@@ -1161,6 +1093,7 @@ chat_core_s =: 4 : 0
         (<answer) , <sess
       else.
         NB. tokenizer round-trip drift — fall back to a full fresh re-render
+        chat_fallback_count =: chat_fallback_count + 1
         res =. llm chat_fresh_s ((<sess) , (<messages) , (<max_steps) , (<temp) , (<k) , (<p) , (<min_p) , (<flat))
         res
       end.
@@ -1205,16 +1138,10 @@ chat_gen_stream =: 4 : 0
   max_steps =. > 2 { y
   flat =. > 3 { y
   stop =. > 4 { y
-  temp =. 0 { flat
-  k =. 1 { flat
-  p =. 2 { flat
-  min_p =. 3 { flat
-  output =. llm gen_loop_core (tokens ; start_pos ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen_cb_on_g =: 0
-  NB. flush any held incomplete UTF-8 so the delta stream is complete
-  if. 0 < # st_buf_g do. chat_cb_g st_buf_g end.
-  chat_stream_reset ''
-  output
+  session_ensure ''
+  res =. llm chat_gen_stream_s ((<session) , (<tokens) , (<start_pos) , (<max_steps) , (<flat) , (<stop))
+  session =: > 1 { res
+  > 0 { res
 )
 
 NB. ---- Fresh full-render chat turn with STREAMING (stateful helper) ----
@@ -1225,16 +1152,10 @@ chat_fresh_stream =: 4 : 0
   max_steps =. > 1 { y
   flat =. > 2 { y
   stop =. > 3 { y
-  arch =. llm_arch llm
-  prompt =. chat_prompt messages
-  tokens =. arch chat_tokenize (<llm) , <prompt
-  L =. # , > tokens
-  output =. llm chat_gen_stream (tokens ; '' ; max_steps ; <flat) , <stop
-  gen =. L }. output
-  answer =. arch chat_detokenize (<llm) , <gen
-  messages =. messages , <('assistant') ; answer
-  chat_session_g =: (<arch) , (<messages) , (<output) , (<(# , > output)) , (<max_steps) , (<flat)
-  answer
+  session_ensure ''
+  res =. llm chat_fresh_stream_s ((<session) , (<messages) , (<max_steps) , (<flat) , (<stop))
+  session =: > 1 { res
+  > 0 { res
 )
 
 NB. ---- Core stateful streaming chat turn ----
@@ -1245,63 +1166,10 @@ chat_core_stream =: 4 : 0
   msg =. > 0 { y
   max_steps =. > 1 { y
   params =. > 2 { y
-  if. 1 = # params do.
-    flat =. > > params
-  else.
-    flat =. > params
-  end.
-  NB. persistent chat takes no tmpl_vars/tools — clear any from chat_generate.
-  ct_vars_g =: ''
-  ct_tools_g =: ''
-  arch =. llm_arch llm
-  stop =. chat_stop_tokens llm
-
-  NB. streaming globals (mirror chat_completion's stream mode)
-  chat_cb_arch_g =: arch
-  chat_cb_llm_g =: llm
-  chat_cb_stop_g =: stop
-  chat_stream_reset ''
-
-  if. 0 = # chat_session_g do.
-    NB. no session — start fresh with a single user message, STREAMING
-    messages =. <('user') ; msg
-    llm chat_fresh_stream (messages ; max_steps ; <flat) , <stop
-  else.
-    s =. chat_session_g
-    s_arch =. > 0 { s
-    if. -. s_arch -: arch do.
-      NB. different model loaded — start over
-      messages =. <('user') ; msg
-      llm chat_fresh_stream (messages ; max_steps ; <flat) , <stop
-    else.
-      prev_messages =. > 1 { s
-      prev_toks =. > 2 { s
-      prev_len =. > 3 { s
-      messages =. prev_messages , <('user') ; msg
-      prompt =. chat_prompt messages
-      tokens =. arch chat_tokenize (<llm) , <prompt
-      tok_list =. , > tokens
-      prev_flat =. , > prev_toks
-      if. (prev_len {. tok_list) -: prev_flat do.
-        NB. re-render prefix matches the stored token stream -> resume, STREAMING
-        chat_resume_count =: chat_resume_count + 1
-        seg =. prev_len }. tok_list
-        L_seg =. # seg
-        output =. llm chat_gen_stream ((<"0 seg) ; prev_len ; max_steps ; <flat) , <stop
-        gen =. L_seg }. output
-        answer =. arch chat_detokenize (<llm) , <gen
-        total =. prev_toks , output
-        messages =. messages , <('assistant') ; answer
-        chat_session_g =: (<arch) , (<messages) , (<total) , (<(# , > total)) , (<max_steps) , (<flat)
-        answer
-      else.
-        NB. tokenizer round-trip drift — fall back to a full fresh re-render
-        NB. (correct, just slower); the session resets to the new stream.
-        chat_fallback_count =: chat_fallback_count + 1
-        llm chat_fresh_stream (messages ; max_steps ; <flat) , <stop
-      end.
-    end.
-  end.
+  session_ensure ''
+  res =. llm chat_core_stream_s ((<session) , (<msg) , (<max_steps) , (<params))
+  session =: > 1 { res
+  > 0 { res
 )
 
 NB. ================================================================
@@ -1333,6 +1201,7 @@ chat_gen_stream_s =: 4 : 0
   output =. llm gen_loop_core (tokens ; start_pos ; max_steps ; temp ; k ; p ; min_p ; <stop)
   sess =. sess_cur_g
   sess_cur_g =: ''
+  if. 0 < # sess_stbuf sess do. chat_cb_g sess_stbuf sess end.
   sess =. sess chat_stream_reset_s ''
   (<output) , <sess
 )
@@ -1412,6 +1281,7 @@ chat_core_stream_s =: 4 : 0
       prev_flat =. , > prev_toks
       if. (prev_len {. tok_list) -: prev_flat do.
         NB. re-render prefix matches the stored token stream -> resume, STREAMING
+        chat_resume_count =: chat_resume_count + 1
         seg =. prev_len }. tok_list
         L_seg =. # seg
         out =. llm chat_gen_stream_s ((<sess) , (<(<"0 seg)) , (<prev_len) , (<max_steps) , (<flat) , (<stop))
@@ -1426,6 +1296,7 @@ chat_core_stream_s =: 4 : 0
         (<answer) , <sess
       else.
         NB. tokenizer round-trip drift — fall back to a full fresh re-render
+        chat_fallback_count =: chat_fallback_count + 1
         res =. llm chat_fresh_stream_s ((<sess) , (<messages) , (<max_steps) , (<flat) , (<stop))
         res
       end.
