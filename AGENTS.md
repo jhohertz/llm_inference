@@ -364,6 +364,12 @@ is a jdict of named hparams (built by `build_mi_dict` + named puts; the
 
 `(<path; info_flat; tensor_data_start) load_tensor_data` → tensor as float array
 
+`(key; <kvs; raw>) kv_value` → decoded KV value by type (vt dispatch: uint/int/float/string/array/bool); used to build the kv_data dict
+
+`kvs_ctx build_kv_dict` → jdict locale ref of all decoded GGUF KVs (llm's kv_data, index 9; query via `kv_get`/`dict_get`)
+
+`(<params) dict_new` → 'hash concurrent' jdict locale ref (retries the intermittent `conew 'jdict'` "would deadlock"; '' on all-fail)
+
 ## Debug Tips
 
 1. **Check shapes**: `echo $var` to verify tensor shapes
