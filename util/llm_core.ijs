@@ -528,6 +528,8 @@ gen_loop_batch =: 4 : 0
     logit_div =. granite_mi_logit_scale mi
     rb_b =. granite_run_blocks_b
     rb_bd =. granite_run_blocks_bd
+    rb_bp =. granite_run_blocks_bp
+    rb_bp_flag =. 1
   case. 'ernie4_5' do.
     scale =. 1
     rb_b =. ernie_run_blocks_b

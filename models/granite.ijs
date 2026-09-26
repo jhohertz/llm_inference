@@ -143,6 +143,13 @@ NB. ---- Batched run all blocks (prompt prefill) ----
 NB. x = hidden (L, emb); y = <llm; start_pos>  (positions start_pos..start_pos+L-1)
 granite_run_blocks_b =: llama_run_blocks_b
 
+NB. ---- Batched-prefill run all blocks (granite = llama + mi scaling) ----
+NB. Granite reuses the llama bp verbs: the residual/attention scaling comes from
+NB. the mi dict (mi_attn_scale=0.015625, mi_resid_scale per layer), so the llama
+NB. batched-prefill forward math applies unchanged.  Embed/logit scales are
+NB. handled in gen_loop_batch (granite_mi_embed_scale / granite_mi_logit_scale).
+granite_run_blocks_bp =: llama_run_blocks_bp
+
 NB. ---- Batched-DECODE attention (B sequences, ONE token each at pos[b]) ----
 NB. Granite = llama + attention_scale (scores*0.015625, NOT 1/sqrt(hd)).
 NB. x = hidden (B, emb); y = <block_data; pos; mi; layer>
