@@ -439,6 +439,210 @@ gem3_run_blocks_b =: 4 : 0
   <state
 )
 
+NB. ---- Batched-PREFILL attention (gemma3): B chunks, one per seq at pos[b] ----
+NB. Mirrors gem3_attention_b but for prefill: hidden = (B, c, emb) — B chunks of
+NB. c tokens each at pos[b]..pos[b]+c-1.  Fused QKV + per-head Q/K norm + NEOX
+NB. RoPE + Q pre-scale are BATCHED across all B*c rows (weight-read amortized);
+NB. the SWA/causal-masked scores/softmax/V run per-sequence.  Optional 6th arg
+NB. = lens (padding masking).  x = hidden (B, c, emb); y = <block_data; swa;
+NB. pos; mi; layer>.
+gem3_attention_bp =: 4 : 0
+  hidden =. x   NB. (B, c, emb)
+  block_data =. > 0 { y
+  swa =. > 1 { y
+  pos =. > 2 { y
+  mi =. > 3 { y
+  layer =. > 4 { y
+  lens =. ''
+  if. 5 < # y do. lens =. > 5 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  n_heads =. gem3_bd_n_heads block_data
+  head_dim =. gem3_bd_head_dim block_data
+  n_heads_kv =. gem3_bd_n_heads_kv block_data
+  half =. <. head_dim % 2
+  eff_seq =. > 1 { kv_meta
+
+  NB. Attention norm per row (B*c)
+  attn_norm_w =. gem3_bd_attn_norm block_data
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+
+  NB. Fused QKV projection batched across B*c rows
+  fused_qkv_w =. gem3_bd_fused_qkv block_data
+  qkv =. |: (fused_qkv_w (+/ .* ) |: hidden_flat)   NB. (B*c, qkv_len)
+  q_len =. n_heads * head_dim
+  kv_len =. n_heads_kv * head_dim
+  Q =. (q_len {. "1 qkv)   NB. (B*c, q_len)
+  K =. (kv_len {. "1 (q_len }. "1 qkv))
+  V =. (kv_len {. "1 ((q_len + kv_len) }. "1 qkv))
+  Q =. (B, c, n_heads, head_dim) $ , Q
+  K =. (B, c, n_heads_kv, head_dim) $ , K
+  V =. (B, c, n_heads_kv, head_dim) $ , V
+
+  NB. Q/K norm per head (B*c*n_heads rows)
+  q_norm_w =. gem3_bd_q_norm block_data
+  k_norm_w =. gem3_bd_k_norm block_data
+  Qf =. ((B*c*n_heads) , head_dim) $ , Q
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Q =. (B, c, n_heads, head_dim) $ , Qf
+  Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  K =. (B, c, n_heads_kv, head_dim) $ , Kf
+
+  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c (PER-LAYER cos/sin tables)
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { gem3_bd_cos_tab block_data   NB. (B*c, half)
+  sin_all =. pos_bc_flat { gem3_bd_sin_tab block_data
+  Qa =. half {. "1 Q   NB. (B, c, n_heads, half)
+  Qb =. half }. "1 Q
+  cos_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
+  Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
+  Q =. (B, c, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
+  Ka =. half {. "1 K   NB. (B, c, n_heads_kv, half)
+  Kb =. half }. "1 K
+  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
+  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
+  K =. (B, c, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
+
+  NB. Pre-scale Q by 1/sqrt(head_dim) (Gemma)
+  Q =. Q % head_dim ^ 0.5
+
+  NB. Per-sequence attention: write K/V to cache, read back, SWA+causal+padding
+  NB. masked scores, softmax with n_heads_kv expansion, output projection.
+  attn_raw_all =. ''
+  b =. 0
+  while. b < B do.
+    q_b =. (c, n_heads, head_dim) $ , (b { Q)
+    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
+    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
+    pos_b =. b { pos
+    base_b =. ((layer * kv_batch_g) + b) * eff_seq
+    idxw =. base_b + pos_b + i. c
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. pos_b + c
+    win =. pos_b + c
+    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
+    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
+
+    NB. scores: Qf·Kf^T over the window (c*nh, win*nk)
+    Qf =. ((c * n_heads) , head_dim) $ , q_b
+    Kf =. ((win * n_heads_kv) , head_dim) $ , k_all
+    scores_all =. Qf (+/ .* ) |: Kf   NB. (c*nh, win*nk)
+
+    NB. mask: causal + SWA (window swa_l) + lens (padding)
+    key_pos =. i. win
+    q_pos =. pos_b + i. c
+    mask_future =. q_pos </ key_pos
+    swa_l =. gem3_bd_swa_l block_data
+    mask_swa =. ((q_pos - swa_l) + 1) >/ key_pos
+    if. swa_l <: 0 do. mask_swa =. (c, win) $ 0 end.
+    mask_2d =. mask_future +. mask_swa
+    if. 0 < # lens do.
+      mask_2d =. mask_2d +. ((i. win) >: b { lens)
+    end.
+    NB. Fused mask (c,win) -> (c*nh*nk, win) [t,g,j] row order g = h*nk+k
+    mask_3d =. (0 2 1) |: (mask_2d (*/) ((n_heads * n_heads_kv) $ 1))
+    mask_f =. ((c * n_heads * n_heads_kv) , win) $ , mask_3d
+    scores_f =. ((c * n_heads * n_heads_kv) , win) $ , scores_all
+    scores_f =. scores_f - (mask_f * 1e9)
+
+    NB. per-row softmax over j
+    max_sf =. >./"1 scores_f
+    exp_sf =. ^ (scores_f - max_sf)
+    softmax_f =. exp_sf % +/"1 exp_sf
+    softmax =. (c, n_heads, n_heads_kv, win) $ , softmax_f
+
+    NB. attn_raw[t,h] = sum_{k,j} softmax[t,h,k,j] * V[j,k]
+    softmax_flat =. ((c * n_heads) , (n_heads_kv * win)) $ , softmax
+    v_flat =. ((n_heads_kv * win) , head_dim) $ , (1 0 2 |: v_all)
+    attn_raw_flat =. softmax_flat (+/ .* ) v_flat   NB. (c*nh, hd)
+    attn_raw =. (c, n_heads, head_dim) $ , attn_raw_flat
+    attn_raw_all =. attn_raw_all , <attn_raw
+    b =. b + 1
+  end.
+
+  NB. Batched output projection (B*c rows) + post-attention norm
+  attn_all =. (B, c, n_heads*head_dim) $ , > attn_raw_all
+  attn_o_w =. gem3_bd_attn_o block_data
+  attn_out =. |: (attn_o_w (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  attn_out =. ((B*c) , emb_len) $ , attn_out
+  attn_pn_w =. gem3_bd_attn_pn block_data
+  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_pn_w) , <attn_out)
+  attn_out =. (B, c, emb_len) $ , attn_out
+  (<attn_out)
+)
+
+NB. ---- Batched-prefill block forward (gemma3) ----
+NB. x = hidden (B, c, emb); y = <block_data; swa; pos; mi; layer>.  Returns <(B, c, emb)>.
+gem3_block_forward_bp =: 4 : 0
+  hidden =. x   NB. (B, c, emb)
+  block_data =. > 0 { y
+  swa =. > 1 { y
+  pos =. > 2 { y
+  mi =. > 3 { y
+  layer =. > 4 { y
+  lens =. ''
+  if. 5 < # y do. lens =. > 5 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  input =. hidden
+  attn_result =. hidden gem3_attention_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_out =. > 0 { attn_result   NB. (B, c, emb)
+  sa_out =. attn_out + input
+  ff_norm_w =. gem3_bd_ff_norm block_data
+  sa_flat =. ((B*c) , emb_len) $ , sa_out
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_flat)
+  fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
+  gate_up =. |: (fused_ff_gu_w (+/ .* ) |: ffn_in)   NB. (B*c, 2*n_ff)
+  n_ff =. gem3_bd_n_ff block_data
+  gate_out =. (n_ff {. "1 gate_up)
+  up_out =. (n_ff }. "1 gate_up)
+  ff_down_w =. gem3_bd_ff_down block_data
+  ffn_raw =. |: (ff_down_w (+/ .* ) |: (gate_out geglu up_out))   NB. (B*c, emb)
+  ff_pn_w =. gem3_bd_ff_pn block_data
+  ffn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_pn_w) , <ffn_raw)
+  output_flat =. ffn_out + sa_flat
+  output =. (B, c, emb_len) $ , output_flat
+  (<output)
+)
+
+NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
+gem3_run_blocks_bp =: 4 : 0
+  input =. x   NB. (B, c, emb)
+  args =. y
+  llm =. > 0 { args
+  pos =. > 1 { args
+  lens =. ''
+  if. 2 < # args do. lens =. > 2 { args end.
+  mi =. llm_mi llm
+  swa =. mi_swa mi
+  head_dim =. mi_head_dim mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. input
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    block_data =. > b { block_data_list
+    result =. state gem3_block_forward_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<b) , <lens)
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
 NB. ---- Batched-DECODE attention (B sequences, ONE token each at pos[b]) ----
 NB. Mirrors gem3_attention (single-token): fused QKV, per-head Q/K norm, NEOX
 NB. RoPE via PER-LAYER tables, SWA mask, post-attn norm. x = hidden (B, emb);
