@@ -492,6 +492,8 @@ gen_loop_batch =: 4 : 0
   scale =. 1
   rb_b =. ''
   rb_bd =. ''
+  rb_bp =. ''
+  rb_bp_flag =. 0
   rec_reset =. ''
   select. arch
   case. 'gemma3' do.
@@ -510,6 +512,8 @@ gen_loop_batch =: 4 : 0
     scale =. 1
     rb_b =. llama_run_blocks_b
     rb_bd =. llama_run_blocks_bd
+    rb_bp =. llama_run_blocks_bp
+    rb_bp_flag =. 1
   case. 'qwen35' do.
     scale =. 1
     rb_b =. qw35_run_blocks_b
@@ -549,33 +553,108 @@ gen_loop_batch =: 4 : 0
   hidden_all =. ''
   last_toks =. ''
   pre_s =. 0
-  i =. 0
-  while. i < B do.
-    tok_list =. > i { prompts_tok
-    L =. # tok_list
-    if. L > eff_seq do. tok_list =. tok_list {~ (L - eff_seq) + i. eff_seq; L =. # tok_list end.
-    kv_seq_g =: i
-    j =. 0
-    while. j < L do.
-      c =. prefill_chunk_sz <. L - j
-      seg =. (j + i. c) { tok_list
-      emb_seg =. scale * |: (seg {"1 emb_w)
-      t =. 6!:2 'result_b =. emb_seg rb_b ((<llm) , <j)'
-      pre_s =. pre_s + t
-      h_b =. > 0 { result_b
-      hidden =. > (c - 1) { h_b
-      j =. j + c
+  pre_toks =. 0
+  if. rb_bp_flag do.
+    NB. ---- Batched prefill (B sequences in lockstep, padded, lens-masked) ----
+    NB. Pad every sequence to the longest prompt length, then process ALL B
+    NB. sequences' chunks together in one forward pass (weight-read amortized).
+    NB. lens[b] = min(L_b, p+c) masks each sequence's padding keys; the padding
+    NB. rows' outputs are discarded — only the hidden of each sequence's LAST
+    NB. real token (captured in the chunk that covers position L_b-1) is kept.
+    lens_b =. ''
+    i =. 0
+    while. i < B do.
+      tok_list =. > i { prompts_tok
+      L =. # tok_list
+      if. L > eff_seq do. tok_list =. tok_list {~ (L - eff_seq) + i. eff_seq; L =. # tok_list end.
+      prompts_tok =. (<tok_list) i} prompts_tok
+      lens_b =. lens_b , L
+      i =. i + 1
     end.
-    pos =. L i} pos
-    outputs =. outputs , <(<"0 tok_list)
-    hidden_all =. hidden_all , <hidden
-    last_toks =. last_toks , {: tok_list
-    i =. i + 1
+    max_L =. >./ lens_b
+    pre_toks =. +/ lens_b
+    NB. pad each seq to max_L with token 0 (padding, lens-masked)
+    padded =. ''
+    i =. 0
+    while. i < B do.
+      tok_list =. > i { prompts_tok
+      padded =. padded , <(tok_list , (max_L - # tok_list) $ 0)
+      i =. i + 1
+    end.
+    p =. 0
+    hidden_all =. B $ <''   NB. one per seq; filled by index in seq order
+    outputs =. ''
+    last_toks =. B $ 0
+    while. p < max_L do.
+      c =. prefill_chunk_sz <. max_L - p
+      NB. Build (B, c, emb) hidden: embed each seq's padded chunk
+      emb_seg =. (B, c, emb_len) $ 0
+      lens_cur =. B $ 0
+      i =. 0
+      while. i < B do.
+        seg =. (p + i. c) { > i { padded
+        es =. scale * |: (seg {"1 emb_w)   NB. (c, emb)
+        emb_seg =. ((c, emb_len) $ , es) i} emb_seg
+        lens_cur =. (p + (c <. ((i { lens_b) - p))) i} lens_cur
+        i =. i + 1
+      end.
+      t =. 6!:2 'result_b =. emb_seg rb_bp ((<llm) , (<(B $ p)) , <lens_cur)'
+      pre_s =. pre_s + t
+      h_b =. > 0 { result_b   NB. (B, c, emb)
+      i =. 0
+      while. i < B do.
+        L_i =. i { lens_b
+        if. (L_i > p) *. (L_i <: p + c) do.
+          NB. This chunk covers seq i's last real token (L_i-1 at row L_i-p-1)
+          real_c =. L_i - p
+          hid_i =. (real_c - 1) { i { h_b   NB. (emb,)
+          hidden_all =. (<hid_i) i} hidden_all
+          pos =. L_i i} pos
+          last_toks =. ({: > i { prompts_tok) i} last_toks
+        end.
+        i =. i + 1
+      end.
+      p =. p + c
+    end.
+    i =. 0
+    while. i < B do.
+      outputs =. outputs , <(<"0 (> i { prompts_tok))
+      i =. i + 1
+    end.
+    hidden =. (B , emb_len) $ , > hidden_all
+    cur_pos =. pos
+    done =. B $ 0
+  else.
+    NB. ---- Per-sequence prefill (fallback for arches without a bp verb) ----
+    i =. 0
+    while. i < B do.
+      tok_list =. > i { prompts_tok
+      L =. # tok_list
+      if. L > eff_seq do. tok_list =. tok_list {~ (L - eff_seq) + i. eff_seq; L =. # tok_list end.
+      pre_toks =. pre_toks + L
+      kv_seq_g =: i
+      j =. 0
+      while. j < L do.
+        c =. prefill_chunk_sz <. L - j
+        seg =. (j + i. c) { tok_list
+        emb_seg =. scale * |: (seg {"1 emb_w)
+        t =. 6!:2 'result_b =. emb_seg rb_b ((<llm) , <j)'
+        pre_s =. pre_s + t
+        h_b =. > 0 { result_b
+        hidden =. > (c - 1) { h_b
+        j =. j + c
+      end.
+      pos =. L i} pos
+      outputs =. outputs , <(<"0 tok_list)
+      hidden_all =. hidden_all , <hidden
+      last_toks =. last_toks , {: tok_list
+      i =. i + 1
+    end.
+    kv_seq_g =: 0
+    hidden =. (B , emb_len) $ , > hidden_all
+    cur_pos =. pos
+    done =. B $ 0
   end.
-  kv_seq_g =: 0
-  hidden =. (B , emb_len) $ , > hidden_all
-  cur_pos =. pos
-  done =. B $ 0
 
   NB. Batched decode loop: embed B last tokens, one forward pass, sample B.
   gen_step =. 0
@@ -622,7 +701,7 @@ gen_loop_batch =: 4 : 0
     end.
     gen_step =. gen_step + 1
   end.
-  (pre_s , gen_s) report_timing (B , gen_step)
+  (pre_s , gen_s) report_timing (pre_toks , gen_step)
   if. 0 < # sess_cur_g do.
     sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
     sess_cur_g =: (<kv_meta) (13) } sess_cur_g

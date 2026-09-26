@@ -505,6 +505,122 @@ llama_attention_bd =: 4 : 0
   (<attn_result)
 )
 
+NB. ---- Batched-PREFILL attention (B sequences, one CHUNK each at pos[b]) ----
+NB. Mirrors llama_attention_bd but for prefill: hidden = (B, c, emb) — B chunks
+NB. of c tokens each at pos[b]..pos[b]+c-1.  The Q/K/V projections + RoPE are
+NB. BATCHED across all B*c rows (weight-read amortized — the memory-bound win),
+NB. then the scores/softmax/V run per-sequence (each chunk attends causally to
+NB. its own window 0..pos[b]+c-1).  The causal mask excludes the chunk's future
+NB. keys.  This is the projection-amortized prefill; a later vectorization can
+NB. batch the attention too (lockstep equal-position chunks).
+NB. x = hidden (B, c, emb); y = <block_data; pos; mi; layer>
+llama_attention_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  NB. Optional 5th arg: per-sequence REAL lengths (for padding masking).  If
+  NB. provided, keys at positions >= lens[b] (padding) are excluded from
+  NB. attention; if '' (empty), the mask is purely causal (equal-length).
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  n_heads =. llama_bd_n_heads block_data
+  head_dim =. llama_bd_head_dim block_data
+  n_heads_kv =. llama_bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  half =. <. head_dim % 2
+  eff_seq =. > 1 { kv_meta
+
+  NB. Attention norm per row (B*c)
+  attn_norm_w =. llama_bd_attn_norm block_data
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+
+  NB. Batched Q,K,V projections (weight-read amortized across B*c rows)
+  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_heads*hd)
+  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_kv*hd)
+  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_kv*hd)
+
+  Q =. (B, c, n_heads, head_dim) $ , qv
+  K =. (B, c, n_heads_kv, head_dim) $ , kv
+  V =. (B, c, n_heads_kv, head_dim) $ , vv
+
+  NB. Interleaved RoPE at the (B, c) positions pos[b]+i.c.  Build a flat (B*c,)
+  NB. position vector (the per-seq convention) and expand to (B, c, n_heads,
+  NB. half) so it conforms with the (B, c, n_heads, half) Qa/Qb slices.
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c,)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  idx =. 2 * i. half
+  cos_expq =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_expq =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  Qa =. idx {"1 Q
+  Qb =. (1 + idx) {"1 Q
+  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
+  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
+  Q =. (B, c, n_heads, head_dim) $ , (1 2 3 4 0 |: (Qa_out ,: Qb_out))
+  Ka =. idx {"1 K
+  Kb =. (1 + idx) {"1 K
+  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
+  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
+  K =. (B, c, n_heads_kv, head_dim) $ , (1 2 3 4 0 |: (Ka_out ,: Kb_out))
+
+  NB. Llama scales Q by 1/sqrt(head_dim)
+  Q =. Q * mi_attn_scale mi
+
+  NB. Per-sequence attention (scores/softmax/V per seq; causal mask per chunk)
+  attn_out =. ''
+  b =. 0
+  while. b < B do.
+    q_b =. (c, n_heads, head_dim) $ , (b { Q)
+    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
+    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
+    pos_b =. b { pos
+    base_b =. ((layer * kv_batch_g) + b) * eff_seq
+    idxw =. base_b + pos_b + i. c
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. pos_b + c
+    win =. pos_b + c
+    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
+    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
+    NB. causal mask: row i (query at pos_b+i) invalid for keys j > pos_b+i
+    mask_2d =. (pos_b + i. c) </ i. win   NB. (c, win)
+    if. 0 < # lens do.
+      NB. Exclude padding keys (positions >= lens[b]) so padded sequences do
+      NB. not attend to their own padding.
+      mask_2d =. mask_2d +. ((i. win) >: b { lens)
+    end.
+    mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+    Qp =. 1 0 2 |: q_b   NB. (n_heads, c, hd)
+    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , ((n_heads_kv, n_groups, c, head_dim) $ , Qp)
+    Kp2 =. 1 2 0 |: k_all   NB. (n_kv, hd, win)
+    scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, groups*c, win)
+    scores2 =. scores2 -"2 (mask_g2 * 1e9)
+    scores_f =. ((n_heads*c), win) $ , scores2
+    max_sf =. >./"1 scores_f
+    exp_sf =. ^ (scores_f - max_sf)
+    softmax_f =. exp_sf % +/"1 exp_sf
+    softmax_g2 =. (n_heads_kv, (n_groups*c), win) $ , softmax_f
+    Vp =. 1 0 2 |: v_all   NB. (n_kv, win, hd)
+    attn2 =. softmax_g2 (+/ .* "2) Vp   NB. (n_kv, groups*c, hd)
+    attn_raw =. (n_heads, c, head_dim) $ , attn2   NB. [h, row, d]
+    attn_raw_flat =. (c, n_heads*head_dim) $ , (1 0 2 |: attn_raw)
+    attn_out =. attn_out , <attn_raw_flat
+    b =. b + 1
+  end.
+  attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
+  attn_result =. |: ((llama_bd_attn_o block_data) (+/ .* ) |: (((B*c) , emb_len) $ , attn_all))
+  attn_result =. (B, c, emb_len) $ , attn_result
+  (<attn_result)
+)
+
 NB. ---- Batched-decode block forward (llama) ----
 llama_block_forward_bd =: 4 : 0
   hidden =. x
@@ -546,6 +662,64 @@ llama_run_blocks_bd =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     result =. state llama_block_forward_bd ((<block_data) , (<pos) , (<mi) , (<b))
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
+NB. ---- Batched-prefill block forward (llama) ----
+NB. x = hidden (B, c, emb); y = <block_data; pos; mi; layer>.  The FFN weight
+NB. matmuls are batched across B*c rows (amortized).  Returns <(B, c, emb)>.
+llama_block_forward_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  input =. hidden
+  attn_result =. hidden llama_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_out =. > 0 { attn_result   NB. (B, c, emb)
+  attn_out =. attn_out * mi_resid_scale mi
+  sa_out =. attn_out + input
+  ffn_norm_w =. llama_bd_ff_norm block_data
+  sa_flat =. ((B*c) , emb_len) $ , sa_out
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_flat)
+  gate =. |: ((llama_bd_ff_gate block_data) (+/ .* ) |: ffn_in)   NB. (B*c, n_ff)
+  up =. |: ((llama_bd_ff_up block_data) (+/ .* ) |: ffn_in)
+  ffn_raw =. |: ((llama_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
+  output_flat =. (ffn_raw * mi_resid_scale mi) + sa_flat
+  output =. (B, c, emb_len) $ , output_flat
+  (<output)
+)
+
+NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
+llama_run_blocks_bp =: 4 : 0
+  input =. x
+  args =. y
+  llm =. > 0 { args
+  pos =. > 1 { args
+  lens =. ''
+  if. 2 < # args do. lens =. > 2 { args end.
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. input
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    block_data =. > b { block_data_list
+    result =. state llama_block_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
     state =. > 0 { result
     b =. b + 1
   end.
