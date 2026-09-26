@@ -510,6 +510,8 @@ gen_loop_batch =: 4 : 0
     scale =. 1
     rb_b =. qw3_run_blocks_b
     rb_bd =. qw3_run_blocks_bd
+    rb_bp =. qw3_run_blocks_bp
+    rb_bp_flag =. 1
   case. 'llama' do.
     scale =. 1
     rb_b =. llama_run_blocks_b

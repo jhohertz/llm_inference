@@ -671,7 +671,7 @@ qw2_attention_bp =: 4 : 0
     b =. b + 1
   end.
   attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
-  attn_result =. |: ((qw2_bd_attn_o block_data) (+/ .* ) |: (((B*c) , emb_len) $ , attn_all))
+  attn_result =. |: ((qw2_bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
   attn_result =. (B, c, emb_len) $ , attn_result
   (<attn_result)
 )

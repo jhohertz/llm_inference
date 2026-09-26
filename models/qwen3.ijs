@@ -562,6 +562,167 @@ qw3_run_blocks_bd =: 4 : 0
   <state
 )
 
+NB. ---- Batched-PREFILL attention (qwen3): B chunks, one per seq at pos[b] ----
+NB. Mirrors qw2_attention_bp but with qwen3 specifics: NO Q/K/V biases, per-head
+NB. Q/K RMSNorm BEFORE RoPE (shared weight, size=head_dim), NEOX RoPE, Q scaled
+NB. by 1/sqrt(head_dim), NO residual scale.  Q/K/V projections + RoPE batched
+NB. across B*c rows; scores/softmax/V per-sequence.  Optional 5th arg = lens.
+qw3_attention_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  n_heads =. qw3_bd_n_heads block_data
+  head_dim =. qw3_bd_head_dim block_data
+  n_heads_kv =. qw3_bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  half =. <. head_dim % 2
+  eff_seq =. > 1 { kv_meta
+
+  attn_norm_w =. qw3_bd_attn_norm block_data
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+
+  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) |: hidden_flat)
+  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) |: hidden_flat)
+  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) |: hidden_flat)
+  Q =. (B, c, n_heads, head_dim) $ , qv
+  K =. (B, c, n_heads_kv, head_dim) $ , kv
+  V =. (B, c, n_heads_kv, head_dim) $ , vv
+
+  NB. Per-head RMSNorm on Q/K BEFORE RoPE (B*c*n_heads rows)
+  Qf =. ((B*c*n_heads) , head_dim) $ , Q
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw3_bd_q_norm block_data) , <Qf)
+  Q =. (B, c, n_heads, head_dim) $ , Qf
+  Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw3_bd_k_norm block_data) , <Kf)
+  K =. (B, c, n_heads_kv, head_dim) $ , Kf
+
+  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_expq =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_expq =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  Qa =. half {. "1 Q
+  Qb =. half }. "1 Q
+  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
+  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
+  Q =. (B, c, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
+  Ka =. half {. "1 K
+  Kb =. half }. "1 K
+  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
+  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
+  K =. (B, c, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
+
+  Q =. Q % head_dim ^ 0.5
+
+  attn_out =. ''
+  b =. 0
+  while. b < B do.
+    q_b =. (c, n_heads, head_dim) $ , (b { Q)
+    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
+    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
+    pos_b =. b { pos
+    base_b =. ((layer * kv_batch_g) + b) * eff_seq
+    idxw =. base_b + pos_b + i. c
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. pos_b + c
+    win =. pos_b + c
+    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
+    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
+    mask_2d =. (pos_b + i. c) </ i. win
+    if. 0 < # lens do.
+      mask_2d =. mask_2d +. ((i. win) >: b { lens)
+    end.
+    mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+    Qp =. 1 0 2 |: q_b
+    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , ((n_heads_kv, n_groups, c, head_dim) $ , Qp)
+    Kp2 =. 1 2 0 |: k_all
+    scores2 =. Q_g2 (+/ .* "2) Kp2
+    scores2 =. scores2 -"2 (mask_g2 * 1e9)
+    scores_f =. ((n_heads*c), win) $ , scores2
+    max_sf =. >./"1 scores_f
+    exp_sf =. ^ (scores_f - max_sf)
+    softmax_f =. exp_sf % +/"1 exp_sf
+    softmax_g2 =. (n_heads_kv, (n_groups*c), win) $ , softmax_f
+    Vp =. 1 0 2 |: v_all
+    attn2 =. softmax_g2 (+/ .* "2) Vp
+    attn_raw =. (n_heads, c, head_dim) $ , attn2
+    attn_raw_flat =. (c, n_heads*head_dim) $ , (1 0 2 |: attn_raw)
+    attn_out =. attn_out , <attn_raw_flat
+    b =. b + 1
+  end.
+  attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
+  attn_result =. |: ((qw3_bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  attn_result =. (B, c, emb_len) $ , attn_result
+  (<attn_result)
+)
+
+NB. ---- Batched-prefill block forward (qwen3) ----
+qw3_block_forward_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  input =. hidden
+  attn_result =. hidden qw3_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + input
+  ffn_norm_w =. qw3_bd_ff_norm block_data
+  sa_flat =. ((B*c) , emb_len) $ , sa_out
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_flat)
+  gate =. |: ((qw3_bd_ff_gate block_data) (+/ .* ) |: ffn_in)
+  up =. |: ((qw3_bd_ff_up block_data) (+/ .* ) |: ffn_in)
+  ffn_raw =. |: ((qw3_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
+  output_flat =. ffn_raw + sa_flat
+  output =. (B, c, emb_len) $ , output_flat
+  (<output)
+)
+
+NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
+qw3_run_blocks_bp =: 4 : 0
+  input =. x
+  args =. y
+  llm =. > 0 { args
+  pos =. > 1 { args
+  lens =. ''
+  if. 2 < # args do. lens =. > 2 { args end.
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. input
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    block_data =. > b { block_data_list
+    result =. state qw3_block_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
 NB. ---- Load qwen3 GGUF into llm noun ----
 qw3_load =: 3 : 0
   NB. y = <path; raw> — raw is the memory-mapped file (mapped by
