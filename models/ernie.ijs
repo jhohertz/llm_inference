@@ -137,6 +137,7 @@ NB. ---- Forward verbs: ERNIE reuses the generic llama arch ----
 ernie_run_blocks =: llama_run_blocks
 ernie_run_blocks_b =: llama_run_blocks_b
 ernie_run_blocks_bd =: llama_run_blocks_bd
+ernie_run_blocks_bp =: llama_run_blocks_bp
 
 NB. ---- Single-token inference ----
 NB. Usage: llm ernie_infer (text ; <temp;k;p;min_p>)

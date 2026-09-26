@@ -532,6 +532,8 @@ gen_loop_batch =: 4 : 0
     scale =. 1
     rb_b =. ernie_run_blocks_b
     rb_bd =. ernie_run_blocks_bd
+    rb_bp =. ernie_run_blocks_bp
+    rb_bp_flag =. 1
   case. 'lfm2' do.
     scale =. 1
     rb_b =. lf2_run_blocks_b
