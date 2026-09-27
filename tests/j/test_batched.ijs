@@ -111,12 +111,12 @@ test_batched =: 3 : 0
       echo '  batch1: ' ; echo > 1 { batched
     end.
 
-    NB. lfm2 variable-length (padding + per-seq conv state) — the only arch with
-    NB. a conv sliding window; padding must not contaminate the window.
-    if. 'lfm2' -: arch do.
+    NB. lfm2/qwen35 variable-length (padding + per-seq conv state) — the arches
+    NB. with a conv sliding window; padding must not contaminate the window.
+    if. ('lfm2' -: arch) +. ('qwen35' -: arch) do.
       long_p =. 'The capital of France is'
       short_p =. 'The capital of'
-      echo '  (variable-length B=2, lfm2 conv state)...'
+      echo '  (variable-length B=2, conv state)...'
       sl =. run_single (arch ; llm ; long_p ; max_steps)
       ss =. run_single (arch ; llm ; short_p ; max_steps)
       pv =. (<long_p) , (<short_p)

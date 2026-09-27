@@ -524,6 +524,8 @@ gen_loop_batch =: 4 : 0
     scale =. 1
     rb_b =. qw35_run_blocks_b
     rb_bd =. qw35_run_blocks_bd
+    rb_bp =. qw35_run_blocks_bp
+    rb_bp_flag =. 1
     rec_reset =. rs_reset
   case. 'granite' do.
     scale =. granite_mi_embed_scale mi
