@@ -111,6 +111,31 @@ test_batched =: 3 : 0
       echo '  batch1: ' ; echo > 1 { batched
     end.
 
+    NB. lfm2 variable-length (padding + per-seq conv state) — the only arch with
+    NB. a conv sliding window; padding must not contaminate the window.
+    if. 'lfm2' -: arch do.
+      long_p =. 'The capital of France is'
+      short_p =. 'The capital of'
+      echo '  (variable-length B=2, lfm2 conv state)...'
+      sl =. run_single (arch ; llm ; long_p ; max_steps)
+      ss =. run_single (arch ; llm ; short_p ; max_steps)
+      pv =. (<long_p) , (<short_p)
+      bv =. run_batch (arch ; llm ; pv ; max_steps)
+      tc =. tc + 1
+      if. (sl -: > 0 { bv) *. (ss -: > 1 { bv) do.
+        pc =. pc + 1
+        echo 'PASS: variable-length [long] and [short] each match single'
+      else.
+        fc =. fc + 1
+        fl =. fl , 'lfm2 variable-length batch != single', LF
+        echo 'FAIL: variable-length batch != single'
+        echo '  single long:  ' ; echo sl
+        echo '  single short: ' ; echo ss
+        echo '  batch long:   ' ; echo > 0 { bv
+        echo '  batch short:  ' ; echo > 1 { bv
+      end.
+    end.
+
     NB. B=3 cross-check on the first arch (qwen2)
     if. 0 = ci do.
       echo '  (batched generate B=3)...'

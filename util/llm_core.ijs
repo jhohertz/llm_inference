@@ -542,6 +542,8 @@ gen_loop_batch =: 4 : 0
     scale =. 1
     rb_b =. lf2_run_blocks_b
     rb_bd =. lf2_run_blocks_bd
+    rb_bp =. lf2_run_blocks_bp
+    rb_bp_flag =. 1
     rec_reset =. lf2_conv_reset
     output_norm_w =. 'token_embd_norm.weight' get_tensor_cached_d llm
   end.
