@@ -37,7 +37,13 @@ stages plus the Stage 1 tail (gen_loop session-aware) and the Stage 2 end-state
 the `session` noun is the canonical serial-path state and the legacy globals
 (`chat_session_g`, `ct_vars_g`/`ct_tools_g`, `st_buf_g`/`st_arch_g`) are
 ELIMINATED (only `ct_tmpl_g` — the shared loaded template — and `ct_now_g` —
-the pinned-date determinism knob — remain). Phase 4
+the pinned-date determinism knob — remain). **Batched PREFILL is DONE** —
+`gen_loop_batch` prefills the B sequences in lockstep via the per-arch
+`*_run_blocks_bp` (weight matmuls amortized across B*c rows, per-seq `lens`
+padding masking, conv-state arches run their conv/recurrence per sequence),
+removing the prefill bottleneck that concurrency exposed in the Stage-4
+benchmark (all 8 arches; verified batch==single for equal- AND variable-length
+prompts). Phase 4
 (engineering stretch, low priority) plus a few open items below. The jpi fork
 was abandoned (2026-09).
 
@@ -418,8 +424,8 @@ to make generation session-aware and batch concurrent requests.
   `test_batched`/`test_chat`/`test_http_server` all green; lint exit 0.
 - **Stage 4 — validation. DONE (2026-09).** Correctness: `test_chat_session`
   (21/0) + `test_http_server` (20/0) + `test_kv_cache` (20/20) + `test_batched`
-  (9/9) + `test_chat` (7/0) all green — the sessionized/batched path equals the
-  single-session path (batch==single exact, greedy).  `llama-benchy` (0.4.0)
+  (11/11) + `test_chat` (7/0) all green — the sessionized/batched path equals
+  the single-session path (batch==single exact, greedy).  `llama-benchy` (0.4.0)
   concurrency before/after (via `uvx llama-benchy --base-url http://localhost:8790/v1`):
   with SmolLM2-135M, pp=256/tg=16/runs=1, depth 0 and 2048, concurrency 1/2/4:
   - depth=0: pp total 148.05/136.03/117.94, tg total 16.60/8.85/6.32, tg PER-REQ
@@ -434,8 +440,15 @@ to make generation session-aware and batch concurrent requests.
   SmolLM2-135M prefills at ~56 tok/s (4096-token prompt ~96s), so the 4K tests
   exceed a 600s budget — the batching behavior is depth-independent (the
   prefill dominates).  Net: batching helps the decode (per-request tg flat) but
-  the prefill stays the wall — a candidate follow-up is batched-prefill
-  amortization (the prefill is memory-bound, not compute-bound).
+  the prefill stays the wall — a candidate follow-up was batched-prefill
+  amortization (the prefill is memory-bound, not compute-bound). **DONE
+  (2026-09):** the batched PREFILL is wired into `gen_loop_batch`
+  (`rb_bp`/`rb_bp_flag`) for all 8 arches — `*_run_blocks_bp` batches the
+  weight-reads across B*c rows and masks each sequence's padding with a per-seq
+  `lens`; the conv-state arches (lfm2, qwen35) run their conv1d/recurrence per
+  sequence and update the conv state from only the REAL rows. Verified
+  batch==single for equal- AND variable-length prompts (the variable-length
+  lfm2 + qwen35 cases in `test_batched.ijs`).
 
 **Gotchas to watch (from Phase 6).**
 - J verb assignment is a dynamic ALIAS to the name — sessionizing callbacks

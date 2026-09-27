@@ -290,10 +290,10 @@ generations):
 - **Batched decode adds a B-axis**: `kv_batch_g` parallel sequences (default
   1); `k_cache_g` is `(n_layers * kv_batch_g * eff_seq, n_kv*hd)` and the row
   base is `(layer * kv_batch_g + seq) * eff_seq`. `kv_seq_g` selects the
-  current sequence for the 4-item `kv_write`/`kv_read` calls (batched prefill
-  sets it per sequence); `*_attention_bd` passes an explicit 5th batch index
-  (`b`) instead. `kv_create` reallocates when `kv_batch_g` changes (the
-  alloc-batch is tracked in `kv_batch_alloc_g`).
+  current sequence for the 4-item `kv_write`/`kv_read` calls (the per-sequence
+  prefill fallback sets it per sequence); `*_attention_bd`/`*_attention_bp`
+  pass an explicit batch index (`b`) instead. `kv_create` reallocates when
+  `kv_batch_g` changes (the alloc-batch is tracked in `kv_batch_alloc_g`).
 - `kv_meta` = `<n_layers; eff_seq; n_heads_kv; head_dim>`; `kv_pos_g` = the
   used length (all layers write together); `kv_max_seq_g` = a low-memory
   context override (default `_1` = model max); `eff_seq = min(max_seq, kv_max_seq_g)`.
@@ -551,8 +551,20 @@ sequence for 4-item calls; the flat base becomes
 `(layer * kv_batch_g + seq) * eff_seq` (see §KV Cache). Each arch adds
 `*_attention_bd` (per-sequence scores/softmax/output inside, weight matmuls
 amortized over B), `*_block_forward_bd`, `*_run_blocks_bd`, and a
-`*_generate_batch` wrapper. `gen_loop_batch` prefills each sequence with the
-per-arch `*_run_blocks_b` under `kv_seq_g = i`, then decodes:
+`*_generate_batch` wrapper.
+
+Prefill is likewise batched: each arch adds `*_attention_bp`/
+`*_block_forward_bp`/`*_run_blocks_bp` (`rb_bp`/`rb_bp_flag` in `gen_loop_batch`).
+`gen_loop_batch` pads every sequence to the longest prompt, runs the B chunks
+in lockstep (ONE forward per chunk; weight-read amortized over B*c rows), and
+masks each sequence's padding with a per-seq `lens` — only the hidden of each
+sequence's LAST real token is kept (captured in the chunk covering its final
+position). Recurrent-state arches (lfm2 conv, qwen35 delta-net) batch the
+projections/FFN across B*c rows but run the conv1d + recurrence per sequence
+(per-seq conv/s state via `lf2_conv_read_b`/`rs_read_b`), and update their
+conv state from only the REAL rows (padding must not contaminate the sliding
+window). Archs without a `*_run_blocks_bp` fall back to the per-sequence
+prefill (`*_run_blocks_b` under `kv_seq_g = i`). Then it decodes:
 - Step 0 predicts from the prefill-last hidden WITHOUT re-embedding and does
   NOT advance `cur_pos` — mirrors `gen_loop_core`'s off-by-one rule. (An early
   version re-embedded at pos L every step: it duplicated the last prompt
@@ -572,10 +584,12 @@ a guarded-but-unreset cache made batch-after-single inherit stale conv state
 and diverge (the KV cache self-cleans because prefill overwrites its rows).
 
 Verified: `tests/j/test_batched.ijs` — batch==single token-identical for all
-8 arches at B=2 (plus B=3 for qwen2). Measured per-seq throughput at small
-ctx: ~1.6x qwen2, ~2.3x qwen3, ~1.4x llama, ~1.35x granite, ~2.8x ernie,
-~2.6x lfm2, ~1.5x qwen35 (gemma3 not re-measured post-fix). Big-ctx models
-(qwen3.5 ctx=262144 → ~51GB/seq KV at full ctx) need `kv_max_seq_g` bounded.
+8 arches at B=2 (plus B=3 for qwen2), AND for the conv-state arches (lfm2,
+qwen35) with variable-length prompts (padding + per-seq conv state must not
+contaminate the window). Measured per-seq throughput at small ctx: ~1.6x
+qwen2, ~2.3x qwen3, ~1.4x llama, ~1.35x granite, ~2.8x ernie, ~2.6x lfm2,
+~1.5x qwen35 (gemma3 not re-measured post-fix). Big-ctx models (qwen3.5
+ctx=262144 → ~51GB/seq KV at full ctx) need `kv_max_seq_g` bounded.
 
 ## Chat Sessions (persistent multi-turn, option B)
 

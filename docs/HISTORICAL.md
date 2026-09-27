@@ -466,6 +466,19 @@ each. (Ordered by commit.)
   ctx. lfm2/qwen35 recurrent states (conv / delta-net) became per-sequence
   and are force-reset between generations (`lf2_conv_reset`/`rs_reset`).
   New `tests/j/test_batched.ijs` suite.
+- **Batched prefill** (`2ac1571`..`a46cdff`) — each arch adds
+  `*_attention_bp`/`*_block_forward_bp`/`*_run_blocks_bp`, wired into
+  `gen_loop_batch` via `rb_bp`/`rb_bp_flag`. The B chunks are padded to the
+  longest prompt and processed in lockstep (ONE forward per chunk; the weight
+  matmuls amortized across B*c rows); each sequence's padding is masked by a
+  per-seq `lens`, and only the hidden of a sequence's LAST real token is kept.
+  Recurrent-state arches (lfm2 conv, qwen35 delta-net) batch the projections/
+  FFN across B*c rows but run the conv1d + recurrence per sequence, updating
+  the conv state from only the REAL rows (`(real_c + i. k) { input_b` — padding
+  must not contaminate the sliding window). J gotcha hit: `B*c, emb` parses as
+  `B*(c, emb)` — parenthesize `((B*c) , emb)`. Verified batch==single for all
+  8 arches at B=2 (B=3 qwen2) AND variable-length prompts for the conv-state
+  arches (lfm2, qwen35) — the padding/lens path must not diverge.
 - **Read-once / mmap loader cleanup** (`2e5e294`) — the loader already maps
   once (`load_gguf_to_llm` passes the mapped raw to `detect_arch` + loaders,
   which preload all tensors via `load_tdata` with raw); the remaining full
