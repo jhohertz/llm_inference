@@ -314,16 +314,17 @@ test_qwen3 =: 3 : 0
   echo '--- Section 6: Streaming chat_completion (Phase 6 item 1) ---'
   echo ''
 
-  NB. chat_completion returns <content; finish_reason; tool_calls> (3 elements)
+  NB. chat_completion returns <content; finish_reason; tool_calls;
+  NB. prompt_tokens; completion_tokens> (5 elements)
   tc =. tc + 1
   msgs =. (<('user') ; 'What is the capital of France?')
   res =. llm chat_completion (msgs ; '' ; 200 ; 0 ; <(0 0 0.95 0.0))
-  if. 3 = # res do.
+  if. 5 = # res do.
     pc =. pc + 1
-    echo 'PASS: chat_completion returns 3-element response'
+    echo 'PASS: chat_completion returns 5-element response'
   else. fc =. fc + 1
-    fl =. fl , 'chat_completion 3-element response', LF
-    echo 'FAIL: chat_completion returns 3-element response'; echo '  got: '; echo # res end.
+    fl =. fl , 'chat_completion 5-element response', LF
+    echo 'FAIL: chat_completion returns 5-element response'; echo '  got: '; echo # res end.
 
   NB. greedy completion -> finish_reason 'stop' (model emits <|im_end|>)
   tc =. tc + 1

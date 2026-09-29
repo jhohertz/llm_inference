@@ -552,13 +552,16 @@ NB.                the caller's callback (J verb assignment aliases by name).
 NB.   <params>   = <temp;k;p;min_p> (possibly double-boxed). MUST be the last
 NB.                operand: a pre-boxed `;` operand that isn't trailing nests
 NB.                (J `;`-chain gotcha), so params is kept at the end.
-NB. Returns <content ; finish_reason ; tool_calls>
+NB. Returns <content ; finish_reason ; tool_calls ; prompt_tokens ;
+NB. completion_tokens>.
 NB.   content      = generated text (detokenized), '' when a tool call is pending
 NB.   finish_reason= 'stop' | 'length' | 'tool_calls' (Phase 6 item 3: a
 NB.                <tool_call> marker in the content classifies as 'tool_calls'
 NB.                and the tool_calls are extracted; content is nulled)
 NB.   tool_calls   = boxed list of OpenAI-shaped tool_call minja Values
 NB.                ({type; function:<name; arguments-JSON>; id}), '' if none.
+NB.   prompt_tokens    = prompt token count (the chat-template rendering)
+NB.   completion_tokens= generated token count (the answer)
 NB. ---- Shared post-processing (chat_completion / chat_completion_batch) ----
 NB.  x = arch; y = <llm ; gen ; max_steps>.  Detokenizes gen (the post-prompt
 NB.  token stream), sets finish_reason ('stop'/'length'/'tool_calls'), nulls
@@ -591,17 +594,18 @@ chat_completion =: 4 : 0
   params =. > 4 { y
   session_ensure ''
   res =. llm chat_completion_s ((<session) , (<messages) , (<tools) , (<max_steps) , (<stream) , (<params))
-  session =: > 3 { res
-  (<> 0 { res) , (<> 1 { res) , (<> 2 { res)
+  session =: > 5 { res
+  (<> 0 { res) , (<> 1 { res) , (<> 2 { res) , (<> 3 { res) , (<> 4 { res)
 )
 
 NB. ---- Session-aware chat_completion (Stage 2) ----
 NB.  x = llm; y = <sess ; messages ; tools ; max_steps ; stream ; <params>.
 NB.  Session-aware port of chat_completion: reads/writes the session's ct_*
 NB.  (fields 1-4: ct_vars/ct_tools) + st_buf (field 5); the global callbacks
-NB.  (gen_cb_g/chat_cb_g/chat_cb_arch_g/chat_cb_llm_g/chat_cb_stop_g) stay
+  NB.  (gen_cb_g/chat_cb_g/chat_cb_arch_g/chat_cb_llm_g/chat_cb_stop_g) stay
 NB.  global (verbs can't be boxed in the session).  Returns
-NB.  <content ; finish_reason ; tool_calls ; updated_sess>.
+NB.  <content ; finish_reason ; tool_calls ; prompt_tokens ; completion_tokens ;
+NB.  updated_sess>.
 chat_completion_s =: 4 : 0
   llm =. x
   sess =. > 0 { y
@@ -655,7 +659,9 @@ chat_completion_s =: 4 : 0
     finish =. 'tool_calls'
     content =. ''
   end.
-  (<content) , (<finish) , (<tcs) , <sess
+  pt =. L
+  ct =. # gen
+  (<content) , (<finish) , (<tcs) , (<pt) , (<ct) , <sess
 )
 
 NB. ---- Batched chat completion (Stage 3) ----
@@ -667,7 +673,8 @@ NB.  gen_loop_batch (one forward per decode step over the group's B sequences â€
 NB.  the B-axis KV cache).  Per record the prompt is rendered + tokenized with
 NB.  the real jinja template (exactly as chat_completion) and the output
 NB.  post-processed (strip prompt, detokenize, finish_reason, tool-call
-NB.  classification).  Returns a boxed list of B <content ; finish ; tcs> in
+NB.  classification).  Returns a boxed list of B
+NB.  <content ; finish ; tcs ; prompt_tokens ; completion_tokens> in
 NB.  INPUT ORDER.  kv_batch_g is reset to 1 on exit (the serial path expects it).
 chat_completion_batch =: 4 : 0
   llm =. x
@@ -779,6 +786,12 @@ chat_completion_batch =: 4 : 0
       L =. > j { Ls
       gen =. (L) }. (> j { output)
       cell =. arch chat_postprocess (<llm) , (<gen) , <mx
+      q1 =: < > 0 { cell
+      q2 =: < > 1 { cell
+      q3 =: < > 2 { cell
+      q4 =: < L
+      q5 =: < # gen
+      cell =. q1 , q2 , q3 , q4 , q5
       results =. (<cell) i} results
       j =. j + 1
     end.

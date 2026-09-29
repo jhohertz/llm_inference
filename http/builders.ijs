@@ -42,7 +42,8 @@ mkobj =: 3 : 0
 
 NB. ============================================================
 NB.  y respbody  ->  chars of the FULL non-streaming response body.
-NB.  y = <id ; model ; created ; content ; finish ; tcs>
+NB.  y = <id ; model ; created ; content ; finish ; tcs ; prompt_tokens ;
+NB.  completion_tokens>.
 NB.  tcs = boxed list of tool-call minja Values ({type; function:<name;
 NB.  arguments>; id}), possibly empty.  finish = 'stop'|'length'|'tool_calls'.
 respbody =: 3 : 0
@@ -52,6 +53,8 @@ respbody =: 3 : 0
   ct  =. >3{ y
   fin  =. >4{ y
   tcs =. >5{ y
+  pt  =. >6{ y
+  ct2 =. >7{ y
   NB. message object
   if. 0 < # tcs do.
     NB. assistant message with tool_calls, content null
@@ -69,7 +72,11 @@ respbody =: 3 : 0
   ch =. ck ,: cv
   A =. 1 $ <ch
   uk =. ('prompt_tokens';'completion_tokens';'total_tokens')
-  uv =. (0;0;0)
+  tot =. pt + ct2
+  u1 =: <pt
+  u2 =: <ct2
+  u3 =: <tot
+  uv =: u1 , u2 , u3
   u =. uk ,: uv
   b1 =. <cid
   b2 =. <'chat.completion'
@@ -213,9 +220,11 @@ frame_done =: 3 : 0
 NB. ============================================================
 NB.  y plainres  ->  full bytes of a non-streaming HTTP response
 NB.  (Content-Length form).  y = <id ; model ; created ; content ;
-NB.  finish ; tcs>
+NB.  finish ; tcs>.  Usage counts are unknown here — pass 0s.
 plainres =: 3 : 0
-  body =. respbody y
+  u1 =: <0
+  u2 =: <0
+  body =. respbody (y , u1 , u2)
   hd =. 'Content-Type: application/json' , CRLF
   lst =. '200' ; 'OK' ; hd ; body
   h11_simple lst
