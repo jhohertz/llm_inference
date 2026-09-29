@@ -50,7 +50,15 @@ Each item is independently shippable; the suite must stay green after each item.
     models). Keep the explicit loop for the single-token (interactive/streaming)
     path; the shape-aware efficiency path is the batched generator (already
     implemented).
-13. **Tokenizer encode/decode mutual obverse** (`u&.:v`) — future.
+13. **Tokenizer encode/decode mutual obverse** (`u&.:v`) — **not worth it.** No
+    call site uses `u&.:` with tokenize/detokenize; the verbs are used directly
+    (tokenize prompt → generate in token space → detokenize answer), which is a
+    pipeline, not an "under" round-trip. More fundamentally, tokenize∘detokenize
+    is NOT an exact inverse — the detokenize→re-tokenize round-trip drifts (the
+    chat path already falls back to a fresh re-render on prefix mismatch), so a
+    `:.` obverse pair would be semantically wrong (the under idiom requires a
+    true inverse). No shape/parallelization benefit either (the "under" is a
+    composition, not a shape change). Dropped.
 
 ### Deferred J-idiom applications
 
@@ -67,7 +75,8 @@ live in docs/J-KNOWLEDGE.md):
   special-coded. Revisit only if large-batched projections appear.
 - **Tokenizer encode/decode mutual obverse (Ch 33)** — item 13 above; defining
   `tokenize =: ... :. detokenize` would enable `u&.:tokenize` round-trips, but
-  no current call site needs it.
+  the round-trip isn't an exact inverse (it drifts) and no call site needs the
+  under idiom — dropped (see item 13).
 
 ## Key Reference
 
