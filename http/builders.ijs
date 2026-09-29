@@ -192,6 +192,36 @@ endchunkbody =: 4 : 0
 )
 
 NB. ============================================================
+NB.  y usagechunkbody  ->  chars of the OpenAI `stream_options.include_usage`
+NB.  FINAL SSE chunk body: empty choices [] + usage object.  Sent after the
+NB.  finish_reason chunk, before "data: [DONE]" (llama-benchy reads usage
+NB.  from the stream — see reference client.py).  y = <id ; model ; created ;
+NB.  prompt_tokens ; completion_tokens>.
+usagechunkbody =: 3 : 0
+  cid =. >0{ y
+  cm  =. >1{ y
+  cr  =. >2{ y
+  pt  =. >3{ y
+  ct2 =. >4{ y
+  tot =. pt + ct2
+  uk =. ('prompt_tokens';'completion_tokens';'total_tokens')
+  u1 =: <pt
+  u2 =: <ct2
+  u3 =: <tot
+  u =. uk ,: (u1 , u2 , u3)
+  ck =. ('id';'object';'created';'model';'choices';'usage')
+  c1 =: <cid
+  c2 =: <'chat.completion.chunk'
+  c3 =: <cr
+  c4 =: <cm
+  c5 =: < (0 $ <'')
+  c6 =: < u
+  v =. c1 , c2 , c3 , c4 , c5 , c6
+  O =. ck ,: v
+  enc_json O
+)
+
+NB. ============================================================
 NB.  Streaming frame builders (called by the server's SSE sender,
 NB.  one per text delta).  Each returns the FULL chunked SSE frame
 NB.  bytes for one data: line:  h11_chunk('data: ' , body , LF , LF).

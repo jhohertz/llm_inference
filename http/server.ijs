@@ -307,6 +307,17 @@ stream_chat =: 4 : 0
   catch.
     say 'stream end err'
   end.
+  NB. OpenAI stream_options.include_usage final chunk: empty choices + usage.
+  NB. llama-benchy reads usage from the stream; without it it falls back to
+  NB. local tokenization.
+  pt=: > 3 { cres
+  ct2=: > 4 { cres
+  ufr=: 'data: ' , (usagechunkbody (SID ; MODEL ; CREATED ; pt ; ct2)) , LF , LF
+  try.
+    sdcheck (h11_chunk ufr) sdsend fd , 0
+  catch.
+    say 'stream usage err'
+  end.
   try.
     sdcheck (frame_done '') sdsend fd , 0
   catch.

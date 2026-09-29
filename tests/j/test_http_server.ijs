@@ -62,6 +62,8 @@ assert_test ((1 e. '{"id":"sid","object":"chat.completion.chunk","created":123,"
 f3=. 'stop' frame_end ('sid' ; 'qwen3-0.6b' ; 123)
 assert_test ((1 e. 'finish_reason":"stop"}' E. f3) *. (0 < # f3)) ; 'frame_end carries finish_reason'
 assert_test (0 < # frame_done '') ; 'frame_done emits done chunk'
+u4=. usagechunkbody ('sid' ; 'qwen3-0.6b' ; 123 ; 5 ; 7)
+assert_test ((1 e. '{"id":"sid","object":"chat.completion.chunk","created":123,"model":"qwen3-0.6b","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}' E. u4) *. (0 < # u4)) ; 'usagechunkbody emits empty choices + usage'
 
 section_header_inference_ 'error responses'
 nf=. notfound ''
