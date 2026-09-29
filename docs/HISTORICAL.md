@@ -1070,3 +1070,36 @@ qwen35). Verified batch==single for equal- AND variable-length prompts
   disconnect, coherence passed, latency measured, all runs complete; the server
   log shows one connection reused across requests. `sdclose` is broken in this
   jsocket build (boxes the fd), so the libc close is called directly.
+
+## Phase 4 — Engineering stretch (measured 2026-09; items kept/dropped)
+
+Phase 4 was evaluated in full; each item was measured/analyzed and closed with
+a reason rather than implemented. All three items are now closed.
+
+- **Item 11 — `llama3_pre_tokenize` / `gpt2_pre_tokenize` → `;:` state-table
+  (MEASURED — keep the `while.` scanners).** They're fast (~1.2-1.5M chars/s;
+  60k chars ≈ 0.04s) and NOT the hot path (tokenization runs once per prompt,
+  not per token); the `pieces , <piece` append is sublinear in practice (no
+  O(n²) blowup). They're sequential byte scans (rank-0, state-dependent — J
+  cannot parallelize a sequential scan, so the shape/parallelization
+  consideration doesn't apply), and vectorizing the contraction/letter/number/
+  non-word state machine is high drift risk against the llama.cpp oracle.
+  Revisit only if a measured tokenizer bottleneck appears.
+- **Item 12 — generation-loop refactors (`u^:v^:_` DoWhile / `u^:n` Power /
+  `m@.v` agenda) (MEASURED — keep the explicit loop).** The single-token decode
+  is M=1 (rank-1 vectors) — memory-bound on weight reads (J's `+/ .*`
+  parallelizes over N output columns, not M rows, and not at all for N=1; M=1
+  matvecs get no cold win). The loop-construct candidates don't change the
+  shapes (Power needs a fixed count, DoWhile threads state through one verb,
+  agenda is rank-0 slow) — no parallelization/zero-copy benefit. The efficiency
+  win is B-row batched shapes: `gen_loop_batch` runs the matmuls concurrently
+  across cores (measured ~2.4x total / ~1.19x per-seq on lfm2.5-230m at B=2;
+  ARCHITECTURE records 1.4-2.8x per-seq on larger models).
+- **Item 13 — tokenizer encode/decode mutual obverse (`u&.:v`) (DROPPED).** No
+  call site uses `u&.:` with tokenize/detokenize (the verbs are used directly:
+  tokenize prompt → generate in token space → detokenize answer — a pipeline,
+  not an "under" round-trip). More fundamentally, tokenize∘detokenize is NOT an
+  exact inverse — the detokenize→re-tokenize round-trip drifts (chat falls back
+  to a fresh re-render on prefix mismatch), so a `:.` obverse pair would be
+  semantically wrong (the under idiom requires a true inverse). No shape/
+  parallelization benefit (the "under" is a composition, not a shape change).
