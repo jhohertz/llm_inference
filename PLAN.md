@@ -20,22 +20,9 @@ tool/typed-content prompts, streaming OpenAI-compatible chat API, the stateful
 chat TUI, the network HTTP server, multi-session + batched HTTP generation, and
 **batched prefill** (all 8 arches). **Phase 4 (engineering stretch) is
 evaluated** — each item was measured/analyzed and closed (kept or dropped) with
-a reason. Full done-work detail is recorded in **docs/HISTORICAL.md**; the
-remaining planned work is below.
-
-## Roadmap — Planned Work
-
-Each item is independently shippable; the suite must stay green after each item.
-
-### Deferred J-idiom applications
-
-Deferred ideas about applying a jforc idiom to *our* code (the general reviews
-live in docs/J-KNOWLEDGE.md):
-
-- **`LoopWithInitial` (Ch 36)** — the tool if a small-state fold ever appears
-  (e.g. piece accumulation in a tokenizer) where space is not a concern; the
-  generation loop stays a `while.` because it carries per-step KV tensors too
-  large to materialize looplessly.
+a reason. **No planned work remains** — the deferred idiom ideas (Broadcastly,
+LoopWithInitial, tokenizer obverse) are assessed/closed in **docs/HISTORICAL.md**;
+this document now records status only.
 
 ## Key Reference
 

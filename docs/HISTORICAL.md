@@ -1114,3 +1114,23 @@ a reason rather than implemented. All three items are now closed.
   to a fresh re-render on prefix mismatch), so a `:.` obverse pair would be
   semantically wrong (the under idiom requires a true inverse). No shape/
   parallelization benefit (the "under" is a composition, not a shape change).
+
+## LoopWithInitial (Ch 36) — assessed, no beneficial application (2026-09)
+
+Reviewed the loopless running-carry fold (`LoopWithInitial`: box items, append
+initial, reverse, `u&.>/\.` suffix-scan, undo — keeps every intermediate). No
+beneficial application in the codebase:
+
+- The generation loop carries per-step KV tensors too large to materialize
+  looplessly — a `while.` is justified (kept).
+- The tokenizer loops are append/restructure (gpt2_merge restructures the sym
+  list; tokenize appends a growing list), not simple running-carry folds.
+- The only small-state fold — chat_template `detect_caps` (3 boolean flags over
+  messages) — needs only the FINAL result, so a plain reduce/fold is the right
+  tool; LoopWithInitial would wastefully materialize every intermediate. It's
+  also not the hot path.
+- The streaming detokenizer (`chat_stream_piece`) is a per-token callback
+  (items arrive one at a time), not a fold over a list.
+
+So LoopWithInitial stays as a general idiom in docs/J-KNOWLEDGE.md (Ch 36
+review); no current call site. Not a planned item.
