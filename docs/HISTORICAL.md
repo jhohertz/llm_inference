@@ -985,3 +985,88 @@ rope cos/sin ~4x slower (J's `$` is special-coded and near-free).
 exactly. So it's kept as an available tool, NOT wired into the hot kernels; the
 manual `$`/outer-product broadcasts are already optimal for our shapes.
 Revisit only if large-batched projections appear.
+
+## Multi-session & batched HTTP generation (2026-09)
+
+**Motivation.** The HTTP server handles concurrent connections but *serialized*
+generation: each request was served one-at-a-time through the single-session
+`chat_completion`, which used shared globals. `llama-benchy` measured the cost:
+concurrency 1→2→4 dropped throughput (pp128: 49→45→38 t/s) and grew latency
+(ttfr 4.5s→8.9s) — requests queued, they didn't batch.
+
+**Design — a per-session entity.** The single-session globals moved into a
+`session` noun (one per request) holding the KV cache state, chat session,
+template (ct_tmpl/vars/now/tools), streaming buffer, callbacks, and response
+fields; shared read-only globals (llm/arch/model) stayed global.
+
+- **Stage 1 — session entity + KV-cache sessionization (DONE).** `util/session.ijs`
+  defines the boxed `session` noun (17 indexed fields) + accessors +
+  `session_new`/`session_reset`/`sess_put`/`sess_set`; `util/kv_cache.ijs` adds
+  session-aware KV verbs (`kv_create_s`/`kv_write_s`/`kv_write_rows_s`/
+  `kv_read_s`/`kv_reset_s`) + `sess_kv_bind` (the bridge that makes
+  `gen_loop_core`/`gen_loop_batch` run at a session's seq without changing their
+  signature). Callbacks (verbs) stay as globals. **Stage 1 tail:** re-pointed
+  `gen_loop_core`/`gen_loop_batch` at `sess_cur_g` — they bind the session's kv
+  state at entry and sync `kv_pos`/`kv_meta` back before returning.
+- **Stage 2 — chat/template/streaming sessionization (DONE).** Session-aware
+  `chat_stream_piece_s`/`chat_stream_reset_s`, `chat_completion_s`,
+  `chat_fresh_s`, `chat_core_s`, and the streaming trio
+  `chat_gen_stream_s`/`chat_fresh_stream_s`/`chat_core_stream_s`. A `sess_cur_g`
+  global makes `chat_stream_cb` session-aware (session set → reads/writes the
+  session's st_buf/st_arch, else falls back to the globals). Fixed a runaway:
+  `sess_kv_bind` defaults the session seq to 0 when it is `_1` (no slot yet).
+  **Stage 2 end-state:** the serial verbs (`chat_completion`/`chat_core`/
+  `chat_gen_stream`/`chat_fresh_stream`/`chat_core_stream`) are thin wrappers
+  over the `_s` versions passing ONE global `session`; a `session_ensure`
+  lazily creates/syncs it from the kv globals. The legacy globals
+  (`chat_session_g`, `ct_vars_g`/`ct_tools_g`, `st_buf_g`/`st_arch_g`) are
+  ELIMINATED — only `ct_tmpl_g` (shared loaded template) and `ct_now_g`
+  (pinned-date determinism knob) remain.
+- **Stage 3 — server batching (DONE).** The server buffers concurrent complete
+  requests in `PENDING` (each a `<fd ; msgs ; tools ; temp ; top_p ; mx ; stream ;
+  cid ; created>` record); `v1_chat` appends (no generation) and `maybe_flush`
+  drains once per select cycle after a short window (`BATCH_WAIT`=3 cycles ~ 60ms,
+  `BATCH_MAX`=8, select timeout drops to 20ms while pending). Non-stream requests
+  group by identical params and generate in ONE `chat_completion_batch` (one
+  `gen_loop_batch` over B sequences); stream requests are served individually
+  (streaming deferred). `BUF_FD` tracks buffered fds so `onread` skips them.
+- **Stage 4 — validation (DONE).** Correctness green: test_chat_session (21/0),
+  test_http_server (20/0), test_kv_cache (20/20), test_batched (11/11),
+  test_chat (7/0); batch==single exact (greedy). llama-benchy before/after: the
+  batched DECODE held per-request tg throughput ~flat at depth 0 (16.60→16.92→
+  15.11 t/s) — the batch amortizes the forward pass — but the PREFILL stayed the
+  wall (total pp throughput dropped 148→136→118 t/s; ttfr rose 1883→5602ms).
+  The prefill is memory-bound, not compute-bound.
+
+**Batched prefill (DONE, 2026-09).** The follow-up to the Stage-4 finding:
+`gen_loop_batch` prefills the B sequences in lockstep via per-arch
+`*_run_blocks_bp` (`rb_bp`/`rb_bp_flag`). It pads every sequence to the longest
+prompt, runs the B chunks in ONE forward per chunk (weight-read amortized over
+B*c rows), and masks each sequence's padding with a per-seq `lens` — only the
+hidden of each sequence's LAST real token is kept. Recurrent-state arches
+(lfm2 conv, qwen35 delta-net) batch the projections/FFN across B*c rows but run
+the conv1d/recurrence per sequence, updating state from only the REAL rows.
+Added for all 8 arches (llama, qwen2, qwen3, ernie, granite, gemma3, lfm2,
+qwen35). Verified batch==single for equal- AND variable-length prompts
+(test_batched.ijs).
+
+## HTTP server — real usage + keep-alive (2026-09/10)
+
+- **Real usage tokens.** Non-stream responses report `usage` from the actual
+  generation (`prompt_tokens`/`completion_tokens`/`total_tokens`), not a
+  tokenizer re-count. Streamed responses emit a final `stream_options.include_usage`
+  chunk (empty choices + usage) so clients that read usage from the stream get
+  real counts instead of falling back to local tokenization (llama-benchy
+  printed "using stream usage token count" — benign).
+- **Keep-alive connections.** The server closed every connection right after
+  responding; aiohttp (keep-alive default) reused those just-closed connections,
+  so the close sent an RST ("Connection reset by peer") or a premature FIN
+  ("Server disconnected") intermittently. Now `finish` and `stream_chat` keep
+  the fd open after the response (drop it from `BUF_FD`, reset its buffer, stay
+  in the read set); the server closes only on client EOF (`onread` → `oneof` →
+  `closefd` + `rmconn`). `closefd` also does a graceful `shutdown(fd, SHUT_RDWR)`
+  (send FIN + discard read data) before the libc close, so a real close never
+  RSTs. Verified: llama-benchy depth=0 concurrency=1 ran clean — no reset /
+  disconnect, coherence passed, latency measured, all runs complete; the server
+  log shows one connection reused across requests. `sdclose` is broken in this
+  jsocket build (boxes the fd), so the libc close is called directly.

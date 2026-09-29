@@ -63,7 +63,9 @@ at interactive speed, running large models, or production workloads.
 - **OpenAI-compatible HTTP server** (`http/`, `scripts/llm_server.sh`) — a
   non-blocking jsocket event loop serving POST `/v1/chat/completions` (plain
   JSON + streamed SSE) and GET `/v1/models`, reusing the same `chat_completion`
-  verb behind the OpenAI endpoint.
+  verb behind the OpenAI endpoint. Concurrent requests **batch** into one
+  forward pass, responses report **real usage** tokens, and connections are
+  **keep-alive** (reused across requests).
 - **Five ways to run it** — one-shot CLI, interactive chat console, a raw-mode
   chat TUI, the network HTTP server, or the J API — plus a GGUF inspector.
 - **An OOP wrapper** (`conew`) if you prefer objects over box-of-boxes.
@@ -156,11 +158,11 @@ The session persists across turns until `chat_reset_inference_ ''` (or `exit`).
 ```
 
 A minimal terminal chat UI driven directly by the addon (j-kvm `vt` raw-mode +
-key reads). It is **stateful** — the session (`chat_session_g`) + KV cache
-carry across turns via `chat_core_stream` (one batched prefill of the new
-segment), and the reply **streams live**, token by token. Controls: type a
-message + Enter to send; `/reset` clears the session + KV cache; Backspace to
-edit; Ctrl-C or type `exit` to quit.
+key reads). It is **stateful** — the `session` noun + KV cache carry across
+turns via `chat_core_stream` (one batched prefill of the new segment), and the
+reply **streams live**, token by token. Controls: type a message + Enter to
+send; `/reset` clears the session + KV cache; Backspace to edit; Ctrl-C or type
+`exit` to quit.
 
 ### GGUF inspector
 
@@ -273,11 +275,11 @@ Supported architectures and catalog ids:
 | Gemma3 | `gemma3` | `gemma-3-270m-it`, `gemma-3-1b-it` |
 | SmolLM2 | `llama` | `smollm2-135m`, `smollm2-360m`, `smollm2-1.7b` |
 | Llama-3.2-1B | `llama` | `llama-3.2-1b` |
-| Granite-4.0-350m | `granite` | `granite-4.0-350m` |
+| Granite-4.0/4.1/4.2 | `granite` | `granite-4.0-350m`, `granite-4.1-3b`, `granite-4.2-3b` |
 | ERNIE-4.5-0.3B | `ernie4_5` | `ernie-4.5-0.3b` |
 | Qwen2.5-Coder | `qwen2` | `qwen2.5-coder-0.5b/1.5b/3b` |
 | Qwen3 | `qwen3` | `qwen3-0.6b`, `qwen3-1.7b` |
-| Qwen3.5 | `qwen35` | `qwen3.5-0.8b`, `qwen3.5-2b` |
+| Qwen3.5 | `qwen35` | `qwen3.5-0.8b`, `qwen3.5-2b`, `qwen3.8-2b` |
 | LFM2 | `lfm2` | `lfm2-350m`, `lfm2-700m`, `lfm2.5-230m`, `lfm2.5-1.2b-instruct`, `lfm2.5-1.2b-thinking` |
 
 ---
@@ -297,8 +299,10 @@ Be honest about what this engine is:
   catalog. (Actually, these become native J floats, so even bigger)
 - **Single-token decode** — generation is inherently sequential; batching exists
   but the interactive path is one sequence.
-- **Not a server.** There's no HTTP/gRPC layer, no streaming protocol, no
-  concurrency. It's a console / API engine.
+- **Not a production server.** There IS a small OpenAI-compatible HTTP server
+  (`http/`) with SSE streaming, request batching, and keep-alive connections —
+  but it is an educational / benchmark-grade endpoint, not a load-tested
+  production service. The primary interface remains the console / API engine.
 - **Not a drop-in `llama-cpp`.** Some architecture quirks (e.g. the Qwen3.5 MTP
   next-token-prediction head, the Granite hybrid) are out of scope; the parser
   still reads the files, inference covers the supported arches above.
