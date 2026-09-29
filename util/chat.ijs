@@ -677,23 +677,34 @@ chat_completion_batch =: 4 : 0
   arch =. llm_arch llm
   stop =. chat_stop_tokens llm
   NB. Pre-parse each record -> <msgs ; tools ; key ; temp ; k ; p ; min_p ; mx>.
-  parsed =. ''
-  i =. 0
-  while. i < B do.
-    r =. > i { recs
-    msgs =. > 0 { r
-    tools =. > 1 { r
-    mx =. > 2 { r
-    params =. > 3 { r
-    if. 1 = # params do. flat =. > > params else. flat =. > params end.
-    temp =. 0 { flat
-    k =. 1 { flat
-    p =. 2 { flat
-    min_p =. 3 { flat
-    key =. (": mx) , '|' , (": temp) , '|' , (": k) , '|' , (": p) , '|' , (": min_p)
-    parsed =. parsed , <(<msgs) , (<tools) , (<key) , (<temp) , (<k) , (<p) , (<min_p) , (<mx)
-    i =. i + 1
-  end.
+    parsed =. ''
+    i =. 0
+    while. i < B do.
+      r =. > i { recs
+      msgs =. > 0 { r
+      tools =. > 1 { r
+      mx =. > 2 { r
+      params =. > 3 { r
+      if. 1 = # params do. flat =. > > params else. flat =. > params end.
+      temp =. 0 { flat
+      k =. 1 { flat
+      p =. 2 { flat
+      min_p =. 3 { flat
+      key =. (": mx) , '|' , (": temp) , '|' , (": k) , '|' , (": p) , '|' , (": min_p)
+      NB. Named-box catenation (proven pattern, see builders.ijs): this J9.8
+      NB. build's `(<x) , (<y) , ...` closed-box chain is unreliable when the
+      NB. cell contents are names, so build the record from named box vars.
+      p1=: <msgs
+      p2=: <tools
+      p3=: <key
+      p4=: <temp
+      p5=: <k
+      p6=: <p
+      p7=: <min_p
+      p8=: <mx
+      parsed =. parsed , <(p1 , p2 , p3 , p4 , p5 , p6 , p7 , p8)
+      i =. i + 1
+    end.
   NB. Group record indices by key (order-preserving); a group = <key ; idxs>.
   groups =. ''
   i =. 0
@@ -724,6 +735,11 @@ chat_completion_batch =: 4 : 0
   end.
   NB. Per group: render + tokenize each seq, ONE gen_loop_batch, post-process.
   results =. B $ <''
+  NB. Bound the context for the batched cache: B sequences at the model's
+  NB. full ctx (lfm2.5 = 32768, qwen3.5 = 262144) exceeds J's array limit
+  NB. (the serial path uses the full ctx for B=1).  4096 keeps 0-4k prompts
+  NB. working and B<=8 under the single-full cache size.  Restored after.
+  kv_max_seq_g =: 4096
   g =. 0
   while. g < # groups do.
     idxs =. > 1 { > g { groups
@@ -743,7 +759,9 @@ chat_completion_batch =: 4 : 0
       i =. > j { idxs
       r =. > i { parsed
       sess =. (<(chat_vars_obj '')) (2) } sess
-      sess =. (> 1 { r) (4) } sess
+      NB. Box the value (the amend on a boxed session list requires the new
+      NB. cell value to be boxed to match the cell — see session.ijs).
+      sess =. (< > 1 { r) (4) } sess
       sess_cur_g =: sess
       prompt =. chat_prompt > 0 { r
       tokens =. arch chat_tokenize (<llm) , <prompt
@@ -767,6 +785,7 @@ chat_completion_batch =: 4 : 0
     g =. g + 1
   end.
   kv_batch_g =: 1
+  kv_max_seq_g =: _1
   results
 )
 
