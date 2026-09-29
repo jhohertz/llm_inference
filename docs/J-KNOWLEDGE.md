@@ -645,6 +645,15 @@ New gotchas hit on J9.8 (addon + jsocket HTTP server):
 - **Foreigns `6!:16`/`6!:17` (unix-time conversion/format) FAIL** on this build
   (monadic ISO, date-only, and `sfe` on 0 all error) — use manual calendar math
   or an ISO-string helper instead of these foreigns.
+- **beta9: `u"n` rank specs are now ALWAYS honored.** Formerly applications of
+  rank with no effect (e.g. `>"1 y`, which opened each box individually whether
+  `"1` was given or not) were eliminated; now every `"n` spec produces loops +
+  result assembly, so **needless `"n` may run SLOWER** (and framing fill can now
+  affect the result). The interpreter warns about probably-redundant `"n` when
+  `9!:55` is enabled — run with `9!:55` set to find them. To suppress a `u"n`
+  warning, make the n value FLOATING-POINT (`1` → `1.`). This affects the
+  rank-heavy runtime (kernels, tokenizers, chat) — audit the hot paths for
+  redundant `"1`/`"0`/`"2` before assuming the old eliminated-rank behavior.
 
 ## Broadcasting via Verb Rank (`Broadcastly`)
 
