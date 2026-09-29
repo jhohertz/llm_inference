@@ -167,6 +167,14 @@ NB.  foreign (15!:0), which domain-errors, so every sdclose crashes the event
 NB.  loop after the response.  Call the libc close directly with the UNBOXED
 NB.  fd (works), then deregister (rmconn) separately.
 closefd =: 3 : 0
+  NB. Graceful close: shutdown the read+write sides (send FIN + discard read
+  NB. data) before close, so the peer sees a clean EOF instead of an RST — an
+  NB. RST on close-with-unread-data or connection reuse makes clients report
+  NB. "Connection reset by peer".  sdclose is BROKEN in this jsocket build
+  NB. (it boxes the fd and domain-errors), so call the libc close directly.
+  try.
+    shutdownJ y ; 2
+  catch. '' end.
   try.
     '"libc.so.6" close i i'&(15!:0) y
   catch. '' end.
@@ -181,8 +189,15 @@ finish =: 4 : 0
   catch.
     say 'senderr fd=', (": x)
   end.
-  closefd x
-  rmconn x
+  NB. Keep-alive (HTTP/1.1 default): after sending the response, keep the fd
+  NB. open for the next request.  Drop the fd from BUF_FD (no longer buffered)
+  NB. and reset its buffer so the next request starts fresh.  The peer closes
+  NB. (EOF) -> onread -> oneof -> closefd + rmconn.  Closing after every
+  NB. response made aiohttp report "Connection reset by peer"/"Server
+  NB. disconnected" on connection reuse.
+  BUF_FD=: (x ~: BUF_FD) # BUF_FD
+  x bufput ''
+  ''
 )
 
 NB. ============================================================
@@ -323,8 +338,11 @@ stream_chat =: 4 : 0
   catch.
     say 'stream done err'
   end.
-  closefd fd
-  rmconn fd
+  NB. Keep-alive (HTTP/1.1 default): after streaming, keep the fd open for the
+  NB. next request.  Drop it from BUF_FD and reset its buffer; the peer closes
+  NB. (EOF) -> onread -> oneof -> closefd + rmconn.
+  BUF_FD=: (fd ~: BUF_FD) # BUF_FD
+  fd bufput ''
   ''
 )
 
