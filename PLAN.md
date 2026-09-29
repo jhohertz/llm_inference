@@ -31,7 +31,18 @@ Each item is independently shippable; the suite must stay green after each item.
     replaces verified-correct `while.` scanners; high drift risk, do only if
     tokenizer perf or clarity demands.
 12. **Generation-loop refactors** — `u^:v^:_` DoWhile / `u^:n` Power / `m@.v`
-    agenda candidates (rank-0 slow); keep explicit loops unless measured.
+    agenda candidates (rank-0 slow). **Measured 2026-09: keep the explicit
+    loop.** The single-token decode is M=1 (rank-1 vectors) — memory-bound on
+    weight reads; J cannot parallelize M=1 matvecs (worker threads help large
+    matmuls, not one-row). The loop-construct refactors don't change the
+    shapes (Power needs a fixed count, DoWhile threads state through one verb,
+    agenda is rank-0 slow) — so no parallelization/zero-copy benefit. The
+    efficiency win comes from B-row (batched) shapes: `gen_loop_batch` runs the
+    matmuls concurrently across cores (measured ~2.4x total / ~1.19x per-seq on
+    lfm2.5-230m at B=2; ARCHITECTURE records 1.4-2.8x per-seq on larger
+    models). Keep the explicit loop for the single-token (interactive/streaming)
+    path; the shape-aware efficiency path is the batched generator (already
+    implemented).
 13. **Tokenizer encode/decode mutual obverse** (`u&.:v`) — future.
 
 ### Deferred J-idiom applications
