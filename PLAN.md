@@ -28,8 +28,15 @@ Each item is independently shippable; the suite must stay green after each item.
 ### Phase 4 — Engineering stretch (deep refactors, high risk / low priority)
 
 11. **`llama3_pre_tokenize` / `gpt2_pre_tokenize` → `;:` state-table** —
-    replaces verified-correct `while.` scanners; high drift risk, do only if
-    tokenizer perf or clarity demands.
+    replaces verified-correct `while.` scanners. **Measured 2026-09: keep the
+    `while.` scanners.** They're fast (~1.2-1.5M chars/s; 60k chars ≈ 0.04s)
+    and NOT the hot path (tokenization runs once per prompt, not per token);
+    the `pieces , <piece` append is sublinear in practice (no O(n²) blowup).
+    The scanners are sequential byte scans (rank-0, state-dependent — J cannot
+    parallelize a sequential scan, so the shape/parallelization consideration
+    doesn't apply), and vectorizing the contraction/letter/number/non-word
+    state machine is high drift risk against the llama.cpp oracle. Do only if a
+    measured tokenizer bottleneck appears.
 12. **Generation-loop refactors** — `u^:v^:_` DoWhile / `u^:n` Power / `m@.v`
     agenda candidates (rank-0 slow). **Measured 2026-09: keep the explicit
     loop.** The single-token decode is M=1 (rank-1 vectors) — memory-bound on
