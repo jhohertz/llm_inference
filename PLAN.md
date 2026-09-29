@@ -36,14 +36,6 @@ live in docs/J-KNOWLEDGE.md):
   (e.g. piece accumulation in a tokenizer) where space is not a concern; the
   generation loop stays a `while.` because it carries per-step KV tensors too
   large to materialize looplessly.
-- **`Broadcastly` (verb-rank broadcasting) — DONE, available.** Ported into
-  `kernels/jfloat.ijs` (see docs/HISTORICAL.md); NOT wired into the hot kernels
-  because our per-layer broadcasts are small and J's `$`-replication is
-  special-coded. Revisit only if large-batched projections appear.
-- **Tokenizer encode/decode mutual obverse (Ch 33)** — defining
-  `tokenize =: ... :. detokenize` would enable `u&.:tokenize` round-trips, but
-  the round-trip isn't an exact inverse (it drifts) and no call site needs the
-  under idiom — dropped (see docs/HISTORICAL.md §Phase 4, item 13).
 
 ## Key Reference
 

@@ -984,7 +984,18 @@ rope cos/sin ~4x slower (J's `$` is special-coded and near-free).
 (off by `sqrt(row_len)`) — it does not reproduce the manual `$`-replication
 exactly. So it's kept as an available tool, NOT wired into the hot kernels; the
 manual `$`/outer-product broadcasts are already optimal for our shapes.
-Revisit only if large-batched projections appear.
+
+**Final assessment (2026-09):** surveyed the codebase's actual broadcast sites —
+RoPE cos/sin (`cos_all (*/) (n_heads $ 1)`), the attention mask tile
+(`mask_2d (*/) (n_groups $ 1)`, already the fast ~100x `(*/)` path),
+`rms_norm_rows` (`$`-replication), and the lfm2 conv broadcast
+(`(L, emb) $ row * col`). All are small per-layer / special-coded broadcasts
+where J's `$`/`(*/)` is already optimal (rope measured ~4x slower under
+Broadcastly; rms_norm_rows rejected for correctness; the mask already uses the
+fast `(*/)` form). There is **no large-batched projection in the codebase** to
+exploit the ~1.4x win. So Broadcastly is **assessed/closed**: kept as an
+available tool in `kernels/jfloat.ijs` and documented in docs/J-KNOWLEDGE.md,
+NOT wired into any hot kernel, and NOT a planned item.
 
 ## Multi-session & batched HTTP generation (2026-09)
 
