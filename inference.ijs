@@ -49,22 +49,21 @@ NB. ---- Generic model loader: detect arch -> arch-specific loader ----
 NB. Loads the GGUF, finds its architecture, hands off to that arch's loader,
 NB. then maps the generic infer/generate entry points onto the arch's verbs —
 NB. so the inference path has no per-call dispatch. The llm noun carries its
-NB. arch at index 9 (llm_arch) for later OOP/interface work.
+NB. arch at index 10 (llm_arch) for later OOP/interface work.
 NB. The file is memory-mapped ONCE here (mmap_gguf); detect_arch and the
 NB. arch loader parse from the mapped raw. The mapping is unmap'd after
 NB. load (one model per load) — the llm noun never holds the mapped-raw ref,
 NB. so unmap frees it.
 NB. ---- Real GGUF chat-template (set per-load by arch loaders; '' = none) ----
-NB. ct_tmpl_g/ct_vars_g are initialized in util/chat.ijs (the chat layer,
-NB. loaded by inference.ijs and by the chat tests). Reset per load so loading
-NB. a non-chat-template model clears a stale template.
+NB. ct_tmpl_g is initialized in util/chat.ijs (the chat layer). Reset per load
+NB. so loading a non-chat-template model clears a stale template. ct_vars/
+NB. ct_tools are per-session (session fields 2/4), reset per call.
 
 load_gguf_to_llm =: 3 : 0
   NB. Accept a model spec (catalog id / HF path / URL / ~models path) or a
   NB. plain filesystem path; model_path downloads to ~user/models if needed.
   y =. model_path y
   ct_tmpl_g =: ''
-  ct_tools_g =: ''
   raw =. mmap_gguf y
   arch =. detect_arch (y ; raw)
   select. arch

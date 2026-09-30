@@ -449,6 +449,243 @@ lf2_run_blocks_b =: 4 : 0
   <state
 )
 
+NB. ---- Batched-PREFILL attention (lfm2): B chunks, one per seq at pos[b] ----
+NB. Mirrors lf2_attention_b but for prefill: hidden = (B, c, emb).  Q/K/V
+NB. projections + per-head Q/K norm + NEOX RoPE + Q pre-scale are BATCHED across
+NB. all B*c rows; the GQA scores/softmax/V run per-sequence.  Optional 5th arg
+NB. = lens (padding masking).  x = hidden (B, c, emb); y = <block_data; pos; mi; layer>.
+lf2_attention_bp =: 4 : 0
+  hidden =. x   NB. (B, c, emb)
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  n_heads =. lf2_bd_n_heads block_data
+  head_dim =. lf2_bd_head_dim block_data
+  n_heads_kv =. lf2_bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  half =. <. head_dim % 2
+  eff_seq =. > 1 { kv_meta
+
+  attn_norm_w =. lf2_bd_attn_norm block_data
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  thin =. |: hidden_flat
+  qv =. |: ((lf2_bd_attn_q block_data) (+/ .* ) thin)   NB. (B*c, n_heads*hd)
+  kv =. |: ((lf2_bd_attn_k block_data) (+/ .* ) thin)
+  vv =. |: ((lf2_bd_attn_v block_data) (+/ .* ) thin)
+  Q =. (B, c, n_heads, head_dim) $ , qv
+  K =. (B, c, n_heads_kv, head_dim) $ , kv
+  V =. (B, c, n_heads_kv, head_dim) $ , vv
+
+  NB. Per-head RMSNorm on Q/K BEFORE RoPE (B*c*n_heads rows)
+  Qf =. ((B*c*n_heads) , head_dim) $ , Q
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_q_norm block_data) , <Qf)
+  Q =. (B, c, n_heads, head_dim) $ , Qf
+  Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_k_norm block_data) , <Kf)
+  K =. (B, c, n_heads_kv, head_dim) $ , Kf
+
+  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_expq =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_expq =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  Qa =. half {. "1 Q   NB. (B, c, n_heads, half)
+  Qb =. half }. "1 Q
+  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
+  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
+  Q =. (B, c, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
+  Ka =. half {. "1 K   NB. (B, c, n_heads_kv, half)
+  Kb =. half }. "1 K
+  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
+  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
+  K =. (B, c, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
+
+  Q =. Q % head_dim ^ 0.5
+
+  NB. Per-sequence GQA attention (scores/softmax/V per seq; causal + lens mask)
+  attn_out =. ''
+  b =. 0
+  while. b < B do.
+    q_b =. (c, n_heads, head_dim) $ , (b { Q)
+    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
+    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
+    pos_b =. b { pos
+    base_b =. ((layer * kv_batch_g) + b) * eff_seq
+    idxw =. base_b + pos_b + i. c
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. pos_b + c
+    win =. pos_b + c
+    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
+    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
+    mask_2d =. (pos_b + i. c) </ i. win
+    if. 0 < # lens do.
+      mask_2d =. mask_2d +. ((i. win) >: b { lens)
+    end.
+    mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+    Qp =. 1 0 2 |: q_b
+    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , ((n_heads_kv, n_groups, c, head_dim) $ , Qp)
+    Kp2 =. 1 2 0 |: k_all
+    scores2 =. Q_g2 (+/ .* "2) Kp2
+    scores2 =. scores2 -"2 (mask_g2 * 1e9)
+    scores_f =. ((n_heads*c), win) $ , scores2
+    max_sf =. >./"1 scores_f
+    exp_sf =. ^ (scores_f - max_sf)
+    softmax_f =. exp_sf % +/"1 exp_sf
+    softmax_g2 =. (n_heads_kv, (n_groups*c), win) $ , softmax_f
+    Vp =. 1 0 2 |: v_all
+    attn2 =. softmax_g2 (+/ .* "2) Vp
+    attn_raw =. (n_heads, c, head_dim) $ , attn2
+    attn_raw_flat =. (c, n_heads*head_dim) $ , (1 0 2 |: attn_raw)
+    attn_out =. attn_out , <attn_raw_flat
+    b =. b + 1
+  end.
+  attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
+  attn_result =. |: ((lf2_bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  attn_result =. (B, c, emb_len) $ , attn_result
+  (<attn_result)
+)
+
+NB. ---- Batched-prefill ATTENTION block forward (lfm2) ----
+lf2_block_forward_bp =: 4 : 0
+  hidden =. x   NB. (B, c, emb)
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  input =. hidden
+  attn_result =. hidden lf2_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + input
+  ffn_norm_w =. lf2_bd_ffn_norm block_data
+  sa_flat =. ((B*c) , emb_len) $ , sa_out
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_flat)
+  gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)
+  up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
+  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
+  output_flat =. ffn_raw + sa_flat
+  output =. (B, c, emb_len) $ , output_flat
+  (<output)
+)
+
+NB. ---- Batched-prefill SHORTCONV block forward (lfm2) ----
+NB. The in_proj/out_proj/FFN matmuls are batched across B*c rows; the conv1d
+NB. (per-sequence conv state) runs per sequence (lf2_conv_read_b/write_b).
+lf2_conv_forward_bp =: 4 : 0
+  hidden =. x   NB. (B, c, emb)
+  block_data =. > 0 { y
+  pos =. > 1 { y   NB. unused — conv is position-independent
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  emb =. emb_len
+
+  NB. Operator norm (B*c rows)
+  attn_norm_w =. lf2_bd_attn_norm block_data
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  bcx =. |: ((lf2_bd_in_proj block_data) (+/ .* ) |: normed)   NB. (B*c, 3*emb)
+  b_chunk =. (emb {. "1 bcx)
+  c_chunk =. (emb {. "1 (emb }."1 bcx))
+  x_chunk =. (2 * emb) }."1 bcx
+  bx =. b_chunk * x_chunk   NB. (B*c, emb)
+
+  NB. Conv1d per sequence (conv state per seq; kernel shared)
+  conv_w =. lf2_bd_conv block_data   NB. (emb, 3)
+  conv_out_all =. ''
+  b =. 0
+  while. b < B do.
+    bx_b =. (c, emb) $ , ((b * c) + i. c) { bx
+    conv_state =. lf2_conv_read_b ((<layer) , <b)   NB. (2, emb)
+    input_b =. conv_state , bx_b   NB. (2+c, emb)
+    conv_out =. (c , emb) $ 0
+    conv_out =. conv_out + ((c , emb) $ (0 {"1 conv_w)) * ((0 + i. c) { input_b)
+    conv_out =. conv_out + ((c , emb) $ (1 {"1 conv_w)) * ((1 + i. c) { input_b)
+    conv_out =. conv_out + ((c , emb) $ (2 {"1 conv_w)) * ((2 + i. c) { input_b)
+    conv_out_all =. conv_out_all , <conv_out
+    NB. Conv-state update: use only the REAL rows (padding must NOT contaminate
+    NB. the sliding window — a padded sequence's state must end at its last real
+    NB. token, not at the chunk's padding rows).  input_b = [conv_state(2); bx],
+    NB. so the last 2 REAL bx rows sit at input_b rows (real_c, real_c+1).
+    p_chunk =. 0 { pos
+    real_c =. c <. ((b { lens) - p_chunk)
+    if. real_c > 0 do.
+      new_conv =. (real_c + i. 2) { input_b
+      lf2_conv_write_b ((<layer) , (<new_conv) , <b)
+    end.
+    b =. b + 1
+  end.
+  conv_out_arr =. ((B*c) , emb) $ , > conv_out_all
+  y =. c_chunk * conv_out_arr   NB. (B*c, emb)
+  out =. |: ((lf2_bd_out_proj block_data) (+/ .* ) |: y)   NB. (B*c, emb)
+  sa_out_flat =. out + hidden_flat
+
+  NB. Post-attention norm + SwiGLU FFN (no inner residual)
+  ffn_norm_w =. lf2_cv_ffn_norm block_data
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out_flat)
+  tfin =. |: ffn_in
+  gate_f =. |: ((lf2_cv_ffn_gate block_data) (+/ .* ) tfin)
+  up_f =. |: ((lf2_cv_ffn_up block_data) (+/ .* ) tfin)
+  ffn_raw =. |: ((lf2_cv_ffn_down block_data) (+/ .* ) |: (gate_f swiglu up_f))
+  output_flat =. ffn_raw + sa_out_flat
+  output =. (B, c, emb_len) $ , output_flat
+  (<output)
+)
+
+NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
+lf2_run_blocks_bp =: 4 : 0
+  input =. x   NB. (B, c, emb)
+  args =. y
+  llm =. > 0 { args
+  pos =. > 1 { args
+  lens =. ''
+  if. 2 < # args do. lens =. > 2 { args end.
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  emb_len =. mi_emb_len mi
+  state =. input
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  NB. Shortconv state: fresh prefill zeroes it (per-sequence batch cache)
+  lf2_conv_create ((<lf2_n_conv_g) , (<2) , (<emb_len))
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    block_data =. > b { block_data_list
+    if. lf2_bd_is_conv block_data do.
+      result =. state lf2_conv_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+    else.
+      result =. state lf2_block_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+    end.
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
 NB. ---- Batched-DECODE attention (B sequences, ONE token each at pos[b]) ----
 NB. LFM2 attention = qwen3-style (per-head Q/K norm, NEOX RoPE, GQA, no biases).
 NB. x = hidden (B, emb); y = <block_data; pos; mi; layer>
@@ -717,9 +954,13 @@ lf2_load =: 3 : 0
   ti_end_offset =. > ((n_tensors * 6) - 1) { ti
   tds =. 32 * <. (ti_end_offset + 31) % 32
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. lf2_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
+  ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
@@ -747,7 +988,7 @@ lf2_load =: 3 : 0
   block_count =. mi_block_count mi
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -757,6 +998,7 @@ lf2_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. lf2_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Tokenize/detokenize (gpt2 BPE + llama3 pre, BOS prepended) ----
@@ -903,12 +1145,8 @@ NB. qwen-style: {{bos_token}} + <|im_start|>role\n content <|im_end|>\n per
 NB. message + generation prompt <|im_start|>assistant\n. No default system
 NB. block. {{bos_token}} is rendered as '' — lf2_tokenize prepends BOS so the
 NB. token stream matches llama.cpp (bos once).
-lf2_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
 
-lf2_default_params =: 0 0 0.95 0.0
+
 NB. Stop tokens: EOS = <|im_end|> (7).
 lf2_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y

@@ -9,7 +9,11 @@ NB.  shell helper:  scripts/llm_server.sh [MODEL]
 NB.
 NB.  CONCURRENCY MODEL (from the handoff, proven):
 NB.  - EVERY socket is NON-BLOCKING:  sdcheck sdioctl fd,FIONBIO,1
-NB.  - Event loop: z=: sdcheck sdselect FSET;FSET;FSET;200  (200ms timeout)
+NB.  - Event loop: z=: sdcheck sdselect FSET;0#0;0#0;200  (200ms timeout,
+NB.    READ set only — the write/error sets MUST stay empty: a listening
+NB.    socket is "writable" whenever its accept queue has room (always), so
+NB.    any fd in the write set makes select() return immediately -> 100% CPU
+NB.    busy loop; sends are synchronous sdsend, no write tracking needed).
 NB.    sdcheck drops the status cell -> <read;write;error>; READ fds at cell 0.
 NB.  - One op per ready fd per cycle: listener -> sdaccept, conn -> sdrecv
 NB.    (4096), accumulate in CBF until h11_complete.
@@ -163,6 +167,14 @@ NB.  foreign (15!:0), which domain-errors, so every sdclose crashes the event
 NB.  loop after the response.  Call the libc close directly with the UNBOXED
 NB.  fd (works), then deregister (rmconn) separately.
 closefd =: 3 : 0
+  NB. Graceful close: shutdown the read+write sides (send FIN + discard read
+  NB. data) before close, so the peer sees a clean EOF instead of an RST — an
+  NB. RST on close-with-unread-data or connection reuse makes clients report
+  NB. "Connection reset by peer".  sdclose is BROKEN in this jsocket build
+  NB. (it boxes the fd and domain-errors), so call the libc close directly.
+  try.
+    shutdownJ y ; 2
+  catch. '' end.
   try.
     '"libc.so.6" close i i'&(15!:0) y
   catch. '' end.
@@ -177,8 +189,15 @@ finish =: 4 : 0
   catch.
     say 'senderr fd=', (": x)
   end.
-  closefd x
-  rmconn x
+  NB. Keep-alive (HTTP/1.1 default): after sending the response, keep the fd
+  NB. open for the next request.  Drop the fd from BUF_FD (no longer buffered)
+  NB. and reset its buffer so the next request starts fresh.  The peer closes
+  NB. (EOF) -> onread -> oneof -> closefd + rmconn.  Closing after every
+  NB. response made aiohttp report "Connection reset by peer"/"Server
+  NB. disconnected" on connection reuse.
+  BUF_FD=: (x ~: BUF_FD) # BUF_FD
+  x bufput ''
+  ''
 )
 
 NB. ============================================================
@@ -303,13 +322,27 @@ stream_chat =: 4 : 0
   catch.
     say 'stream end err'
   end.
+  NB. OpenAI stream_options.include_usage final chunk: empty choices + usage.
+  NB. llama-benchy reads usage from the stream; without it it falls back to
+  NB. local tokenization.
+  pt=: > 3 { cres
+  ct2=: > 4 { cres
+  ufr=: 'data: ' , (usagechunkbody (SID ; MODEL ; CREATED ; pt ; ct2)) , LF , LF
+  try.
+    sdcheck (h11_chunk ufr) sdsend fd , 0
+  catch.
+    say 'stream usage err'
+  end.
   try.
     sdcheck (frame_done '') sdsend fd , 0
   catch.
     say 'stream done err'
   end.
-  closefd fd
-  rmconn fd
+  NB. Keep-alive (HTTP/1.1 default): after streaming, keep the fd open for the
+  NB. next request.  Drop it from BUF_FD and reset its buffer; the peer closes
+  NB. (EOF) -> onread -> oneof -> closefd + rmconn.
+  BUF_FD=: (fd ~: BUF_FD) # BUF_FD
+  fd bufput ''
   ''
 )
 
@@ -323,6 +356,34 @@ NB.  B delta streams is hard — plain JSON first).  Called once per select cycl
 NB.  (after the ready-fd loop), so a lone request is flushed in the same cycle
 NB.  it arrives (no added latency) and concurrent requests (ready in the same
 NB.  cycle) share a batch.  Returns ''.
+NB. ---- send_resp (used by flush_pending) ----
+NB.  y = <fd ; rec ; cres>.  Builds + sends the non-stream JSON response for one
+NB.  buffered record (cres = <content ; finish ; tcs>).  Shared by the batched
+NB.  and single request paths.  Returns ''.
+send_resp =: 3 : 0
+  fd =. > 0 { y
+  rec =. > 1 { y
+  cres =. > 2 { y
+  ct =. > 0 { cres
+  fin =. > 1 { cres
+  tcs =. > 2 { cres
+  pt =. > 3 { cres
+  ct2 =. > 4 { cres
+  r1 =: < > 7 { rec
+  r2 =: < MODEL
+  r3 =: < > 8 { rec
+  r4 =: < ct
+  r5 =: < fin
+  r6 =: < tcs
+  r7 =: < pt
+  r8 =: < ct2
+  bdy =. respbody (r1 , r2 , r3 , r4 , r5 , r6 , r7 , r8)
+  hd =. 'Content-Type: application/json' , CRLF
+  lst =. '200' ; 'OK' ; hd ; bdy
+  fd finish (h11_simple lst)
+  ''
+)
+
 flush_pending =: 3 : 0
   if. 0 = # PENDING do. '' return. end.
   recs=: PENDING
@@ -353,44 +414,51 @@ flush_pending =: 3 : 0
     results=: LLM chat_completion_batch brecs
     i=: 0
     while. i < # ns do.
-      rec=: > i { ns
-      fd=: > 0 { rec
-      cres=: > i { results
-      ct=: > 0 { cres
-      fin=: > 1 { cres
-      tcs=: > 2 { cres
-      bdy=: respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
-      hd=: 'Content-Type: application/json' , CRLF
-      lst=: '200' ; 'OK' ; hd ; bdy
-      fd finish (h11_simple lst)
-      i=: i + 1
+       rec=: > i { ns
+       fd=: > 0 { rec
+       cres=: > i { results
+       NB. Named-box catenation (proven pattern, see builders.ijs): this J9.8
+       NB. build's `;` ravel-concatenates two box lists and `<x> , <y>` parses
+       NB. the closed `>` as a dyad, so build list args from named box vars.
+       b1=: <fd
+       b2=: <rec
+       b3=: <cres
+       send_resp (b1 , b2 , b3)
+       i=: i + 1
     end.
   elseif. 1 = # ns do.
     rec=: > 0 { ns
     fd=: > 0 { rec
     params=: (> 3 { rec) ; 0 ; (> 4 { rec) ; 0
-    cres=: LLM chat_completion ((> 1 { rec) ; (> 2 { rec) ; (> 5 { rec) ; 0 ; <params)
-    ct=: > 0 { cres
-    fin=: > 1 { cres
-    tcs=: > 2 { cres
-    bdy=: respbody ((> 7 { rec) ; MODEL ; (> 8 { rec) ; ct ; fin ; tcs)
-    hd=: 'Content-Type: application/json' , CRLF
-    lst=: '200' ; 'OK' ; hd ; bdy
-    fd finish (h11_simple lst)
+    p1=: < > 1 { rec
+    p2=: < > 2 { rec
+    p3=: < > 5 { rec
+    p4=: < 0
+    p5=: < params
+    cres=: LLM chat_completion (p1 , p2 , p3 , p4 , p5)
+    b1=: <fd
+    b2=: <rec
+    b3=: <cres
+    send_resp (b1 , b2 , b3)
   end.
-  i=: 0
-  while. i < # s do.
-    rec=: > i { s
-    fd=: > 0 { rec
-    fd stream_chat ((> 1 { rec) ; (> 2 { rec) ; (> 3 { rec) ; (> 4 { rec) ; (> 5 { rec))
-    i=: i + 1
-  end.
+   i=: 0
+   while. i < # s do.
+     rec=: > i { s
+     fd=: > 0 { rec
+     s1=: < > 1 { rec
+     s2=: < > 2 { rec
+     s3=: < > 3 { rec
+     s4=: < > 4 { rec
+     s5=: < > 5 { rec
+     fd stream_chat (s1 , s2 , s3 , s4 , s5)
+     i=: i + 1
+   end.
   ''
 )
 
 NB. ============================================================
 NB.  maybe_flush  ->  called once per select cycle.  Flushes PENDING only when
-NB.  the batch window has elapsed (now - BATCH_START >= BATCH_WINDOW) or the
+NB.  the batch window has elapsed (BATCH_CYCLES >: BATCH_WAIT, ~60ms) or the
 NB.  batch is full (>= BATCH_MAX).  Otherwise it leaves the requests buffered so
 NB.  concurrent requests arriving while the loop is free can join the batch.
 NB.  Returns ''.
@@ -438,7 +506,19 @@ v1_chat =: 4 : 0
   NB. Buffer the request (no generation here).  flush_pending drains PENDING once
   NB. per select cycle: non-stream requests are batched in ONE gen_loop_batch
   NB. (Stage 3); stream requests are served individually (streaming deferred).
-  rec=: fd ; msgs ; tools_json ; temp ; top_p ; mx ; stream ; cid ; created
+  NB. Named-box catenation (proven pattern, see builders.ijs): this J9.8
+  NB. build's `;` ravel-concatenates two box lists and `<x> , <y>` parses the
+  NB. closed `>` as a dyad — build the record from named box vars.
+  b1=: <fd
+  b2=: <msgs
+  b3=: <tools_json
+  b4=: <temp
+  b5=: <top_p
+  b6=: <mx
+  b7=: <stream
+  b8=: <cid
+  b9=: <created
+  rec=: b1 , b2 , b3 , b4 , b5 , b6 , b7 , b8 , b9
   if. 0 = # PENDING do. BATCH_CYCLES=: 0 end.
   PENDING=: PENDING , <rec
   BUF_FD=: BUF_FD , fd
@@ -555,7 +635,13 @@ selectloop =: 3 : 0
     NB. While requests are buffered, poll every 20ms so the batch window is
     NB. honored (concurrent requests join the batch); otherwise 200ms.
     if. 0 < # PENDING do. to=: 20 else. to=: 200 end.
-    z=: sdcheck sdselect fset ; fset ; fset ; to
+    NB. READ set only: the write/error sets MUST be empty. A listening socket
+    NB. is "writable" whenever its accept queue has room (always, right after
+    NB. an accept), so fset in the write set made select() return immediately
+    NB. every cycle -> 100% CPU busy loop (measured: 20x50ms selects = 0ms
+    NB. with the listener in the write set, 1000ms read-only). Sends are
+    NB. synchronous (sdsend in try/catch), so no write-readiness tracking.
+    z=: sdcheck sdselect fset ; (0 # 0) ; (0 # 0) ; to
     rd=: > 0 { z
     while. 0 < # rd do.
       fd=: {. rd
@@ -577,7 +663,14 @@ selectloop =: 3 : 0
       maybe_flush ''
     catch.
       say 'FLUSHERR: ' , 13!:12 ''
+      NB. Drop the batch AND close its connections: a buffered fd is skipped
+      NB. by onread (BUF_FD), so it would otherwise hang with no response.
       PENDING=: ''
+      while. 0 < # BUF_FD do.
+        fd=: {. BUF_FD
+        BUF_FD=: }. BUF_FD
+        oneof fd
+      end.
     end.
   end.
 )

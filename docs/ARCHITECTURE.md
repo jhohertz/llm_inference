@@ -15,24 +15,42 @@ module that consumes the parser and implements the forward pass.
 The generic entry `load_gguf_to_llm` reads the model's `general.architecture`
 KV once (`detect_arch`) and playsound-style maps `infer`/`generate` onto the
 loaded arch's verbs (`gem3_*` / `llama_*` / `qw2_*`) — the check is made at load
-time, not at each call. The llm noun carries its arch at index 9 (`llm_arch`).
+time, not at each call. The llm noun carries its arch at index 10 (`llm_arch`);
+it is 11 elements: `<path; ti; default_params; tokenizer; mi; kv_cache; tds;
+all_tensors; block_data; kv_data; arch>` — `mi` is a jdict of named hparams
+(queried via the `mi_*`/`granite_mi_*` accessors), and `kv_data` is a jdict of
+all decoded GGUF KVs (queried via `kv_get`/`dict_get`).
 
 ```
 inference.ijs (entry point)   — all code lives in the 'inference' locale
 ├── gguf/gguf.ijs       — Generic GGUF parser: parse_hdr, parse_kv_pairs, parse_tensor_infos, load_tensor_data
-├── util/kv_cache.ijs   — Persistent KV cache: kv_cache_g/kv_meta globals, monadic create/write/write_rows/read/reset (no threading)
-├── gguf_dump.ijs      — Utility: pretty-print any GGUF file
- ├── tokenizers/tokenizer_llama3.ijs / tokenizers/tokenizer_gpt2.ijs — BPE tokenizers
- ├── tokenizers/tokenizer_spm.ijs   — SentencePiece tokenizer (llama.cpp llm_tokenizer_spm bigram-merge)
- ├── kernels/jfloat.ijs    — matmul, linear, RMSNorm, GELU, SiLU, SwiGLU, RoPE, softcap; `Broadcastly` adverb (NumPy-style broadcasting via verb rank)
- ├── util/llm_core.ijs   — llm accessors, get_tensor_cached_d, embed_tokens, output_head, sample_from, infer_args, gen_args
- ├── models/gemma3.ijs     — Gemma 3 270M: attention+KV, FFN, blocks, gem3_infer/gem3_generate
- ├── models/llama.ijs      — generic llama arch (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE
-  ├── models/granite.ijs    — Granite 4.0/4.1/4.2: standard decoder + Granite scaling (data-driven: embed*12, residual*resid, scores*0.015625, logits/logit_scale), tied embeddings
- ├── models/ernie.ijs      — ERNIE-4.5-0.3B: standard decoder byte-for-byte the llama arch (tied embeddings), reuses llama.ijs forward verbs, SPM tokenizer
- ├── models/qwen2.ijs      — Qwen2.5-Coder: standard decoder, GQA, SwiGLU, NEOX RoPE, Q/K/V biases
+├── gguf/quant.ijs      — Quant decoders + block tables (packed-quant handling is part of gguf)
+├── util/kv_cache.ijs   — Persistent KV cache: k_cache_g/v_cache_g globals + session-aware verbs (kv_create_s/kv_write_s/kv_write_rows_s/kv_read_s/kv_reset_s, sess_kv_bind)
+├── util/session.ijs    — boxed `session` noun (17 indexed fields) + accessors + session_new/session_reset/sess_put/sess_set
+├── util/llm_core.ijs   — llm accessors, get_tensor_cached_d, embed_tokens, output_head, sample_from, gen_loop_core/gen_loop_batch
+├── util/chat.ijs       — chat-template inference (chat_tmpl_render), chat_completion/chat_core_stream/chat_tool_loop, streaming (chat_stream_piece)
+├── util/chat_template.ijs — chat-template layer (ct_apply, detect_caps, strftime_now) — depends on util/minja.ijs
+├── util/minja.ijs      — minja Jinja engine port (coclass 'minja')
+├── util/models.ijs     — model catalog + spec resolution + downloader (model_path/model_download/model_list)
+├── util/sampler.ijs    — temperature / top-k / top-p / min-p sampling
 ├── util/llmobj.ijs     — OOP wrapper: conew 'llmobj', infer__obj/generate__obj/destroy__obj
-└── util/sampler.ijs    — temperature / top-k / top-p / min-p sampling
+├── kernels/jfloat.ijs  — matmul, linear, RMSNorm, GELU, SiLU, SwiGLU, RoPE, softcap; `Broadcastly` adverb (NumPy-style broadcasting via verb rank)
+├── tokenizers/tokenizer_llama3.ijs / tokenizers/tokenizer_gpt2.ijs — BPE tokenizers
+├── tokenizers/tokenizer_spm.ijs   — SentencePiece tokenizer (llama.cpp llm_tokenizer_spm bigram-merge)
+├── models/gemma3.ijs     — Gemma 3 270M: attention+KV, FFN, blocks, gem3_infer/gem3_generate
+├── models/llama.ijs      — generic llama arch (SmolLM2 + Llama-3.2): standard decoder, GQA, SwiGLU, interleaved RoPE
+├── models/granite.ijs    — Granite 4.0/4.1/4.2: standard decoder + Granite scaling (embed*12, residual*resid, scores*0.015625, logits/logit_scale), tied embeddings
+├── models/ernie.ijs      — ERNIE-4.5-0.3B: standard decoder byte-for-byte the llama arch (tied embeddings), reuses llama.ijs forward verbs, SPM tokenizer
+├── models/qwen2.ijs      — Qwen2.5-Coder: standard decoder, GQA, SwiGLU, NEOX RoPE, Q/K/V biases
+├── models/qwen3.ijs      — Qwen3-0.6B: qwen2 + per-head Q/K RMSNorm before RoPE, NO QKV biases
+├── models/qwen35.ijs     — Qwen3.5-0.8B: hybrid (attention + gated-delta-net SSM), fused Q+GATE, conv1d, recurrent-state cache
+├── models/lfm2.ijs       — LFM2-350M/700M/1.2B: hybrid (attention + shortconv), new conv component, lfm2 pre-tokenizer
+├── http/server.ijs       — OpenAI-compatible HTTP server (non-blocking jsocket loop; POST /v1/chat/completions plain+SSE, GET /v1/models)
+├── http/protocol.ijs     — pure HTTP/1.1 framing/parse/build (no socket calls)
+├── http/builders.ijs     — OpenAI JSON/SSE body builders
+├── gguf_dump.ijs         — Utility: pretty-print any GGUF file
+├── llm_cli.ijs           — one-shot CLI (scripts/llm.sh)
+└── chat_launch.ijs       — interactive chat console (scripts/chat.sh)
 ```
 
 ## Supported Models
@@ -43,12 +61,17 @@ inference.ijs (entry point)   — all code lives in the 'inference' locale
 | SmolLM2-360M | `llama.ijs` | 32 | 960 | 2560 | 15 | 5 | 64 | none | interleaved | gpt2 |
 | Llama-3.2-1B-Instruct | `llama.ijs` | 16 | 2048 | 8192 | 32 | 8 | 64 | none | interleaved | llama-bpe |
 | Granite-4.0-350m | `granite.ijs` | 28 | 1024 | 2048 | 16 | 4 | 64 | none | interleaved | dbrx |
+| Granite-4.1-3b | `granite.ijs` | 40 | 2560 | 8192 | 40 | 8 | 64 | none | interleaved | dbrx |
+| Granite-4.2-3b | `granite.ijs` | 40 | 2560 | 8192 | 40 | 8 | 64 | none | interleaved | dbrx |
 | ERNIE-4.5-0.3B | `ernie.ijs` | 18 | 1024 | 3072 | 16 | 2 | 128 | none | interleaved | spm |
 | Qwen2.5-Coder-0.5B | `qwen2.ijs` | 24 | 896 | 4864 | 14 | 2 | 64 | none | NEOX | gpt2 |
 | Qwen3-0.6B | `qwen3.ijs` | 28 | 1024 | 3072 | 16 | 8 | 128 | none | NEOX | gpt2 |
 | Qwen3.5-0.8B | `qwen35.ijs` | 24 | 1024 | 3584 | 8 | 2 | 256 | none | NEOX | gpt2 |
+| Qwen3.5-2B | `qwen35.ijs` | 24 | 2048 | 6144 | 8 | 2 | 256 | none | NEOX | gpt2 |
+| Qwen3.8-2B | `qwen35.ijs` | 25 | 2048 | 6144 | 8 | 2 | 256 | none | NEOX | gpt2 |
 | LFM2-350M | `lfm2.ijs` | 16 | 1024 | 4608 | 16 | 8 | 64 | none | interleaved | gpt2 |
 | LFM2.5-230M | `lfm2.ijs` | 14 | 1024 | 2560 | 16 | 8 | 64 | none | interleaved | gpt2 |
+| LFM2.5-1.2B | `lfm2.ijs` | 16 | 2048 | 8192 | 32 | 8 | 64 | none | interleaved | gpt2 |
 
 Architecture KV prefix: Gemma3 uses `gemma3.*`, SmolLM2 uses `llama.*`, Qwen2
 uses `qwen2.*`. Each `*_extract_hparams` reads the model-specific KV keys.
@@ -286,10 +309,10 @@ generations):
 - **Batched decode adds a B-axis**: `kv_batch_g` parallel sequences (default
   1); `k_cache_g` is `(n_layers * kv_batch_g * eff_seq, n_kv*hd)` and the row
   base is `(layer * kv_batch_g + seq) * eff_seq`. `kv_seq_g` selects the
-  current sequence for the 4-item `kv_write`/`kv_read` calls (batched prefill
-  sets it per sequence); `*_attention_bd` passes an explicit 5th batch index
-  (`b`) instead. `kv_create` reallocates when `kv_batch_g` changes (the
-  alloc-batch is tracked in `kv_batch_alloc_g`).
+  current sequence for the 4-item `kv_write`/`kv_read` calls (the per-sequence
+  prefill fallback sets it per sequence); `*_attention_bd`/`*_attention_bp`
+  pass an explicit batch index (`b`) instead. `kv_create` reallocates when
+  `kv_batch_g` changes (the alloc-batch is tracked in `kv_batch_alloc_g`).
 - `kv_meta` = `<n_layers; eff_seq; n_heads_kv; head_dim>`; `kv_pos_g` = the
   used length (all layers write together); `kv_max_seq_g` = a low-memory
   context override (default `_1` = model max); `eff_seq = min(max_seq, kv_max_seq_g)`.
@@ -349,6 +372,15 @@ The transpose is accepted as the J-floor for positions-leading storage.
 session-persistent); the arch `*_run_blocks`
 also create if `kv_meta` is empty (defensive). Chat-session RESUME mode skips
 `kv_create` — it continues from the existing cache at `start_pos`.
+
+**Session-aware verbs** — the multi-session path (see docs/HISTORICAL.md
+§Multi-session & batched HTTP generation) wraps the global-based verbs with `_s` versions
+(`kv_create_s`/`kv_write_s`/`kv_write_rows_s`/`kv_read_s`/`kv_reset_s`) that
+read/write cache state in a boxed `session` noun (x = session; write verbs
+return the updated session; the shared `k_cache_g`/`v_cache_g` buffers are
+reused). `sess_kv_bind` sets `kv_seq_g`/`kv_batch_g`/`kv_max_seq_g` from a
+session so the existing `gen_loop_core`/`gen_loop_batch` run at the session's
+seq without changing their signature.
 
 ## RoPE Variants
 
@@ -462,23 +494,24 @@ rather than an argument. `chat_completion` (util/chat.ijs) is the OpenAI-shaped
 
 **STREAMING TEXT DELTAS (Phase 6 item 2)** — `chat_stream_piece` (util/chat.ijs)
  is a port of llama.cpp's streaming incremental detokenizer: it appends each
- token's raw bytes to `st_buf_g`, holds any incomplete trailing UTF-8 sequence
- (`utf8_tail`), and emits only complete characters. `chat_stream_cb` is the
- per-token callback the caller installs as `gen_cb_g` (with `gen_cb_on_g=1`);
- it reads arch/llm from `chat_cb_arch_g`/`chat_cb_llm_g` (set by
- `chat_completion`) and forwards each text delta to `chat_cb_g` (a monadic verb
- on the delta string), returning the token unchanged so the delta never leaks
- into the token stream. Streaming == batch detokenize on all tokenizer families
- (greedy, e.g. qwen3 170/170 chars); a streaming==batch test is in
-  test_qwen3.ijs. Gotcha: J verb assignment `a =. b` is a dynamic ALIAS to the
-  name `b`, not a copy — so `x =: gen_cb_g` then `gen_cb_g =: chat_stream_cb`
-  would make the "capture" track the new value (infinite recursion). 
-`chat_completion` never overwrites the caller's callback. Stop tokens are
-  suppressed from the delta stream via `chat_cb_stop_g`: `gen_loop_core` breaks
-  WITHOUT appending a stop token to `output`, so the batch detokenize excludes it
-  — the streaming callback sees it (it fires before the stop check) and would
-  leak its text. qwen3.5's `<|im_end|>` (151645) has a NON-EMPTY byte-encoded
-  vocab string, so this is required for stream==batch there (verified 216/216).
+ token's raw bytes to the session's `st_buf` field (5), holds any incomplete
+ trailing UTF-8 sequence (`utf8_tail`), and emits only complete characters.
+ `chat_stream_cb` is the per-token callback the caller installs as `gen_cb_g`
+ (with `gen_cb_on_g=1`); it reads arch/llm from the session (or the
+ `chat_cb_arch_g`/`chat_cb_llm_g` globals set by `chat_completion`) and
+ forwards each text delta to `chat_cb_g` (a monadic verb on the delta string),
+ returning the token unchanged so the delta never leaks into the token stream.
+ Streaming == batch detokenize on all tokenizer families (greedy, e.g. qwen3
+ 170/170 chars); a streaming==batch test is in test_qwen3.ijs. Gotcha: J verb
+ assignment `a =. b` is a dynamic ALIAS to the name `b`, not a copy — so
+ `x =: gen_cb_g` then `gen_cb_g =: chat_stream_cb` would make the "capture"
+ track the new value (infinite recursion). `chat_completion` never overwrites
+ the caller's callback. Stop tokens are suppressed from the delta stream via
+ `chat_cb_stop_g`: `gen_loop_core` breaks WITHOUT appending a stop token to
+ `output`, so the batch detokenize excludes it — the streaming callback sees it
+ (it fires before the stop check) and would leak its text. qwen3.5's
+ `<|im_end|>` (151645) has a NON-EMPTY byte-encoded vocab string, so this is
+ required for stream==batch there (verified 216/216).
 
 **TOOL-CALL CLASSIFICATION (Phase 6 item 3)** — `chat_completion` detects a
   `<tool_call>...</tool_call>` region in the generated content: `finish_reason`
@@ -547,8 +580,20 @@ sequence for 4-item calls; the flat base becomes
 `(layer * kv_batch_g + seq) * eff_seq` (see §KV Cache). Each arch adds
 `*_attention_bd` (per-sequence scores/softmax/output inside, weight matmuls
 amortized over B), `*_block_forward_bd`, `*_run_blocks_bd`, and a
-`*_generate_batch` wrapper. `gen_loop_batch` prefills each sequence with the
-per-arch `*_run_blocks_b` under `kv_seq_g = i`, then decodes:
+`*_generate_batch` wrapper.
+
+Prefill is likewise batched: each arch adds `*_attention_bp`/
+`*_block_forward_bp`/`*_run_blocks_bp` (`rb_bp`/`rb_bp_flag` in `gen_loop_batch`).
+`gen_loop_batch` pads every sequence to the longest prompt, runs the B chunks
+in lockstep (ONE forward per chunk; weight-read amortized over B*c rows), and
+masks each sequence's padding with a per-seq `lens` — only the hidden of each
+sequence's LAST real token is kept (captured in the chunk covering its final
+position). Recurrent-state arches (lfm2 conv, qwen35 delta-net) batch the
+projections/FFN across B*c rows but run the conv1d + recurrence per sequence
+(per-seq conv/s state via `lf2_conv_read_b`/`rs_read_b`), and update their
+conv state from only the REAL rows (padding must not contaminate the sliding
+window). Archs without a `*_run_blocks_bp` fall back to the per-sequence
+prefill (`*_run_blocks_b` under `kv_seq_g = i`). Then it decodes:
 - Step 0 predicts from the prefill-last hidden WITHOUT re-embedding and does
   NOT advance `cur_pos` — mirrors `gen_loop_core`'s off-by-one rule. (An early
   version re-embedded at pos L every step: it duplicated the last prompt
@@ -568,22 +613,27 @@ a guarded-but-unreset cache made batch-after-single inherit stale conv state
 and diverge (the KV cache self-cleans because prefill overwrites its rows).
 
 Verified: `tests/j/test_batched.ijs` — batch==single token-identical for all
-8 arches at B=2 (plus B=3 for qwen2). Measured per-seq throughput at small
-ctx: ~1.6x qwen2, ~2.3x qwen3, ~1.4x llama, ~1.35x granite, ~2.8x ernie,
-~2.6x lfm2, ~1.5x qwen35 (gemma3 not re-measured post-fix). Big-ctx models
-(qwen3.5 ctx=262144 → ~51GB/seq KV at full ctx) need `kv_max_seq_g` bounded.
+8 arches at B=2 (plus B=3 for qwen2), AND for the conv-state arches (lfm2,
+qwen35) with variable-length prompts (padding + per-seq conv state must not
+contaminate the window). Measured per-seq throughput at small ctx: ~1.6x
+qwen2, ~2.3x qwen3, ~1.4x llama, ~1.35x granite, ~2.8x ernie, ~2.6x lfm2,
+~1.5x qwen35 (gemma3 not re-measured post-fix). Big-ctx models (qwen3.5
+ctx=262144 → ~51GB/seq KV at full ctx) need `kv_max_seq_g` bounded.
 
 ## Chat Sessions (persistent multi-turn, option B)
 
 `llm chat 'next message'` (or `llm chat_p ('msg' ; <temp;k;p;min_p>)`) is the
-crude console chat. The session state `chat_session_g` =
-`<arch; messages; total_tokens; cur_pos; max_steps; params>`:
+crude console chat. The session state is the boxed **`session` noun** (one per
+session — see docs/HISTORICAL.md §Multi-session & batched HTTP generation); the serial chat verbs
+are thin wrappers over the `_s` versions passing ONE global `session`. The
+`chat_session` field of the session = `<arch; messages; total_tokens; cur_pos;
+max_steps; params>`:
 - `messages` — the full message history (`<role ; content>` boxes; assistant
   answers stored with role 'assistant', gemma3 maps to 'model' internally).
 - `total_tokens` — the EXACT token stream processed so far (prompt + generated),
   boxed; `cur_pos` = its length = the KV write frontier.
 - The session never holds a cache reference — a second ref would defeat the
-  in-place amend; the cache stays in `kv_cache_g` (one active session).
+  in-place amend; the cache stays in `k_cache_g`/`v_cache_g` (one active session).
 
 Each turn:
 1. Append the new user message and RE-RENDER the full history (through the
@@ -611,8 +661,9 @@ there are no bespoke per-arch prompt verbs anymore.
 - **Load**: each arch loader extracts the template once —
   `'tokenizer.chat_template' kv_string (0 1 { kv_result)` (gguf/gguf.ijs:455;
   vt=8 string) into the `ct_tmpl_g` global (`''` if absent). `load_gguf_to_llm`
-  resets `ct_tmpl_g` per load. `ct_tmpl_g`/`ct_vars_g`/`ct_now_g` are initialized
-  in util/chat.ijs.
+  resets `ct_tmpl_g` per load. `ct_tmpl_g` (shared loaded template) and
+  `ct_now_g` (pinned-date knob) are initialized in util/chat.ijs; the
+  per-call `ct_vars`/`ct_tools` live in the session noun.
 - **Render**: `chat_prompt` (util/chat.ijs dispatch) calls each arch's
   `*_chat_prompt`, which is a thin wrapper over `chat_tmpl_render`
   (util/chat.ijs): convert the `<role ; content>` message boxes (or pre-built
@@ -621,24 +672,26 @@ there are no bespoke per-arch prompt verbs anymore.
   Value array of `{role, content}` objs, `mkarr_minja_`, then
   `ct_apply (source ; <msgs; tools; add_generation_prompt=1; extra;
   now; ''; ''> ; caps ; tool_ex ; options)` → prompt string.
-  `tools` comes from `ct_tools_g` — a JSON string of tool definitions parsed
-  by `ct_parse_json_chatpl_` (`''` → null). Tool-capable templates render the
-  tool dump + tool_calls; non-tool templates get the tools polyfill (system
-  message) automatically via the layer's `detect_caps`.
+  `tools` comes from the session's `ct_tools` field — a JSON string of tool
+  definitions parsed by `ct_parse_json_chatpl_` (`''` → null). Tool-capable
+  templates render the tool dump + tool_calls; non-tool templates get the tools
+  polyfill (system message) automatically via the layer's `detect_caps`.
   `add_generation_prompt=1` makes the template emit its own gen prompt
   (`<start_of_turn>model`, `<|im_start|>assistant`, ...). If a model has no
   `tokenizer.chat_template`, `chat_tmpl_render` throws a clear error.
-- **Template variables**: `ct_vars_g` (a minja obj) is passed as the `extra`
-  input — e.g. `enable_thinking` (qwen3: default no thinking block, false →
-  ` thinking\n\n response\n\n`; qwen3.5: undefined → ` thinking\n\n response\n\n`,
-  true → ` thinking\n`). Settable per-call via the optional 4th `tmpl_vars`
-  arg to `chat_generate` (`chat_vars_obj` builds the obj from `<key ; value>`).
+- **Template variables**: the session's `ct_vars` field (a minja obj) is passed
+  as the `extra` input — e.g. `enable_thinking` (qwen3: default no thinking
+  block, false → ` thinking\n\n response\n\n`; qwen3.5: undefined →
+  ` thinking\n\n response\n\n`, true → ` thinking\n`). Settable per-call via
+  the optional 4th `tmpl_vars` arg to `chat_generate` (`chat_vars_obj` builds
+  the obj from `<key ; value>`).
 - **Tools**: `chat_generate` accepts an optional 5th `tools` arg — a JSON
-  string of OpenAI-style function schemas, set into `ct_tools_g` per call
-  (mirroring `ct_vars_g`/`ct_now_g`, cleared by the persistent chat path and
-  reset on model load). `chat_tmpl_render` parses it to the template's `tools`
-  input, so tool-capable templates produce real function-calling prompts;
-  messages may be pre-built minja Values to express `tool_calls`/typed content.
+  string of OpenAI-style function schemas, set into the session's `ct_tools`
+  per call (mirroring `ct_vars`/`ct_now`, cleared by the persistent chat path
+  and reset on model load). `chat_tmpl_render` parses it to the template's
+  `tools` input, so tool-capable templates produce real function-calling
+  prompts; messages may be pre-built minja Values to express `tool_calls`/
+  typed content.
 - **now**: `chat_tmpl_render` uses the current epoch (Hinnant `days_from_civil`
   date→days inverse of the minja `civil_from_days`) unless `ct_now_g` is
   non-zero (test oracle pinning, e.g. 1721952000 = 26 Jul 2024). The template's
@@ -668,8 +721,27 @@ is the launcher; `http/run.ijs` is the entry point.
   (never block).
 - **Endpoints**: POST `/v1/chat/completions` (plain JSON via `respbody`, or
   streamed SSE via `chat_stream_cb` → `sse_sender` → `frame_*`), GET `/v1/models`
-  (`v1_models`), GET `/` (status line). `finish` sends the response, closes,
-  deregisters (`rmconn`).
+  (`v1_models`), GET `/` (status line). `finish` sends the response. Non-stream
+  responses report real `usage` (prompt/completion/total tokens); streamed
+  responses emit a final `stream_options.include_usage` chunk (empty choices +
+  usage) so clients that read usage from the stream get real counts.
+- **Keep-alive (HTTP/1.1 default)**: after sending a response, `finish` (and
+  `stream_chat` after streaming) KEEPS the fd open for the next request — it
+  drops the fd from `BUF_FD`, resets its buffer, and stays in the read set. The
+  peer closes (EOF) → `onread` → `oneof` → `closefd` + `rmconn`. `closefd` does
+  a graceful `shutdown(fd, SHUT_RDWR)` (send FIN + discard read data) before the
+  libc close, so a real close never RSTs. Closing after every response made
+  aiohttp report "Connection reset by peer"/"Server disconnected" on connection
+  reuse.
+- **Batching**: the server buffers concurrent complete requests in `PENDING`
+  (each `<fd ; msgs ; tools ; temp ; top_p ; mx ; stream ; cid ; created>`);
+  `v1_chat` appends (no generation) and `maybe_flush` drains once per select
+  cycle after a short window (`BATCH_WAIT`=3 cycles ~ 60ms, `BATCH_MAX`=8,
+  select timeout drops to 20ms while pending). Non-stream requests group by
+  identical params and generate in ONE `chat_completion_batch` (one
+  `gen_loop_batch` over B sequences); stream requests are served individually.
+  `BUF_FD` tracks buffered fds so `onread` skips them (a buffered peer is idle
+  awaiting its response).
 - **J gotcha — `sdclose` is BROKEN in this jsocket build**: its `0=res
   closesocketJ <y` passes a BOXED arg to the libc close foreign (15!:0), which
   domain-errors, so every `sdclose` crashes the event loop after a response.
@@ -730,7 +802,7 @@ always-emitted system block + dynamic "Today Date" via `strftime_now`).
 Standard decoder, GQA (16→4), SwiGLU, interleaved RoPE (NORM, full head_dim
 rotary, freq_base 1e7), separate QKV/O weights, no q/k norm, **tied
   embeddings** (no `output.weight`). The Granite scaling scheme (read from
-  KVs, stored in mi at indices 12..15, data-driven per model — 4.0/4.1/4.2):
+  KVs, stored in mi as NAMED dict keys, data-driven per model — 4.0/4.1/4.2):
   input embeddings *12 (`embedding_scale`),
   per layer `attn_out*resid + input` then `ffn_out*resid + that`
   (`residual_scale`; 0.263 on 4.0, 0.22 on 4.1), Q*K^T scores *0.015625

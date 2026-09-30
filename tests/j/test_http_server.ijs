@@ -52,7 +52,7 @@ section_header_inference_ 'response builders'
 vm=. v1_models ''
 assert_test (1 e. '{"object":"list","data":[{"id":"qwen3-0.6b","object":"model","created":' E. vm) ; 'v1_models id+object prefix'
 assert_test (1 e. '"owned_by":"j"' E. vm) ; 'v1_models owned_by'
-assert_test ('{"id":"cid1","object":"chat.completion","created":123,"model":"qwen3-0.6b","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}' -: respbody ('cid1' ; 'qwen3-0.6b' ; 123 ; 'Hello' ; 'stop' ; '')) ; 'respbody exact'
+assert_test ('{"id":"cid1","object":"chat.completion","created":123,"model":"qwen3-0.6b","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}' -: respbody ('cid1' ; 'qwen3-0.6b' ; 123 ; 'Hello' ; 'stop' ; '' ; 5 ; 7)) ; 'respbody exact'
 
 section_header_inference_ 'streaming frame builders'
 f1=. 'x' frame_first ('sid' ; 'qwen3-0.6b' ; 123)
@@ -62,6 +62,8 @@ assert_test ((1 e. '{"id":"sid","object":"chat.completion.chunk","created":123,"
 f3=. 'stop' frame_end ('sid' ; 'qwen3-0.6b' ; 123)
 assert_test ((1 e. 'finish_reason":"stop"}' E. f3) *. (0 < # f3)) ; 'frame_end carries finish_reason'
 assert_test (0 < # frame_done '') ; 'frame_done emits done chunk'
+u4=. usagechunkbody ('sid' ; 'qwen3-0.6b' ; 123 ; 5 ; 7)
+assert_test ((1 e. '{"id":"sid","object":"chat.completion.chunk","created":123,"model":"qwen3-0.6b","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}' E. u4) *. (0 < # u4)) ; 'usagechunkbody emits empty choices + usage'
 
 section_header_inference_ 'error responses'
 nf=. notfound ''

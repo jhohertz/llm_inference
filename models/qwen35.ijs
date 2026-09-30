@@ -61,12 +61,30 @@ qw35_extract_hparams =: 3 : 0
 )
 
 NB. ---- qwen35-specific mi accessors (shared mi_* cover indices 0..11) ----
-qw35_mi_key_len     =: >@(12&{)
-qw35_mi_n_rot       =: >@(13&{)
-qw35_mi_ssm_d_inner =: >@(14&{)
-qw35_mi_ssm_d_state =: >@(15&{)
-qw35_mi_ssm_dt_rank =: >@(16&{)
-qw35_mi_ssm_n_group =: >@(17&{)
+qw35_mi_key_len     =: 3 : 0
+  d =. y
+  > get__d (<'key_len')
+)
+qw35_mi_n_rot       =: 3 : 0
+  d =. y
+  > get__d (<'n_rot')
+)
+qw35_mi_ssm_d_inner =: 3 : 0
+  d =. y
+  > get__d (<'ssm_d_inner')
+)
+qw35_mi_ssm_d_state =: 3 : 0
+  d =. y
+  > get__d (<'ssm_d_state')
+)
+qw35_mi_ssm_dt_rank =: 3 : 0
+  d =. y
+  > get__d (<'ssm_dt_rank')
+)
+qw35_mi_ssm_n_group =: 3 : 0
+  d =. y
+  > get__d (<'ssm_n_group')
+)
 
 NB. ---- block_data accessors ----
 NB. Shared (all layers): <attn_norm; post_norm; ffn_gate; ffn_up; ffn_down;
@@ -898,12 +916,13 @@ qw35_load =: 3 : 0
   ti_end_offset =. > ((n_tensors * 6) - 1) { ti
   tds =. 32 * <. (ti_end_offset + 31) % 32
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. qw35_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
   NB. vocab from token_embd dims (qwen35 has no vocab_size KV)
   te_dims =. > ((0 * 6) + 1) { ti
   vocab =. {: te_dims
-  mi =. (<vocab) 7} mi
-  NB. qwen35-specific config fields (indices 12..17): key_len, n_rot, ssm_*
+  NB. qwen35-specific config fields: key_len, n_rot, ssm_*
   key_len =. 'qwen35.attention.key_length' qw35_kv_uint kvs_ctx
   n_rot =. 'qwen35.rope.dimension_count' qw35_kv_uint kvs_ctx
   ssm_d_inner =. 'qwen35.ssm.inner_size' qw35_kv_uint kvs_ctx
@@ -911,8 +930,10 @@ qw35_load =: 3 : 0
   ssm_dt_rank =. 'qwen35.ssm.time_step_rank' qw35_kv_uint kvs_ctx
   ssm_n_group =. 'qwen35.ssm.group_count' qw35_kv_uint kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (<n_rot) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
-  mi =. mi , (<"0) key_len , n_rot , ssm_d_inner , ssm_d_state , ssm_dt_rank , ssm_n_group
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
+  NB. vocab_size overwrites the build_mi_dict placeholder (qwen35 has no KV).
+  (vocab ; (> 0 { rope_tables) ; (> 1 { rope_tables) ; key_len ; n_rot ; ssm_d_inner ; ssm_d_state ; ssm_dt_rank ; ssm_n_group) put__mi 'vocab_size' ; 'cos_tab' ; 'sin_tab' ; 'key_len' ; 'n_rot' ; 'ssm_d_inner' ; 'ssm_d_state' ; 'ssm_dt_rank' ; 'ssm_n_group'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
@@ -939,7 +960,7 @@ qw35_load =: 3 : 0
   block_count =. mi_block_count mi
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -949,6 +970,7 @@ qw35_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. qw35_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Infer (raw single forward, no chat template) ----
@@ -1000,10 +1022,7 @@ NB. The real template (GGUF tokenizer.chat_template) renders the generation
 NB. prompt with angle-bracket tags: thinking LF LF response LF LF (default) or
 NB. thinking LF (enable_thinking=true). Rendered via chat_tmpl_render.
 
-qw35_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
+
 
 NB. ---- Generate (chat-template single turn) ----
 qw35_generate =: 4 : 0
@@ -1065,8 +1084,305 @@ qw35_generate_batch =: 4 : 0
   answers
 )
 
-NB. ---- Per-arch defaults + stop tokens ----
-qw35_default_params =: 0 0 0.95 0.0
+NB. ---- Batched-PREFILL attention (qwen35): B chunks, one per seq at pos[b] ----
+NB. Mirrors qw35_attention_b but for prefill: hidden = (B, c, emb).  Q+GATE (fused),
+NB. K/V projections + per-head Q/K norm + PARTIAL NEOX RoPE + Q pre-scale are
+NB. BATCHED across all B*c rows; the GQA scores/softmax/V + sigmoid-gate run
+NB. per-sequence.  Optional 5th arg = lens (padding masking).
+NB. x = hidden (B, c, emb); y = <block_data; pos; mi; layer> (+ lens).
+qw35_attention_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  n_heads =. qw35_bd_a_n_heads block_data
+  head_dim =. qw35_bd_a_head_dim block_data
+  n_heads_kv =. qw35_bd_a_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  n_rot =. qw35_mi_n_rot mi
+  half =. <. n_rot % 2
+  eff_seq =. > 1 { kv_meta
+
+  NB. Attention norm per row (batched)
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden_flat)
+
+  NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (B*c, 2*head_dim*n_heads)
+  qg3 =. (B , c , n_heads , 2 * head_dim) $ , qg
+  Q =. head_dim {."1 qg3    NB. (B, c, n_heads, head_dim)
+  gate =. head_dim }."1 qg3  NB. (B, c, n_heads, head_dim)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (B*c, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  K =. (B , c , n_heads_kv , head_dim) $ , kv
+  V =. (B , c , n_heads_kv , head_dim) $ , vv
+
+  NB. Per-head RMSNorm on Q and K BEFORE RoPE
+  Qf =. ((B*c*n_heads) , head_dim) $ , Q
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_q_norm block_data) , <Qf)
+  Q =. (B , c , n_heads , head_dim) $ , Qf
+  Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
+  K =. (B , c , n_heads_kv , head_dim) $ , Kf
+
+  NB. Partial NEOX RoPE at the (B, c) positions pos[b]+i.c (n_rot dims, pairs (i, i+half))
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  Qa =. half {."1 Q
+  Qb =. half {."1 (half }."1 Q)
+  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
+  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
+  Qtail =. (2 * half) }."1 Q
+  Q =. (B , c , n_heads , head_dim) $ , ((Qa_out ,"1 Qb_out) ,"1 Qtail)
+  cos_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  Ka =. half {."1 K
+  Kb =. half {."1 (half }."1 K)
+  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
+  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
+  Ktail =. (2 * half) }."1 K
+  K =. (B , c , n_heads_kv , head_dim) $ , ((Ka_out ,"1 Kb_out) ,"1 Ktail)
+
+  NB. Scale Q by 1/sqrt(head_dim)
+  Q =. Q % head_dim ^ 0.5
+
+  NB. Per-sequence GQA + gated output (scores/softmax/V per seq; causal + lens mask)
+  attn_out =. ''
+  b =. 0
+  while. b < B do.
+    q_b =. (c, n_heads, head_dim) $ , (b { Q)
+    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
+    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
+    gate_b =. (c, n_heads, head_dim) $ , (b { gate)
+    pos_b =. b { pos
+    base_b =. ((layer * kv_batch_g) + b) * eff_seq
+    idxw =. base_b + pos_b + i. c
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. pos_b + c
+    win =. pos_b + c
+    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
+    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
+    mask_2d =. (pos_b + i. c) </ i. win
+    if. 0 < # lens do.
+      mask_2d =. mask_2d +. ((i. win) >: b { lens)
+    end.
+    mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+    Qp =. 1 0 2 |: q_b
+    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , ((n_heads_kv, n_groups, c, head_dim) $ , Qp)
+    Kp2 =. 1 2 0 |: k_all
+    scores2 =. Q_g2 (+/ .* "2) Kp2
+    scores2 =. scores2 -"2 (mask_g2 * 1e9)
+    scores_f =. ((n_heads*c), win) $ , scores2
+    max_sf =. >./"1 scores_f
+    exp_sf =. ^ (scores_f - max_sf)
+    softmax_f =. exp_sf % +/"1 exp_sf
+    softmax_g2 =. (n_heads_kv, (n_groups*c), win) $ , softmax_f
+    Vp =. 1 0 2 |: v_all
+    attn2 =. softmax_g2 (+/ .* "2) Vp
+    attn_raw =. (n_heads, c, head_dim) $ , attn2
+    attn_raw =. (c, n_heads, head_dim) $ , (1 0 2 |: attn_raw)
+    attn_gated =. attn_raw * (sigmoid gate_b)
+    attn_raw_flat =. (c, n_heads*head_dim) $ , attn_gated
+    attn_out =. attn_out , <attn_raw_flat
+    b =. b + 1
+  end.
+  attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
+  out =. |: ((qw35_bd_a_o block_data) (+/ .*) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  out =. (B, c, emb_len) $ , out
+  (<out)
+)
+
+NB. ---- Batched-PREFILL SSM (gated delta-net) layer (B chunks, c tokens each) ----
+NB. Batched projections (qkv/gate/beta/alpha) across B*c rows; the conv1d +
+NB. delta-net recurrence run per sequence (conv + s state per seq via rs_read_b/
+NB. rs_write_b); the norm-gated output + out_proj + residual + FFN are batched.
+NB. x = hidden (B, c, emb); y = <block_data; pos; mi; layer> (+ lens).
+qw35_ssm_forward_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  head_v_dim =. qw35_bd_s_head_v_dim block_data
+  num_v_heads =. qw35_bd_s_n_v_heads block_data
+  d_inner =. qw35_bd_s_d_inner block_data
+
+  NB. Attention norm per row (batched)
+  hidden_flat =. ((B*c) , emb_len) $ , hidden
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden_flat)
+
+  key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
+  value_dim =. head_v_dim * num_v_heads
+  conv_dim =. (key_dim * 2) + value_dim
+
+  NB. Projections (batched across B*c rows)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (B*c, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (B*c, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (B*c, num_v_heads)
+  beta =. sigmoid beta_p
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (B*c, num_v_heads)
+  alpha =. alpha_p + (((B*c) , num_v_heads) $ qw35_bd_s_dt block_data)
+  alpha =. softplus alpha
+  gate =. alpha * (((B*c) , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
+
+  NB. Conv1d + recurrence per sequence (c tokens each; conv + s state per seq)
+  conv_w =. qw35_bd_s_conv1d block_data   NB. (conv_dim, 4)
+  scale =. 1 % head_v_dim ^ 0.5
+  finals =. ''
+  b =. 0
+  while. b < B do.
+    qkv_b =. (c, conv_dim) $ , ((b * c) + i. c) { qkv_mixed
+    z_b =. (c, value_dim) $ , ((b * c) + i. c) { z
+    beta_b =. (c, num_v_heads) $ , ((b * c) + i. c) { beta
+    gate_b =. (c, num_v_heads) $ , ((b * c) + i. c) { gate
+    rs_state =. rs_read_b ((<layer) , <b)
+    conv_state =. > 0 { rs_state   NB. (3, conv_dim)
+    input =. conv_state , qkv_b   NB. (3+c, conv_dim)
+    conv_out =. ((c , conv_dim) $ (0 {"1 conv_w)) * ((i. c) { input)
+    conv_out =. conv_out + ((c , conv_dim) $ (1 {"1 conv_w)) * ((1 + i. c) { input)
+    conv_out =. conv_out + ((c , conv_dim) $ (2 {"1 conv_w)) * ((2 + i. c) { input)
+    conv_out =. conv_out + ((c , conv_dim) $ (3 {"1 conv_w)) * ((3 + i. c) { input)
+    conv_out =. silu conv_out   NB. (c, conv_dim)
+
+    NB. Split Q/K/V channels
+    q_conv =. key_dim {."1 conv_out
+    k_conv =. key_dim {."1 (key_dim }."1 conv_out)
+    v_conv =. (2 * key_dim) }."1 conv_out
+
+    NB. Reshape + L2-norm q and k
+    q3 =. (c , num_v_heads , head_v_dim) $ , q_conv
+    k3 =. (c , num_v_heads , head_v_dim) $ , k_conv
+    v3 =. (c , num_v_heads , head_v_dim) $ , v_conv
+    qf =. ((c * num_v_heads) , head_v_dim) $ , q3
+    qf =. l2norm_rows ((< mi_rms_eps mi) , <qf)
+    q =. (c , num_v_heads , head_v_dim) $ , qf
+    kf =. ((c * num_v_heads) , head_v_dim) $ , k3
+    kf =. l2norm_rows ((< mi_rms_eps mi) , <kf)
+    k =. (c , num_v_heads , head_v_dim) $ , kf
+
+    NB. Recurrence (c tokens)
+    s_state =. > 1 { rs_state
+    rec =. qw35_ssm_recur ((<s_state) , (<q) , (<k) , (<v3) , (<beta_b) , (<gate_b) , <scale)
+    s_new =. > 0 { rec
+    o =. > 1 { rec   NB. (c, num_v_heads, head_v_dim)
+
+    NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z)
+    o_flat =. ((c * num_v_heads) , head_v_dim) $ , o
+    o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
+    z3 =. (c , num_v_heads , head_v_dim) $ , z_b
+    z_flat =. ((c * num_v_heads) , head_v_dim) $ , z3
+    gated =. o_n * silu z_flat
+    final =. (c , d_inner) $ , gated
+    finals =. finals , <final
+
+    NB. Update conv state (last 3 REAL rows) + s state.  input = [conv_state(3);
+    NB. qkv(c)], so the last 3 real qkv rows sit at input rows (real_c, real_c+1,
+    NB. real_c+2) — padding must NOT contaminate the sliding window.
+    if. 0 < # lens do.
+      real_c =. c <. ((b { lens) - (0 { pos))
+    else.
+      real_c =. c
+    end.
+    if. real_c > 0 do.
+      new_conv =. (real_c + i. 3) { input
+      rs_write_b ((<layer) , (<new_conv) , (<s_new) , <b)
+    end.
+    b =. b + 1
+  end.
+
+  NB. out_proj + residual + FFN (batched)
+  final_all =. (B , c , d_inner) $ , > finals
+  final_flat =. ((B*c) , d_inner) $ , final_all
+  out =. |: ((qw35_bd_s_out block_data) (+/ .*) |: final_flat)   NB. (B*c, emb)
+  out =. out + hidden_flat
+  post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
+  output_flat =. ffn_raw + out
+  output =. (B , c , emb_len) $ , output_flat
+  (<output)
+)
+
+NB. ---- Batched-PREFILL block forwards (qwen35) ----
+qw35_block_forward_a_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  input =. hidden
+  attn_result =. hidden qw35_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + input
+  post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <(((B*c) , emb_len) $ , sa_out))
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
+  output_flat =. ffn_raw + (((B*c) , emb_len) $ , sa_out)
+  output =. (B , c , emb_len) $ , output_flat
+  (<output)
+)
+
+qw35_block_forward_s_bp =: qw35_ssm_forward_bp
+
+NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
+qw35_run_blocks_bp =: 4 : 0
+  input =. x
+  args =. y
+  llm =. > 0 { args
+  pos =. > 1 { args
+  lens =. ''
+  if. 2 < # args do. lens =. > 2 { args end.
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. input
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  NB. SSM recurrent state: batched prefill needs it (rs_batch_g = kv_batch_g = B).
+  if. 0 = # rs_meta do.
+    rs_create ((<18) , (<3) , (<6144) , (<128) , <16)
+  end.
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    block_data =. > b { block_data_list
+    if. qw35_bd_is_ssm block_data do.
+      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+    else.
+      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+    end.
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
+NB. ---- Stop tokens ----
 qw35_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y
   tokenizer_eos_g tk

@@ -54,9 +54,9 @@ test_chat_session =: 3 : 0
   assert_test (a1 -: 'The capital of France is Paris.') ; 'qwen2 chat turn1 answer pin'
 
   NB. session state after turn 1
-  assert_test ((> 0 { chat_session_g) -: 'qwen2') ; 'session arch = qwen2'
-  assert_test (2 = # > 1 { chat_session_g) ; 'session has 2 messages (user + assistant)'
-  pos1 =. > 3 { chat_session_g
+  assert_test ((> 0 { sess_chat session) -: 'qwen2') ; 'session arch = qwen2'
+  assert_test (2 = # > 1 { sess_chat session) ; 'session has 2 messages (user + assistant)'
+  pos1 =. > 3 { sess_chat session
   assert_test (pos1 > 0) ; 'session cur_pos > 0 after turn 1'
 
   NB. turn 2 (persistence)
@@ -68,11 +68,11 @@ test_chat_session =: 3 : 0
   msgs =. msgs , <('user') ; 'And what is its population?'
   ref2 =. llm chat_generate (msgs ; 100000 ; <0 0 0.95 0.0)
   assert_test (a2 -: ref2) ; 'qwen2 turn2 (persisted) == full re-render'
-  assert_test (pos1 < > 3 { chat_session_g) ; 'session cur_pos grew across turns'
+  assert_test (pos1 < > 3 { sess_chat session) ; 'session cur_pos grew across turns'
 
   NB. chat_reset clears the session; a fresh turn == turn 1
   chat_reset ''
-  assert_test (0 = # chat_session_g) ; 'chat_reset clears session'
+  assert_test (0 = # session) ; 'chat_reset clears session'
   a1b =. llm chat 'The capital of France is'
   assert_test (a1b -: a1) ; 'qwen2 chat after reset == fresh turn 1'
 
@@ -116,7 +116,7 @@ test_chat_session =: 3 : 0
   assert_test (s2 -: ref2b) ; 'chat_core_stream turn2 (persisted) == full re-render'
 
   chat_reset ''
-  assert_test (0 = # chat_session_g) ; 'chat_core_stream chat_reset clears session'
+  assert_test (0 = # session) ; 'chat_core_stream chat_reset clears session'
   s1b =. llm2 chat_stream_turn 'The capital of France is'
   assert_test (s1b -: s1) ; 'chat_core_stream after reset == fresh turn 1'
 

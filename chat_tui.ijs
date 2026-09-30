@@ -4,7 +4,7 @@ NB. directly (j-kvm `vt` for raw-mode + key reads; no jpi).
 NB. Usage:
 NB.   jconsole chat_tui.ijs [MODEL]        (default mdl qwen3-0.6b)
 NB.
-NB. Stateful chat: the session (chat_session_g) + KV cache carry across turns,
+NB. Stateful chat: the session (the global `session` noun) + KV cache carry across turns,
 NB. so each turn resumes from the cache (ONE batched prefill of the new segment)
 NB. instead of re-rendering the full history. Streaming: the reply appears live,
 NB. token by token, via the chat_stream_cb per-token callback — chat_core_stream
@@ -39,10 +39,10 @@ RUNNING =: 1
 IN =: ''                        NB. current input line
 STREAM =: ''                    NB. accumulating assistant text during streaming
 
-NB. The message history lives in chat_session_g (stateful session, held by
+NB. The message history lives in the session (held by chat_core_stream) — read
 NB. chat_core_stream) — read it back for rendering.
 get_msgs =: 3 : 0
-  if. 0 = # chat_session_g do. 0 $ <'' else. > 1 { chat_session_g end.
+  if. 0 = # session do. 0 $ <'' else. > 1 { sess_chat session end.
 )
 
 NB. Terminal driver (fd-fixed j-kvm vt: read stdin fd 0, write stdout fd 1).

@@ -35,9 +35,9 @@ test_granite =: 3 : 0
   assert_test (2048 -: mi_n_ff mi) ; 'feed_forward_length = 2048'
   assert_test (100352 -: mi_vocab_size mi) ; 'vocab_size = 100352'
   assert_test (12 -: granite_mi_embed_scale mi) ; 'embedding_scale = 12'
-  assert_test ((| 0.263 - granite_mi_resid_scale mi) < 0.001) ; 'residual_scale = 0.263'
+  assert_test ((| 0.263 - mi_resid_scale mi) < 0.001) ; 'residual_scale = 0.263'
   assert_test (4 -: granite_mi_logit_scale mi) ; 'logit_scale = 4'
-  assert_test (0.015625 -: granite_mi_attn_scale mi) ; 'attention.scale = 0.015625'
+  assert_test (0.015625 -: mi_attn_scale mi) ; 'attention.scale = 0.015625'
 
   NB. --- single/multi-token infer argmax vs llama.cpp ---
   NB. Oracle ids = fresh-context greedy completion tokens from llama-cpp-python

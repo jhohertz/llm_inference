@@ -73,14 +73,21 @@ ernie_load =: 3 : 0
   ti_end_offset =. > ((n_tensors * 6) - 1) { ti
   tds =. 32 * <. (ti_end_offset + 31) % 32
   kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
   mi =. ernie_extract_hparams kvs_ctx
+  mi =. build_mi_dict mi
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
-  mi =. mi , rope_tables
+  NB. Default attention/residual scales: 1/sqrt(hd) and 1. ERNIE is a
+  NB. byte-for-byte llama arch (aliases llama's forward verbs), so it sets the
+  NB. shared mi_attn_scale/mi_resid_scale defaults (granite overrides with GGUF).
+  NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
+  NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   NB. ERNIE has no vocab_size KV — derive from token_embd dims (dims = [emb, vocab]).
+  head_dim =. mi_head_dim mi
   tok_info =. 'token_embd.weight' get_tensor_info ti
   dims =. ti_dims tok_info
   vocab_size =. 1 { dims
-  mi =. (<vocab_size) 7} mi
+  ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1 ; vocab_size) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale' ; 'vocab_size'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_spm_tokenizer kv_result
@@ -104,7 +111,7 @@ ernie_load =: 3 : 0
   block_count =. mi_block_count mi
   p  =. <path
   t  =. <ti
-  ze =. <$0
+  ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
   kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
@@ -114,6 +121,7 @@ ernie_load =: 3 : 0
   llm =. p , t , ze , tk , mi_b , kc_b , td , at
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
+  llm =. llm , <kv_data
 )
 
 NB. ---- Tokenize/detokenize (SPM) ----
@@ -129,6 +137,7 @@ NB. ---- Forward verbs: ERNIE reuses the generic llama arch ----
 ernie_run_blocks =: llama_run_blocks
 ernie_run_blocks_b =: llama_run_blocks_b
 ernie_run_blocks_bd =: llama_run_blocks_bd
+ernie_run_blocks_bp =: llama_run_blocks_bp
 
 NB. ---- Single-token inference ----
 NB. Usage: llm ernie_infer (text ; <temp;k;p;min_p>)
@@ -252,12 +261,8 @@ NB. ---- ERNIE chat template ----
 NB. cls_token '<|begin_of_sentence|>'; user 'User: <content>\n'; assistant
 NB. 'Assistant: <content><|end_of_sentence|>'; system '<content>\n'; then the
 NB. generation prompt 'Assistant: '. No BOS (add_bos_token=false) and no trim.
-ernie_chat_prompt =: 3 : 0
-  messages =. y
-  chat_tmpl_render messages
-)
 
-ernie_default_params =: 0 0 0.95 0.0
+
 NB. Stop tokens: EOS (</s> = 2) and the chat sep token <|end_of_sentence|> (100272).
 ernie_stop_tokens =: 3 : 0
   tk =. llm_tokenizer y

@@ -42,7 +42,8 @@ mkobj =: 3 : 0
 
 NB. ============================================================
 NB.  y respbody  ->  chars of the FULL non-streaming response body.
-NB.  y = <id ; model ; created ; content ; finish ; tcs>
+NB.  y = <id ; model ; created ; content ; finish ; tcs ; prompt_tokens ;
+NB.  completion_tokens>.
 NB.  tcs = boxed list of tool-call minja Values ({type; function:<name;
 NB.  arguments>; id}), possibly empty.  finish = 'stop'|'length'|'tool_calls'.
 respbody =: 3 : 0
@@ -52,6 +53,8 @@ respbody =: 3 : 0
   ct  =. >3{ y
   fin  =. >4{ y
   tcs =. >5{ y
+  pt  =. >6{ y
+  ct2 =. >7{ y
   NB. message object
   if. 0 < # tcs do.
     NB. assistant message with tool_calls, content null
@@ -69,7 +72,11 @@ respbody =: 3 : 0
   ch =. ck ,: cv
   A =. 1 $ <ch
   uk =. ('prompt_tokens';'completion_tokens';'total_tokens')
-  uv =. (0;0;0)
+  tot =. pt + ct2
+  u1 =: <pt
+  u2 =: <ct2
+  u3 =: <tot
+  uv =: u1 , u2 , u3
   u =. uk ,: uv
   b1 =. <cid
   b2 =. <'chat.completion'
@@ -185,6 +192,36 @@ endchunkbody =: 4 : 0
 )
 
 NB. ============================================================
+NB.  y usagechunkbody  ->  chars of the OpenAI `stream_options.include_usage`
+NB.  FINAL SSE chunk body: empty choices [] + usage object.  Sent after the
+NB.  finish_reason chunk, before "data: [DONE]" (llama-benchy reads usage
+NB.  from the stream — see reference client.py).  y = <id ; model ; created ;
+NB.  prompt_tokens ; completion_tokens>.
+usagechunkbody =: 3 : 0
+  cid =. >0{ y
+  cm  =. >1{ y
+  cr  =. >2{ y
+  pt  =. >3{ y
+  ct2 =. >4{ y
+  tot =. pt + ct2
+  uk =. ('prompt_tokens';'completion_tokens';'total_tokens')
+  u1 =: <pt
+  u2 =: <ct2
+  u3 =: <tot
+  u =. uk ,: (u1 , u2 , u3)
+  ck =. ('id';'object';'created';'model';'choices';'usage')
+  c1 =: <cid
+  c2 =: <'chat.completion.chunk'
+  c3 =: <cr
+  c4 =: <cm
+  c5 =: < (0 $ <'')
+  c6 =: < u
+  v =. c1 , c2 , c3 , c4 , c5 , c6
+  O =. ck ,: v
+  enc_json O
+)
+
+NB. ============================================================
 NB.  Streaming frame builders (called by the server's SSE sender,
 NB.  one per text delta).  Each returns the FULL chunked SSE frame
 NB.  bytes for one data: line:  h11_chunk('data: ' , body , LF , LF).
@@ -213,9 +250,11 @@ frame_done =: 3 : 0
 NB. ============================================================
 NB.  y plainres  ->  full bytes of a non-streaming HTTP response
 NB.  (Content-Length form).  y = <id ; model ; created ; content ;
-NB.  finish ; tcs>
+NB.  finish ; tcs>.  Usage counts are unknown here — pass 0s.
 plainres =: 3 : 0
-  body =. respbody y
+  u1 =: <0
+  u2 =: <0
+  body =. respbody (y , u1 , u2)
   hd =. 'Content-Type: application/json' , CRLF
   lst =. '200' ; 'OK' ; hd ; body
   h11_simple lst

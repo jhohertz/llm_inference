@@ -11,6 +11,12 @@ inference loop trades throughput for transparency. It exists to be read, taken
 apart, and experimented with — and its logits are verified **exact** against
 `llama-cpp-python`, so you can trust the numbers while you explore.
 
+> **⚠️ Under active development.** This project is still very much in
+> development. Interfaces, model support, and behavior can change without
+> notice — **breaking changes are on the table**. The test suite is green
+> against the reference implementation, but pin your model/config and re-check
+> the docs before relying on any specific behavior.
+
 ---
 
 ## Why this exists
@@ -63,7 +69,9 @@ at interactive speed, running large models, or production workloads.
 - **OpenAI-compatible HTTP server** (`http/`, `scripts/llm_server.sh`) — a
   non-blocking jsocket event loop serving POST `/v1/chat/completions` (plain
   JSON + streamed SSE) and GET `/v1/models`, reusing the same `chat_completion`
-  verb behind the OpenAI endpoint.
+  verb behind the OpenAI endpoint. Concurrent requests **batch** into one
+  forward pass, responses report **real usage** tokens, and connections are
+  **keep-alive** (reused across requests).
 - **Five ways to run it** — one-shot CLI, interactive chat console, a raw-mode
   chat TUI, the network HTTP server, or the J API — plus a GGUF inspector.
 - **An OOP wrapper** (`conew`) if you prefer objects over box-of-boxes.
@@ -156,11 +164,11 @@ The session persists across turns until `chat_reset_inference_ ''` (or `exit`).
 ```
 
 A minimal terminal chat UI driven directly by the addon (j-kvm `vt` raw-mode +
-key reads). It is **stateful** — the session (`chat_session_g`) + KV cache
-carry across turns via `chat_core_stream` (one batched prefill of the new
-segment), and the reply **streams live**, token by token. Controls: type a
-message + Enter to send; `/reset` clears the session + KV cache; Backspace to
-edit; Ctrl-C or type `exit` to quit.
+key reads). It is **stateful** — the `session` noun + KV cache carry across
+turns via `chat_core_stream` (one batched prefill of the new segment), and the
+reply **streams live**, token by token. Controls: type a message + Enter to
+send; `/reset` clears the session + KV cache; Backspace to edit; Ctrl-C or type
+`exit` to quit.
 
 ### GGUF inspector
 
@@ -169,6 +177,17 @@ edit; Ctrl-C or type `exit` to quit.
 ```
 
 Standalone — does not require the addon installed.
+
+### Run the OpenAI-compatible HTTP server
+
+```bash
+./scripts/llm_server.sh 'qwen3-0.6b'     # default model qwen3-0.6b
+```
+
+Serves POST `/v1/chat/completions` (plain JSON + streamed SSE) and
+GET `/v1/models` on port 8790 (`PORT=... ./scripts/llm_server.sh ...` to
+override). It batches concurrent requests, reports real `usage` tokens, and
+keep-alives connections. See `docs/ARCHITECTURE.md` §HTTP Server for details.
 
 ---
 
@@ -210,11 +229,12 @@ msgs =. (<'user') , <'What is the capital of France?'
 answer =. llm chat_generate_simple_inference_ (msgs ; 200)
 ```
 
-Tool/function-calling prompts (5th arg = a JSON string of tool definitions):
+Tool/function-calling prompts (optional `tools` arg = a JSON string of tool
+definitions; the 4th `tmpl_vars` arg is optional too):
 
 ```j
 tools =. '["{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"...\",\"parameters\":{...}}}"]'
-answer =. llm chat_generate_inference_ (msgs ; 200 ; <params ; '' ; tools)
+answer =. llm chat_generate_inference_ (msgs ; 200 ; <0 0 0.95 0.0> ; '' ; tools)
 ```
 
 You may also `cocurrent <'inference'` to use plain simple names inside the
@@ -273,11 +293,11 @@ Supported architectures and catalog ids:
 | Gemma3 | `gemma3` | `gemma-3-270m-it`, `gemma-3-1b-it` |
 | SmolLM2 | `llama` | `smollm2-135m`, `smollm2-360m`, `smollm2-1.7b` |
 | Llama-3.2-1B | `llama` | `llama-3.2-1b` |
-| Granite-4.0-350m | `granite` | `granite-4.0-350m` |
+| Granite-4.0/4.1/4.2 | `granite` | `granite-4.0-350m`, `granite-4.1-3b`, `granite-4.2-3b` |
 | ERNIE-4.5-0.3B | `ernie4_5` | `ernie-4.5-0.3b` |
 | Qwen2.5-Coder | `qwen2` | `qwen2.5-coder-0.5b/1.5b/3b` |
 | Qwen3 | `qwen3` | `qwen3-0.6b`, `qwen3-1.7b` |
-| Qwen3.5 | `qwen35` | `qwen3.5-0.8b`, `qwen3.5-2b` |
+| Qwen3.5 | `qwen35` | `qwen3.5-0.8b`, `qwen3.5-2b`, `qwen3.8-2b` |
 | LFM2 | `lfm2` | `lfm2-350m`, `lfm2-700m`, `lfm2.5-230m`, `lfm2.5-1.2b-instruct`, `lfm2.5-1.2b-thinking` |
 
 ---
@@ -297,8 +317,10 @@ Be honest about what this engine is:
   catalog. (Actually, these become native J floats, so even bigger)
 - **Single-token decode** — generation is inherently sequential; batching exists
   but the interactive path is one sequence.
-- **Not a server.** There's no HTTP/gRPC layer, no streaming protocol, no
-  concurrency. It's a console / API engine.
+- **Not a production server.** There IS a small OpenAI-compatible HTTP server
+  (`http/`) with SSE streaming, request batching, and keep-alive connections —
+  but it is an educational / benchmark-grade endpoint, not a load-tested
+  production service. The primary interface remains the console / API engine.
 - **Not a drop-in `llama-cpp`.** Some architecture quirks (e.g. the Qwen3.5 MTP
   next-token-prediction head, the Granite hybrid) are out of scope; the parser
   still reads the files, inference covers the supported arches above.
@@ -319,10 +341,12 @@ which you should read when you start editing or investigating:
 - **docs/J-KNOWLEDGE.md** — the J language knowledge base (jforc idiom reviews +
   gotchas), project-agnostic and reusable in any J project. Load it before
   writing or editing J code.
-- **docs/HISTORICAL.md** — the origin story, resolved limitations, and the
-  performance pass — what was tried, measured, and why (including the Phase 5
-  minja port + GGUF-jinja integration).
-- **PLAN.md** — roadmap and planned work.
+- **docs/HISTORICAL.md** — the origin story, resolved limitations, the
+  performance pass, and the Phase 5 minja port + GGUF-jinja integration + the
+  multi-session/batched HTTP work — what was tried, measured, and why.
+- **PLAN.md** — status and roadmap. All planned phases are complete/evaluated
+  and the deferred idiom ideas are assessed/closed, so it records current
+  status only (see HISTORICAL.md for the closed items).
 
 ---
 
@@ -335,12 +359,14 @@ inference.ijs        entry point (loads the architecture modules)
 gguf_dump.ijs        GGUF info pretty-printer
 llm_cli.ijs          one-shot CLI (scripts/llm.sh)
 chat_launch.ijs      interactive chat console (scripts/chat.sh)
+chat_tui.ijs         raw-mode chat TUI (scripts/chat_tui.sh)
 models/              per-architecture forward passes (gemma3, llama, granite, ...)
 tokenizers/          BPE + SentencePiece tokenizers
 kernels/             float kernels (jfloat.ijs)
 gguf/                GGUF parser + quant decoders
-util/                KV cache, llm core, sampler, chat, model catalog, llmobj,
-                     minja jinja engine + chat-template layer (minja.ijs, chat_template.ijs)
+util/                KV cache, session, llm core, sampler, chat, chat-template
+                     + minja jinja engine, model catalog, llmobj
+http/                OpenAI-compatible HTTP server (server.ijs, protocol.ijs, builders.ijs)
 tests/               test suites (run tests/j/run_all_tests.sh from the checkout)
 ```
 
