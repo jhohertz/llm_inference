@@ -11,6 +11,12 @@ inference loop trades throughput for transparency. It exists to be read, taken
 apart, and experimented with — and its logits are verified **exact** against
 `llama-cpp-python`, so you can trust the numbers while you explore.
 
+> **⚠️ Under active development.** This project is still very much in
+> development. Interfaces, model support, and behavior can change without
+> notice — **breaking changes are on the table**. The test suite is green
+> against the reference implementation, but pin your model/config and re-check
+> the docs before relying on any specific behavior.
+
 ---
 
 ## Why this exists
@@ -172,6 +178,17 @@ send; `/reset` clears the session + KV cache; Backspace to edit; Ctrl-C or type
 
 Standalone — does not require the addon installed.
 
+### Run the OpenAI-compatible HTTP server
+
+```bash
+./scripts/llm_server.sh 'qwen3-0.6b'     # default model qwen3-0.6b
+```
+
+Serves POST `/v1/chat/completions` (plain JSON + streamed SSE) and
+GET `/v1/models` on port 8790 (`PORT=... ./scripts/llm_server.sh ...` to
+override). It batches concurrent requests, reports real `usage` tokens, and
+keep-alives connections. See `docs/ARCHITECTURE.md` §HTTP Server for details.
+
 ---
 
 ## Using the J API
@@ -212,11 +229,12 @@ msgs =. (<'user') , <'What is the capital of France?'
 answer =. llm chat_generate_simple_inference_ (msgs ; 200)
 ```
 
-Tool/function-calling prompts (5th arg = a JSON string of tool definitions):
+Tool/function-calling prompts (optional `tools` arg = a JSON string of tool
+definitions; the 4th `tmpl_vars` arg is optional too):
 
 ```j
 tools =. '["{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"...\",\"parameters\":{...}}}"]'
-answer =. llm chat_generate_inference_ (msgs ; 200 ; <params ; '' ; tools)
+answer =. llm chat_generate_inference_ (msgs ; 200 ; <0 0 0.95 0.0> ; '' ; tools)
 ```
 
 You may also `cocurrent <'inference'` to use plain simple names inside the
@@ -323,10 +341,12 @@ which you should read when you start editing or investigating:
 - **docs/J-KNOWLEDGE.md** — the J language knowledge base (jforc idiom reviews +
   gotchas), project-agnostic and reusable in any J project. Load it before
   writing or editing J code.
-- **docs/HISTORICAL.md** — the origin story, resolved limitations, and the
-  performance pass — what was tried, measured, and why (including the Phase 5
-  minja port + GGUF-jinja integration).
-- **PLAN.md** — roadmap and planned work.
+- **docs/HISTORICAL.md** — the origin story, resolved limitations, the
+  performance pass, and the Phase 5 minja port + GGUF-jinja integration + the
+  multi-session/batched HTTP work — what was tried, measured, and why.
+- **PLAN.md** — status and roadmap. All planned phases are complete/evaluated
+  and the deferred idiom ideas are assessed/closed, so it records current
+  status only (see HISTORICAL.md for the closed items).
 
 ---
 
@@ -339,12 +359,14 @@ inference.ijs        entry point (loads the architecture modules)
 gguf_dump.ijs        GGUF info pretty-printer
 llm_cli.ijs          one-shot CLI (scripts/llm.sh)
 chat_launch.ijs      interactive chat console (scripts/chat.sh)
+chat_tui.ijs         raw-mode chat TUI (scripts/chat_tui.sh)
 models/              per-architecture forward passes (gemma3, llama, granite, ...)
 tokenizers/          BPE + SentencePiece tokenizers
 kernels/             float kernels (jfloat.ijs)
 gguf/                GGUF parser + quant decoders
-util/                KV cache, llm core, sampler, chat, model catalog, llmobj,
-                     minja jinja engine + chat-template layer (minja.ijs, chat_template.ijs)
+util/                KV cache, session, llm core, sampler, chat, chat-template
+                     + minja jinja engine, model catalog, llmobj
+http/                OpenAI-compatible HTTP server (server.ijs, protocol.ijs, builders.ijs)
 tests/               test suites (run tests/j/run_all_tests.sh from the checkout)
 ```
 
