@@ -144,6 +144,29 @@ sampler_weighted_sample =: 3 : 0
 )
 
 NB. ----------------------------------------------------------------
+NB. Params normalization (jllama sample_cfg_pack-style) — dyadic-free.
+NB. Accept an OPEN numeric list, a `;`-list of boxes, or a (possibly
+NB. double-boxed) scalar box of <temp;k;p;min_p>. Returns the OPEN numeric
+NB. flat list, padded to 4 with defaults (temp=1.0, k=0, p=0.95, min_p=0.0)
+NB. and truncated to 4. Used by sampler_sample and infer_args/gen_args so
+NB. all three normalize identically.
+NB. ----------------------------------------------------------------
+sample_params_pack =: 3 : 0
+  c =. y
+  if. 0 = # , c do. 1.0 0 0.95 0.0 return. end.
+  if. 32 = 3!:0 c do.
+    if. 0 = #$ c do. c =. > c end.        NB. scalar box -> open
+    if. 32 = 3!:0 c do. c =. > c end.      NB. double-boxed -> open
+  end.
+  c =. , c
+  d =. 1.0 0 0.95 0.0
+  n =. # c
+  if. n < # d do. c =. c , n }. d end.     NB. pad missing trailing with defaults
+  if. n > # d do. c =. (# d) {. c end.     NB. truncate extras
+  c
+)
+
+NB. ----------------------------------------------------------------
 NB. Full sampler pipeline — dyadic
 NB. x = parameters array <temp; k; p; min_p>
 NB. y = logit array
@@ -152,23 +175,11 @@ NB. Default params: <1.0; 0; 0.95; 0.0> (k=0 means disabled)
 NB. ----------------------------------------------------------------
 sampler_sample =: 4 : 0
   params =. x
-  
-  NB. Parse parameters — params may be single or double boxed
-  NB. Handle both: <temp;k;p;min_p> and <<temp;k;p;min_p>>
-  if. 1 = # params do.
-    flat =. > > params   NB. double unbox
-  else.
-    flat =. > params     NB. single unbox
-  end.
-  temp =. 1.0
-  k =. 0
-  p =. 0.95
-  min_p =. 0.0
-  
-  if. 0 < # flat do. temp =. 0 { flat end.
-  if. 1 < # flat do. k =. 1 { flat end.
-  if. 2 < # flat do. p =. 2 { flat end.
-  if. 3 < # flat do. min_p =. 3 { flat end.
+  flat =. sample_params_pack params   NB. open <temp;k;p;min_p>, defaults filled
+  temp =. 0 { flat
+  k =. 1 { flat
+  p =. 2 { flat
+  min_p =. 3 { flat
 
   NB. Greedy shortcut: temp=0 picks the argmax of the RAW logits. All the
   NB. downstream filters (top-k, softmax, top-p, min-p) are monotonic and

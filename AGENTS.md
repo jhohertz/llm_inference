@@ -384,7 +384,10 @@ is a jdict of named hparams (built by `build_mi_dict` + named puts; the
 ## J Knowledge & Idioms — where the deep material lives
 
 The verbose jforc chapter-by-chapter idiom reviews (Ch 22-43) and the full
-J/numeric gotchas live in **@docs/J-KNOWLEDGE.md**.
+J/numeric gotchas live in **@docs/J-KNOWLEDGE.md**. For passing boxed args
+between verbs, see its **"Boxing / Packing Rules — CRITICAL IN J"** section
+(the canonical 5 rules: `<"_` enclose vs `<`, multiple-assignment spread, `;`
+re-boxing when the left is already a box list, and the pure-numeric `;` case).
 
 **Load @docs/J-KNOWLEDGE.md when writing, editing, or debugging J code**
 (any `.ijs` file, kernels, tokenizers, quant decode, or numeric-representation

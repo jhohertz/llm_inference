@@ -729,11 +729,7 @@ NB. Returns <text; temp; k; p; min_p>.
 infer_args =: 3 : 0
   text =. > 0 { y
   params =. > 1 { y
-  if. 1 = # params do.
-    flat =. > > params
-  else.
-    flat =. > params
-  end.
+  flat =. sample_params_pack params   NB. open <temp;k;p;min_p>, defaults filled
   temp =. 0 { flat
   k =. 1 { flat
   p =. 2 { flat
@@ -748,11 +744,7 @@ gen_args =: 3 : 0
   text =. > 0 { y
   max_steps =. > 1 { y
   params =. > 2 { y
-  if. 1 = # params do.
-    flat =. > > params
-  else.
-    flat =. > params
-  end.
+  flat =. sample_params_pack params   NB. open <temp;k;p;min_p>, defaults filled
   temp =. 0 { flat
   k =. 1 { flat
   p =. 2 { flat

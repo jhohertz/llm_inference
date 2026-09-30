@@ -12,6 +12,18 @@ J="${J:-$JINSTALL/bin/jconsole}"
 # Run suites from the checkout root so ./ paths in test files resolve.
 cd "$BASE"
 
+# Fresh-install the checkout runtime files into ~addons before any suite, so
+# tests exercise the CURRENT checkout (not a stale installed copy). The
+# checkout inference.ijs resolves require 'llm/inference/...' against
+# ~addons, so a stale install makes tests look wrong. This removes the manual
+# "re-run install_local.sh --force after editing" step from the dev cycle.
+echo "################################################################"
+echo "#  Fresh-installing runtime files (install_local.sh --force)   #"
+echo "################################################################"
+echo ""
+"$BASE/scripts/install_local.sh" --force
+echo ""
+
 TOTAL_TC=0 TOTAL_PC=0 TOTAL_FC=0
 TOTAL_TIME=0
 declare -A RESULTS
