@@ -17,6 +17,11 @@ JINSTALL="$( "$SCRIPT_DIR/jfind.sh" )"
 J="${JCONSOLE:-$JINSTALL/bin/jconsole}"
 cd "$SCRIPT_DIR/.."
 
+# Fresh-install the runtime files before load-probing: lint_all.ijs probes the
+# checkout files, but inference.ijs resolves require 'llm/inference/...' against
+# ~addons, so a stale install makes the load-probe gate misleading.
+"$SCRIPT_DIR/install_local.sh" --force
+
 out=$("$J" <<'EOFILE' 2>&1
 load './tests/j/lint_all.ijs'
 lint_all_z_ ''

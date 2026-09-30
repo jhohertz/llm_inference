@@ -31,6 +31,16 @@ NB. ---- Raw matvec/matmat (no boxing) — for hot fused projections ----
 NB. x = weight, y = raw input array (no bias). Skips the box/unbox of `linear`.
 linear_r =: +/ .*
 
+NB. ---- Numeric closeness: 1 iff every atom of x matches y within atol+rtol*|y| ----
+NB. x allclose y -> 1/0. atol = absolute tolerance, rtol = relative tolerance.
+NB. Use for near-equality checks (batched-vs-single, path-vs-path); exact
+NB. bit-level verification keeps the tighter absolute-sum patterns.
+ATOL =: 1e_9
+RTOL =: 1e_6
+allclose =: 4 : 0
+  *./ , (| x - y) <: ATOL + RTOL * | y
+)
+
 NB. ---- NumPy-style broadcasting via verb rank (Żołek 2026) ----
 NB. u Broadcastly  applies verb u as a NumPy universal function: broadcast
 NB. dimensions (length-1 axes) are expanded and the element-wise verb is

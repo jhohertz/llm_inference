@@ -409,6 +409,44 @@ Programming errors:
 - **Tacit code does not replace names by definitions** — `mean =: +/ % #` is a
   fork, not `+/ % # 1 2 3 4 5`; the paren-substitution mental model works.
 
+# Boxing / Packing Rules — CRITICAL IN J (canonical)
+
+The one block to internalize when passing boxed arguments between verbs.
+(Adopted from `reference/jllama` core/block.ijs + core/model.ijs; the rules are
+the distilled form of gotchas 12/14/15/20 and the `;`-nesting notes below.)
+
+1. **Enclose a whole open list with `<"_ y`, not bare `<`.** `<"_ y` makes ONE
+   scalar box holding the list; with an open list you want `<"_` (bare `< y`
+   boxes the list only as a single element when the list is itself a noun).
+2. **`'a b c' =. open_list` SPREADS items.** Multiple assignment unboxes each
+   item of `open_list` into `a`/`b`/`c`. This replaces `> N { y` per-item
+   unboxing (Ch 36 accessors; ARCHITECTURE.md §Boxed-arg unpacking).
+3. **`'a b c' =. <open_list` does NOT spread** — `=` takes the whole box as ONE
+   noun. Open first: `'a b c' =. > open_list`.
+4. **Chained `a ; b ; c` RE-BOXES when the left is already a box list.** Link
+   (`;`) boxes `x`, boxes `y` only if unboxed; when `a` is already a box list
+   (e.g. a packed arg), `a ; b ; c` wraps the WHOLE thing into one nested box,
+   losing the item count. **Pack mixed nested args with catenate of scalar
+   boxes: `(<a) , (<b) , already_boxed_c , (<d)`.**
+5. **Pure-numeric packs may still use `;`.** If every operand is an unboxed
+   numeric atom/list, `a ; b ; c` is fine (each becomes a boxed item).
+
+Corollaries we hit in this repo:
+- A `;` chain with a boxed operand in the MIDDLE nests (gotcha 20 + chat.ijs
+  `<params>`): `(messages ; max_steps ; <flat) ; <stop` → length-2 nested list.
+  Append trailing boxes with `, <stop`.
+- `max_rounds` must come BEFORE `<params>` in chat_tool_loop (a pre-boxed `;`
+  operand that isn't trailing nests).
+- `kv_write_rows` base must be `((a * eff_seq) + start)`, NOT `a * eff_seq +
+  start` (precedence: the latter is `a * (eff_seq + start)`).
+- `*_run_blocks` must return `<row>` (boxed) — `> 0 { result` opens it.
+- convert/json needs each value cell EXPLICITLY boxed with `<`, NOT a
+  `;`-chained row — `MODEL ; 'model'` boxes each, then appending a scalar
+  re-boxes the whole list (nested).
+- Named-box catenation: this J9.8 build's `;` ravel-concatenates two box lists
+  and `<x> , <y>` parses the closed `>` as a dyad — build list args from named
+  box vars (http/server.ijs, http/builders.ijs).
+
 ---
 
 # J Gotchas — distilled, project-agnostic
