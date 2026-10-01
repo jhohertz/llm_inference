@@ -341,12 +341,11 @@ NB. ---- GQA expand ----
 NB. ---- Batched attention layer (cache-prefix aware) ----
 NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 qw35_attention_b =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
   layer =. > 2 { y
   start_pos =. > 3 { y
-  L =. {. $ hidden
+  L =. {. $ x
   n_heads =. qw35_bd_a_n_heads block_data
   head_dim =. qw35_bd_a_head_dim block_data
   n_heads_kv =. qw35_bd_a_n_heads_kv block_data
@@ -355,7 +354,7 @@ qw35_attention_b =: 4 : 0
   half =. <. n_rot % 2
 
   NB. Attention norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
   qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (L, 2*head_dim*n_heads)
@@ -634,9 +633,8 @@ NB. ---- Batched run all blocks ----
 NB. x = hidden (L, emb); y = <llm; start_pos> (start_pos=0 -> fresh: rs state zeroed;
 NB. start_pos>0 -> resume: attention cache prefix + rs state persist).
 qw35_run_blocks_b =: 4 : 0
-  args =. y
-  llm =. > 0 { args
-  start_pos =. > 1 { args
+  llm =. > 0 { y
+  start_pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
@@ -673,12 +671,11 @@ NB. ---- Batched-DECODE attention layer (B sequences, ONE token each at pos[b]) 
 NB. qwen35 attention = qwen3-style + fused Q+GATE, PARTIAL NEOX RoPE (n_rot),
 NB. gated output (sigmoid(gate)). x = hidden (B, emb); y = <block_data; pos; mi; layer>
 qw35_attention_bd =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  B =. {. $ hidden
+  B =. {. $ x
   n_heads =. qw35_bd_a_n_heads block_data
   head_dim =. qw35_bd_a_head_dim block_data
   n_heads_kv =. qw35_bd_a_n_heads_kv block_data
@@ -687,7 +684,7 @@ qw35_attention_bd =: 4 : 0
   half =. <. n_rot % 2
 
   NB. Attention norm per row
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
   qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (B, 2*head_dim*n_heads)
@@ -897,9 +894,8 @@ NB. ---- Batched-DECODE run all blocks (B sequences, one token each at pos[b]) -
 qw35_block_forward_s_bd =: qw35_ssm_forward_bd
 
 qw35_run_blocks_bd =: 4 : 0
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
@@ -1387,18 +1383,16 @@ qw35_block_forward_s_bp =: qw35_ssm_forward_bp
 
 NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
 qw35_run_blocks_bp =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   lens =. ''
-  if. 2 < # args do. lens =. > 2 { args end.
+  if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.

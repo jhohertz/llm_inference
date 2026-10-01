@@ -244,13 +244,12 @@ NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 NB. LFM2 attention layers are qwen3-style: per-head Q/K RMSNorm before RoPE,
 NB. NEOX RoPE, scale 1/sqrt(head_dim), GQA, no QKV biases.
 lf2_attention_b =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
   layer =. > 2 { y
   start_pos =. > 3 { y
-  L =. {. $ hidden
-  n_embd =. {: $ hidden
+  L =. {. $ x
+  n_embd =. {: $ x
   n_heads =. lf2_bd_n_heads block_data
   head_dim =. lf2_bd_head_dim block_data
   n_heads_kv =. lf2_bd_n_heads_kv block_data
@@ -259,7 +258,7 @@ lf2_attention_b =: 4 : 0
 
   NB. Attention norm per row
   attn_norm_w =. lf2_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
   NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
   NB. of the (L,emb) hidden were materializing 3 copies)
@@ -367,10 +366,9 @@ lf2_block_forward_b =: 4 : 0
   mi =. > 1 { y
   layer =. > 2 { y
   start_pos =. > 3 { y
-  input =. hidden
   attn_result =. hidden lf2_attention_b ((<block_data) , (<mi) , (<layer) , (<start_pos))
   attn_out =. > 0 { attn_result
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ffn_norm_w =. lf2_bd_ffn_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)   NB. (L, n_ff)
@@ -437,17 +435,15 @@ NB. ---- Batched run all blocks ----
 NB. x = hidden (L, emb); y = <llm; start_pos> (start_pos=0 -> fresh: conv state
 NB. zeroed; start_pos>0 -> resume: attention cache prefix + conv state persist).
 lf2_run_blocks_b =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  start_pos =. > 1 { args
+  llm =. > 0 { y
+  start_pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
   emb_len =. mi_emb_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -678,19 +674,17 @@ lf2_conv_forward_bp =: 4 : 0
 
 NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
 lf2_run_blocks_bp =: 4 : 0
-  input =. x   NB. (B, c, emb)
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   lens =. ''
-  if. 2 < # args do. lens =. > 2 { args end.
+  if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
   emb_len =. mi_emb_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -715,12 +709,11 @@ NB. ---- Batched-DECODE attention (B sequences, ONE token each at pos[b]) ----
 NB. LFM2 attention = qwen3-style (per-head Q/K norm, NEOX RoPE, GQA, no biases).
 NB. x = hidden (B, emb); y = <block_data; pos; mi; layer>
 lf2_attention_bd =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  B =. {. $ hidden
+  B =. {. $ x
   n_heads =. lf2_bd_n_heads block_data
   head_dim =. lf2_bd_head_dim block_data
   n_heads_kv =. lf2_bd_n_heads_kv block_data
@@ -729,7 +722,7 @@ lf2_attention_bd =: 4 : 0
 
   NB. Attention norm per row
   attn_norm_w =. lf2_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
   NB. Batched Q,K,V projections (weight-read amortized across B; |: hidden hoisted)
   thin =. |: hidden
@@ -906,17 +899,15 @@ lf2_conv_forward_bd =: 4 : 0
 
 NB. ---- Batched-DECODE run all blocks (B sequences, one token each at pos[b]) ----
 lf2_run_blocks_bd =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
   emb_len =. mi_emb_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
