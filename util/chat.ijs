@@ -69,15 +69,13 @@ chat_detokenize =: 4 : 0
   end.
 )
 chat_gen_loop =: 4 : 0
-  llm =. x
-  tokens =. > 0 { y
   max_steps =. > 1 { y
   temp =. > 2 { y
   k =. > 3 { y
   p =. > 4 { y
   min_p =. > 5 { y
   stop_list =. > 6 { y
-  llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop_list)
+  x gen_loop_core ((> 0 { y) ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop_list)
 )
 
 NB. ================================================================
@@ -586,14 +584,13 @@ chat_postprocess =: 4 : 0
 )
 
 chat_completion =: 4 : 0
-  llm =. x
   messages =. > 0 { y
   tools =. > 1 { y
   max_steps =. > 2 { y
   stream =. > 3 { y
   params =. > 4 { y
   session_ensure ''
-  res =. llm chat_completion_s ((<session) , (<messages) , (<tools) , (<max_steps) , (<stream) , (<params))
+  res =. x chat_completion_s ((<session) , (<messages) , (<tools) , (<max_steps) , (<stream) , (<params))
   session =: > 5 { res
   (<> 0 { res) , (<> 1 { res) , (<> 2 { res) , (<> 3 { res) , (<> 4 { res)
 )
@@ -959,12 +956,11 @@ NB. verbs via the wrappers; the global-based chat_fresh was removed.)
 NB. ---- Core chat turn: persistent session if one exists ----
 NB. x = llm; y = <msg; max_steps; <params>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
 chat_core =: 4 : 0
-  llm =. x
   msg =. > 0 { y
   max_steps =. > 1 { y
   params =. > 2 { y
   session_ensure ''
-  res =. llm chat_core_s ((<session) , (<msg) , (<max_steps) , (<params))
+  res =. x chat_core_s ((<session) , (<msg) , (<max_steps) , (<params))
   session =: > 1 { res
   > 0 { res
 )
@@ -1093,10 +1089,9 @@ chat =: 4 : 0
 
 NB. ---- chat with explicit params: llm chat_p ('msg' ; <temp;k;p;min_p>) ----
 chat_p =: 4 : 0
-  llm =. x
   msg =. > 0 { y
   params =. > 1 { y
-  llm chat_core (msg ; 100000 ; <params)
+  x chat_core (msg ; 100000 ; <params)
 )
 
 NB. ================================================================
@@ -1112,14 +1107,13 @@ NB. ================================================================
 NB. ---- Generate with STREAMING armed; return the raw output token list ----
 NB. x = llm; y = <tokens; start_pos; max_steps; <flat>; stop>
 chat_gen_stream =: 4 : 0
-  llm =. x
   tokens =. > 0 { y
   start_pos =. > 1 { y
   max_steps =. > 2 { y
   flat =. > 3 { y
   stop =. > 4 { y
   session_ensure ''
-  res =. llm chat_gen_stream_s ((<session) , (<tokens) , (<start_pos) , (<max_steps) , (<flat) , (<stop))
+  res =. x chat_gen_stream_s ((<session) , (<tokens) , (<start_pos) , (<max_steps) , (<flat) , (<stop))
   session =: > 1 { res
   > 0 { res
 )
@@ -1127,13 +1121,12 @@ chat_gen_stream =: 4 : 0
 NB. ---- Fresh full-render chat turn with STREAMING (stateful helper) ----
 NB. x = llm; y = <messages; max_steps; <flat>; stop>
 chat_fresh_stream =: 4 : 0
-  llm =. x
   messages =. > 0 { y
   max_steps =. > 1 { y
   flat =. > 2 { y
   stop =. > 3 { y
   session_ensure ''
-  res =. llm chat_fresh_stream_s ((<session) , (<messages) , (<max_steps) , (<flat) , (<stop))
+  res =. x chat_fresh_stream_s ((<session) , (<messages) , (<max_steps) , (<flat) , (<stop))
   session =: > 1 { res
   > 0 { res
 )
@@ -1142,12 +1135,11 @@ NB. ---- Core stateful streaming chat turn ----
 NB. x = llm; y = <msg; max_steps; <params>  (same interface as chat_core; msg is
 NB. the NEW user message only — the session holds the history).
 chat_core_stream =: 4 : 0
-  llm =. x
   msg =. > 0 { y
   max_steps =. > 1 { y
   params =. > 2 { y
   session_ensure ''
-  res =. llm chat_core_stream_s ((<session) , (<msg) , (<max_steps) , (<params))
+  res =. x chat_core_stream_s ((<session) , (<msg) , (<max_steps) , (<params))
   session =: > 1 { res
   > 0 { res
 )
