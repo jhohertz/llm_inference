@@ -245,14 +245,13 @@ NB. y = <block_data; swa; mi; layer; start_pos>   (positions start_pos .. start_
 NB. start_pos=0 -> fresh (no prefix); start_pos>0 -> RESUME: attends to the cache prefix
 NB. (positions 0..start_pos-1) PLUS this batch, and writes the batch K/V at start_pos.
 gem3_attention_b =: 4 : 0
-  hidden =. x   NB. (L, emb)
   block_data =. > 0 { y
   swa =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
   start_pos =. > 4 { y
-  L =. {. $ hidden
-  n_embd =. {: $ hidden
+  L =. {. $ x
+  n_embd =. {: $ x
   
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
@@ -261,7 +260,7 @@ gem3_attention_b =: 4 : 0
   
   NB. Attention norm per row
   attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
   
   NB. Q, K, V projections — batched single matmul
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -379,12 +378,10 @@ gem3_block_forward_b =: 4 : 0
   layer =. > 3 { y
   start_pos =. > 4 { y
 
-  input =. hidden
-
   attn_result =. hidden gem3_attention_b (<block_data) , (<swa) , (<mi) , (<layer) , (<start_pos)
   attn_out =. > 0 { attn_result
   
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   
   ff_norm_w =. gem3_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
@@ -410,19 +407,17 @@ NB. ---- Run all Gemma3 blocks in a batched prefill pass ----
 NB. input = (L, emb); args = <llm; start_pos>  (positions start_pos..start_pos+L-1;
 NB. cache lives in kv_cache_g). start_pos=0 -> fresh; >0 -> resume (attends to cache prefix).
 gem3_run_blocks_b =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  start_pos =. > 1 { args
+  llm =. > 0 { y
+  start_pos =. > 1 { y
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  L =. {. $ input
+  L =. {. $ x
 
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.

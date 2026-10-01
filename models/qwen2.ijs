@@ -172,14 +172,13 @@ qw2_attention =: 4 : 0
 NB. ---- Batched attention (prompt prefill, GQA, causal) ----
 NB. x = hidden (L, emb); y = <block_data; mi; layer>
 qw2_attention_b =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
   layer =. > 2 { y
   start_pos =. > 3 { y
   rope =. > 4 { y
-  L =. {. $ hidden
-  n_embd =. {: $ hidden
+  L =. {. $ x
+  n_embd =. {: $ x
   n_heads =. qw2_bd_n_heads block_data
   head_dim =. qw2_bd_head_dim block_data
   n_heads_kv =. qw2_bd_n_heads_kv block_data
@@ -196,7 +195,7 @@ qw2_attention_b =: 4 : 0
 
   NB. Attention norm per row
   attn_norm_w =. qw2_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
   NB. Separate Q,K,V batched projections
   qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (L, n_heads*hd)
@@ -303,10 +302,9 @@ qw2_block_forward_b =: 4 : 0
   layer =. > 2 { y
   start_pos =. > 3 { y
   rope =. > 4 { y
-  input =. hidden
   attn_result =. hidden qw2_attention_b ((<block_data) , (<mi) , (<layer) , (<start_pos) , <rope)
   attn_out =. > 0 { attn_result
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ffn_norm_w =. qw2_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. |: ((qw2_bd_ff_gate block_data) (+/ .* ) |: ffn_in)   NB. (L, n_ff)
@@ -343,23 +341,21 @@ qw2_run_blocks =: 4 : 0
 NB. ---- Batched run all blocks (prompt prefill) ----
 NB. x = hidden (L, emb); y = <llm; start_pos>  (positions start_pos..start_pos+L-1)
 qw2_run_blocks_b =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  start_pos =. > 1 { args
+  llm =. > 0 { y
+  start_pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
   NB. RoPE tables are per-model and identical across layers (freq is model
   NB. level): compute the cos/sin tables + expansions ONCE per chunk and thread
   NB. through the layer loop, instead of recomputing them in every layer.
-  L =. {. $ input
+  L =. {. $ x
   half =. <. head_dim % 2
   n_heads =. mi_n_heads mi
   cos_all =. (start_pos + i. L) { mi_cos_tab mi

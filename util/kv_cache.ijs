@@ -75,15 +75,12 @@ NB. y = <layer; pos; k_new; v_new; seq?>   seq default 0
 NB. k_new/v_new shape: (n_heads_kv, head_dim). In-place row amend (scalar
 NB. selector on the refcount-1 flat global) — O(cell), no array copy.
 kv_write =: 3 : 0
-  layer =. > 0 { y
   pos =. > 1 { y
-  k_new =. > 2 { y
-  v_new =. > 3 { y
   seq =. kv_seq_g
   if. 4 < # y do. seq =. > 4 { y end.
-  base =. ((layer * kv_batch_g) + seq) * (> 1 { kv_meta)
-  k_cache_g =: (, k_new) ((base + pos))} k_cache_g
-  v_cache_g =: (, v_new) ((base + pos))} v_cache_g
+  base =. (((> 0 { y) * kv_batch_g) + seq) * (> 1 { kv_meta)
+  k_cache_g =: (, > 2 { y) ((base + pos))} k_cache_g
+  v_cache_g =: (, > 3 { y) ((base + pos))} v_cache_g
   kv_pos_g =: kv_pos_g >. pos + 1
   ''
 )
@@ -174,17 +171,14 @@ NB. ---- Write one K/V row at pos for a layer (session seq) ----
 NB.  x = sess; y = <layer; pos; k_new; v_new>.  Returns the updated session.
 kv_write_s =: 4 : 0
   sess =. x
-  layer =. > 0 { y
   pos =. > 1 { y
-  k_new =. > 2 { y
-  v_new =. > 3 { y
   seq =. > 9 { sess
   kvb =. > 11 { sess
   meta =. > 13 { sess
   eff =. > 1 { meta
-  base =. ((layer * kvb) + seq) * eff
-  k_cache_g =: (, k_new) ((base + pos)) } k_cache_g
-  v_cache_g =: (, v_new) ((base + pos)) } v_cache_g
+  base =. (((> 0 { y) * kvb) + seq) * eff
+  k_cache_g =: (, > 2 { y) ((base + pos)) } k_cache_g
+  v_cache_g =: (, > 3 { y) ((base + pos)) } v_cache_g
   sess =. (<(> 10 { sess) >. pos + 1) (10) } sess
   sess
 )

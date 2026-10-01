@@ -174,8 +174,7 @@ NB. Returns: scalar token index
 NB. Default params: <1.0; 0; 0.95; 0.0> (k=0 means disabled)
 NB. ----------------------------------------------------------------
 sampler_sample =: 4 : 0
-  params =. x
-  flat =. sample_params_pack params   NB. open <temp;k;p;min_p>, defaults filled
+  flat =. sample_params_pack x   NB. open <temp;k;p;min_p>, defaults filled
   temp =. 0 { flat
   k =. 1 { flat
   p =. 2 { flat
