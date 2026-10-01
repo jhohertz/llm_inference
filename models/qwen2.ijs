@@ -99,9 +99,8 @@ qw2_pre_build_block_data =: 3 : 0
 NB. ---- Expand KV axis (n_kv) -> n_heads (each KV head repeated n_groups times) ----
 
 NB. ---- Single-token attention (qwen2: GQA, NEOX RoPE, Q/K/V biases) ----
-NB. x = hidden; y = <block_data; pos; mi; layer>
+NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_attention =: 4 : 0
-  hidden =. x
   'block_data pos mi layer' =. y
   n_heads =. qw2_bd_n_heads block_data
   head_dim =. qw2_bd_head_dim block_data
@@ -110,7 +109,7 @@ qw2_attention =: 4 : 0
 
   NB. Attention norm
   attn_norm_w =. qw2_bd_attn_norm block_data
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
   NB. Separate Q, K, V projections
   qv =. (qw2_bd_attn_q block_data) linear_r hidden
@@ -279,14 +278,13 @@ qw2_attention_b =: 4 : 0
 )
 
 NB. ---- Single block forward (qwen2) ----
-NB. x = hidden; y = <block_data; pos; mi; layer>
+NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_block_forward =: 4 : 0
   hidden =. x
   'block_data pos mi layer' =. y
-  input =. hidden
   attn_result =. hidden qw2_attention ((<block_data) , (<pos) , (<mi) , (<layer))
   attn_out =. > 0 { attn_result
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ffn_norm_w =. qw2_bd_ff_norm block_data
   ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. (qw2_bd_ff_gate block_data) linear_r ffn_in
@@ -319,17 +317,15 @@ qw2_block_forward_b =: 4 : 0
 )
 
 NB. ---- Run all blocks (single token; cache lives in kv_cache_g global) ----
-NB. x = hidden; y = <llm; pos>
+NB. x = hidden (emb,); y = <llm; pos>
 qw2_run_blocks =: 4 : 0
-  input =. x
-  args =. y
-  'llm pos' =. args
+  'llm pos' =. y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -401,12 +397,11 @@ NB. cache window scores/softmax/output stay PER-SEQUENCE (each has its own
 NB. cache window). x = hidden (B, emb); y = <block_data; pos; mi; layer>
 NB. pos = B-vector of positions.
 qw2_attention_bd =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  B =. {. $ hidden
+  B =. {. $ x
   n_heads =. qw2_bd_n_heads block_data
   head_dim =. qw2_bd_head_dim block_data
   n_heads_kv =. qw2_bd_n_heads_kv block_data
@@ -415,7 +410,7 @@ qw2_attention_bd =: 4 : 0
 
   NB. Attention norm per row
   attn_norm_w =. qw2_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
   NB. Batched Q,K,V projections (weight-read amortized across B)
   qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (B, n_heads*hd)
@@ -530,10 +525,9 @@ qw2_block_forward_bd =: 4 : 0
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  input =. hidden
   attn_result =. hidden qw2_attention_bd ((<block_data) , (<pos) , (<mi) , (<layer))
   attn_out =. > 0 { attn_result
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ffn_norm_w =. qw2_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. |: ((qw2_bd_ff_gate block_data) (+/ .* ) |: ffn_in)   NB. (B, n_ff)
@@ -546,13 +540,11 @@ qw2_block_forward_bd =: 4 : 0
 NB. ---- Run all blocks for B sequences (one token each at pos[b]) ----
 NB. x = hidden (B, emb); y = <llm; pos>  pos = B-vector
 qw2_run_blocks_bd =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   mi =. llm_mi llm
   block_count =. mi_block_count mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -690,10 +682,9 @@ qw2_block_forward_bp =: 4 : 0
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
-  input =. hidden
   attn_result =. hidden qw2_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
   attn_out =. > 0 { attn_result   NB. (B, c, emb)
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ffn_norm_w =. qw2_bd_ff_norm block_data
   sa_flat =. ((B*c) , emb_len) $ , sa_out
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_flat)
@@ -707,18 +698,16 @@ qw2_block_forward_bp =: 4 : 0
 
 NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
 qw2_run_blocks_bp =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   lens =. ''
-  if. 2 < # args do. lens =. > 2 { args end.
+  if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.

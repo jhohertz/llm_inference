@@ -945,11 +945,9 @@ NB. ---- Single-token run all blocks (1D hidden) ----
 NB. x = hidden (emb,); y = <llm; pos>. Wraps to (1, emb) and runs the batched path.
 NB. Returns <row> (boxed) — gen_loop_core's resume step does > 0 { result.
 lf2_run_blocks =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
-  input2 =. (1 , $ input) $ input
+  llm =. > 0 { y
+  pos =. > 1 { y
+  input2 =. (1 , $ x) $ x
   result_b =. input2 lf2_run_blocks_b ((<llm) , <pos)
   state =. > 0 { result_b
   < > 0 { state

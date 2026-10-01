@@ -222,13 +222,13 @@ NB. ---- Embed token list -> hidden states ----
 NB. y = <emb_w; scale; tok_list>  (emb_w is TRANSPOSED-canonical (emb, vocab); the
 NB. embedding is a column access |: (tok {"1 emb_w), NOT tok { emb_w)
 NB. ---- Output head: rms_norm + lm_head projection ----
-NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>
+NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>  (hidden is the (emb,) row;
+NB. the lm_head weight is TRANSPOSED-canonical (emb, vocab) — hidden (+/ .*) efw).
 output_head =: 3 : 0
   eps =. > 0 { y
   onw =. > 1 { y
   efw =. > 2 { y
-  hidden =. > 3 { y
-  hidden =. rms_norm ((<eps) , (<onw) , <hidden)
+  hidden =. rms_norm ((<eps) , (<onw) , <(> 3 { y))
   hidden (+/ .* ) efw
 )
 

@@ -129,8 +129,8 @@ gem3_pre_build_block_data =: 3 : 0
 
 NB. ---- Standard self-attention for Gemma3 ----
 NB. Computes attention for the CURRENT token only against all cached K/V
+NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_attention =: 4 : 0
-  hidden =. x
   'block_data pos swa mi layer' =. y
   
   n_heads =. gem3_bd_n_heads block_data
@@ -140,7 +140,7 @@ gem3_attention =: 4 : 0
   
   NB. Attention norm
   attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
   
    NB. Q, K, V projections — fused single matmul
    fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -593,10 +593,9 @@ gem3_block_forward_bp =: 4 : 0
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
-  input =. hidden
   attn_result =. hidden gem3_attention_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<layer) , <lens)
-  attn_out =. > 0 { attn_result   NB. (B, c, emb)
-  sa_out =. attn_out + input
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + hidden
   ff_norm_w =. gem3_bd_ff_norm block_data
   sa_flat =. ((B*c) , emb_len) $ , sa_out
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_flat)
@@ -616,19 +615,17 @@ gem3_block_forward_bp =: 4 : 0
 
 NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
 gem3_run_blocks_bp =: 4 : 0
-  input =. x   NB. (B, c, emb)
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   lens =. ''
-  if. 2 < # args do. lens =. > 2 { args end.
+  if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -648,13 +645,12 @@ NB. Mirrors gem3_attention (single-token): fused QKV, per-head Q/K norm, NEOX
 NB. RoPE via PER-LAYER tables, SWA mask, post-attn norm. x = hidden (B, emb);
 NB. y = <block_data; pos; swa; mi; layer>
 gem3_attention_bd =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   pos =. > 1 { y
   swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
-  B =. {. $ hidden
+  B =. {. $ x
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
   n_heads_kv =. gem3_bd_n_heads_kv block_data
@@ -664,7 +660,7 @@ gem3_attention_bd =: 4 : 0
 
   NB. Attention norm per row
   attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
   NB. Fused QKV projection (batched single matmul)
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -799,10 +795,9 @@ gem3_block_forward_bd =: 4 : 0
   swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
-  input =. hidden
   attn_result =. hidden gem3_attention_bd ((<block_data) , (<pos) , (<swa) , (<mi) , (<layer))
   attn_out =. > 0 { attn_result
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ff_norm_w =. gem3_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
   fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
@@ -820,17 +815,15 @@ gem3_block_forward_bd =: 4 : 0
 
 NB. ---- Run all Gemma3 blocks for B sequences (one token each at pos[b]) ----
 gem3_run_blocks_bd =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -846,16 +839,15 @@ gem3_run_blocks_bd =: 4 : 0
 )
 
 NB. ---- Single Gemma3 block forward ----
+NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_block_forward =: 4 : 0
   hidden =. x
   'block_data pos swa mi layer' =. y
   
-  input =. hidden
-  
   attn_result =. hidden gem3_attention (<block_data) , (<pos) , (<swa) , (<mi) , (<layer)
   attn_out =. > 0 { attn_result
   
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   
   ff_norm_w =. gem3_bd_ff_norm block_data
   ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
@@ -878,10 +870,9 @@ gem3_block_forward =: 4 : 0
 )
 
 NB. ---- Run all Gemma3 blocks (single token; cache lives in kv_cache_g) ----
+NB. x = hidden (emb,); y = <llm; pos>
 gem3_run_blocks =: 4 : 0
-  input =. x
-  args =. y
-  'llm pos' =. args
+  'llm pos' =. y
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
@@ -889,7 +880,7 @@ gem3_run_blocks =: 4 : 0
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
 
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.

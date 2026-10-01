@@ -7,16 +7,15 @@ coclass 'inference'
 matmul =: +/ .*
 
 NB. ---- Linear Layer Forward ----
-NB. <weight> linear <input, bias>
+NB. x = weight (n, emb); y = <input (emb,); bias (n,)>
 linear =: 4 : 0
-  weight =. x
   input =. > 0 { y
   bias =. > 1 { y
-  ws =. $ weight
+  ws =. $ x
   ins =. $ input
-  if. 0 = #ws do. echo 'LINEAR: EMPTY WEIGHT, wtype:', ": 3!:0 weight; echo 'y was:', ": 3!:0 y; return. $0 end.
+  if. 0 = #ws do. echo 'LINEAR: EMPTY WEIGHT, wtype:', ": 3!:0 x; echo 'y was:', ": 3!:0 y; return. $0 end.
   if. 0 = #ins do. echo 'LINEAR: EMPTY INPUT, itype:', ": 3!:0 input; echo 'y was:', ": 3!:0 y; return. $0 end.
-  result =. weight (+/ .* ) input
+  result =. x (+/ .* ) input
   if. #bias > 0 do. result =. result + bias end.
   NB. NOTE: `result + bias` is valid when result is a single row `(out,)` OR
   NB. when the result is `(batch,out)` (bias right-aligns on the out axis).
