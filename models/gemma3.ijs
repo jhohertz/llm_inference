@@ -707,42 +707,82 @@ gem3_attention_bd =: 4 : 0
   NB. Pre-scale Q by 1/sqrt(head_dim) (Gemma)
   Q =. Q % head_dim ^ 0.5
 
-  NB. Per-sequence: SWA-masked causal scores/softmax/output (gem3_attention shape)
-  attn_out =. ''
-  b =. 0
-  while. b < B do.
-    q_b =. (n_heads, head_dim) $ ,(b { Q)
-    k_b =. (n_heads_kv, head_dim) $ ,(b { K)
-    v_b =. (n_heads_kv, head_dim) $ ,(b { V)
-    pos_b =. b { pos
-    kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
-    kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
-    k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
-    v_all =. > 1 { kv_result
-    win =. pos_b + 1
-    NB. Causal + sliding window mask (swa_l per-layer; dense layers swa_l=0)
+  NB. Batched lockstep decode (all B sequences share one position): ONE
+  NB. list-selector cache write, ONE indexed gather of the B windows, then
+  NB. threaded batched scores/softmax/V (J parallelizes the rank-4 matmuls over
+  NB. B). gemma3 is MQA (n_groups = n_heads/n_heads_kv) with a per-layer SWA
+  NB. causal mask that is B-independent in lockstep (win is shared). Falls back
+  NB. to the per-seq loop when positions differ (variable window lengths).
+  if. (B > 1) *. (pos -: (B $ 0 { pos)) do.
+    win =. (0 { pos) + 1
+    eff_seq =. > 1 { kv_meta
+    base_b =. ((layer * kv_batch_g) + i. B) * eff_seq
+    NB. Batch cache write: one list-selector amend for all B at pos[b]
+    idxw =. base_b + pos
+    k_cache_g =: ((B , n_heads_kv * head_dim) $ , K) idxw} k_cache_g
+    v_cache_g =: ((B , n_heads_kv * head_dim) $ , V) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. (0 { pos) + 1
+    NB. Gather all B windows in one indexed fetch
+    idxr =. base_b +/ i. win
+    k_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)
+    v_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g)
+    NB. Batched MQA scores (each query head attends the shared n_kv heads)
+    n_groups =. n_heads % n_heads_kv
+    Q_g2_b =. (B , n_heads_kv , n_groups , head_dim) $ , Q
+    Kp_b =. (0 2 3 1) |: k_rows_b   NB. (B, n_kv, hd, win)
+    scores_b =. Q_g2_b (+/ .* "2) Kp_b   NB. (B, n_kv, groups, win)
+    scores_b2 =. (B , n_heads , win) $ , scores_b
+    NB. SWA + causal mask (B-independent in lockstep: win is shared)
     swa_l =. gem3_bd_swa_l block_data
     mask_1d =. (i. win) < (win - swa_l)
     mask_1d =. (swa_l > 0) *. mask_1d
-    mask_3d =. (n_heads, win, n_heads_kv) $ mask_1d
-    k_trans =. 2 0 1 |: k_all   NB. (hd, win, n_kv)
-    scores =. q_b (+/ .* ) k_trans   NB. (n_heads, win, n_kv)
-    scores =. scores - (mask_3d * 1e9)
-    scores_f =. (n_heads, n_heads_kv * win) $ ,scores
-    max_sf =. >./"1 scores_f
-    exp_sf =. ^ (scores_f - max_sf)
-    softmax_f =. exp_sf % +/"1 exp_sf
-    softmax =. (n_heads, n_heads_kv, win) $ ,softmax_f
-    v_flat =. (n_heads_kv * win, head_dim) $ ,(1 0 2 |: v_all)
-    softmax_flat =. (n_heads, n_heads_kv * win) $ ,softmax
-    attn_raw =. softmax_flat (+/ .* ) v_flat   NB. (n_heads, hd)
-    attn_raw_flat =. (n_heads * head_dim) $ ,attn_raw
-    attn_out =. attn_out , <attn_raw_flat
-    b =. b + 1
+    mask_3d_b =. (B , n_heads , win) $ , (((B * n_heads) $ 1) (*/) mask_1d)
+    scores_b2 =. scores_b2 - (mask_3d_b * 1e9)
+    max_sf_b =. >./"1 scores_b2
+    exp_sf_b =. ^ (scores_b2 - max_sf_b)
+    softmax_b =. exp_sf_b % +/"1 exp_sf_b
+    softmax_g2_b =. (B , n_heads_kv , n_groups , win) $ , softmax_b
+    Vp_b =. (0 2 1 3) |: v_rows_b   NB. (B, n_kv, win, hd)
+    attn2_b =. softmax_g2_b (+/ .* "2) Vp_b   NB. (B, n_kv, groups, hd)
+    attn_all =. (B , n_heads * head_dim) $ , attn2_b
+  else.
+    NB. Per-sequence: SWA-masked causal scores/softmax/output (gem3_attention shape)
+    attn_out =. ''
+    b =. 0
+    while. b < B do.
+      q_b =. (n_heads, head_dim) $ ,(b { Q)
+      k_b =. (n_heads_kv, head_dim) $ ,(b { K)
+      v_b =. (n_heads_kv, head_dim) $ ,(b { V)
+      pos_b =. b { pos
+      kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
+      kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
+      k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
+      v_all =. > 1 { kv_result
+      win =. pos_b + 1
+      NB. Causal + sliding window mask (swa_l per-layer; dense layers swa_l=0)
+      swa_l =. gem3_bd_swa_l block_data
+      mask_1d =. (i. win) < (win - swa_l)
+      mask_1d =. (swa_l > 0) *. mask_1d
+      mask_3d =. (n_heads, win, n_heads_kv) $ mask_1d
+      k_trans =. 2 0 1 |: k_all   NB. (hd, win, n_kv)
+      scores =. q_b (+/ .* ) k_trans   NB. (n_heads, win, n_kv)
+      scores =. scores - (mask_3d * 1e9)
+      scores_f =. (n_heads, n_heads_kv * win) $ ,scores
+      max_sf =. >./"1 scores_f
+      exp_sf =. ^ (scores_f - max_sf)
+      softmax_f =. exp_sf % +/"1 exp_sf
+      softmax =. (n_heads, n_heads_kv, win) $ ,softmax_f
+      v_flat =. (n_heads_kv * win, head_dim) $ ,(1 0 2 |: v_all)
+      softmax_flat =. (n_heads, n_heads_kv * win) $ ,softmax
+      attn_raw =. softmax_flat (+/ .* ) v_flat   NB. (n_heads, hd)
+      attn_raw_flat =. (n_heads * head_dim) $ ,attn_raw
+      attn_out =. attn_out , <attn_raw_flat
+      b =. b + 1
+    end.
+    attn_all =. (B , n_heads * head_dim) $ , > attn_out
   end.
 
   NB. Output projection + post-attention norm
-  attn_all =. (B , n_heads * head_dim) $ , > attn_out
   attn_o_w =. gem3_bd_attn_o block_data
   attn_out =. |: (attn_o_w (+/ .* ) |: attn_all)   NB. (B, emb)
   attn_pn_w =. gem3_bd_attn_pn block_data

@@ -1134,3 +1134,102 @@ beneficial application in the codebase:
 
 So LoopWithInitial stays as a general idiom in docs/J-KNOWLEDGE.md (Ch 36
 review); no current call site. Not a planned item.
+
+## Batched decode vectorization — qwen35 / lfm2 / gemma3 (2026-10)
+
+The batched-decode path (`gen_loop_batch` → `*_run_blocks_bd`) is now fully
+vectorized in the common lockstep case (all sequences share a position), and the
+arches with per-sequence recurrent state got their always-hit per-seq loops
+collapsed into one vectorized pass. Verified bit-exact vs single inference
+(`tests/j/test_batched.ijs` 11/11 — B=2, B=3, variable-length across all 8
+arches; lint load-probe gate green).
+
+- **qwen35 (gated-delta-net SSM)** — `models/qwen35.ijs`. Added
+  `qw35_ssm_recur_b` (one vectorized delta-net recurrence across all B sequences;
+  J threads the rank-4 matmuls over the `(B, n_v_heads)` cell axes) and
+  `rs_read_b_all`/`rs_write_b_all` (single indexed pass over all B sequences'
+  conv+s recurrent state). The per-seq loop in `qw35_ssm_forward_bd` is now a
+  single vectorized pass (conv + l2norm + recurrence + gated norm + state write).
+  Bit-exact vs the per-seq path (q/k/v/conv/s_new/o and the full forward `-:`);
+  ~3.9x per-sequence throughput at B=4.
+- **lfm2 (shortconv)** — `models/lfm2.ijs`. Added
+  `lf2_conv_read_b_all`/`lf2_conv_write_b_all` and vectorized the per-seq conv in
+  both `lf2_conv_forward_bd` (decode, c=1) and `lf2_conv_forward_bp` (batched
+  prefill — sliding 3-tap window over the `(2+c)` rows). The prefill conv-state
+  WRITE stays per-seq because the padding mask (`real_c`) is per-sequence
+  (correct — padding must not contaminate the sliding window). Verified B=2
+  identical + variable-length (long+short) == single.
+- **gemma3 (MQA + SWA)** — `models/gemma3.ijs`. `gem3_attention_bd` gained a
+  batched LOCKSTEP branch before the per-seq fallback: ONE list-selector KV
+  cache write, ONE indexed gather of the B windows, threaded batched
+  scores/softmax/V (`n_groups = n_heads/n_heads_kv`; gemma3 is MQA — n_heads=4,
+  n_heads_kv=1), with the per-layer SWA causal mask broadcast over B
+  (B-independent in lockstep). The per-seq loop remains as the fallback for
+  unequal positions (verified correct). ~3.6x per-sequence throughput at B=4.
+- **llama / qwen2 / qwen3 / granite / ernie** — already had the batched lockstep
+  branch in `*_attention_bd`; no change needed.
+- **J gotchas hit while wiring these**: `;`-chaining RE-BOXES when the left is
+  already a box list (the debug-block double-box bug); `(bi + i. 1){x` is
+  `(1, n)` but `bi{x` is `(n,)` (scalar-vs-row shape for the recurrence decay);
+  control words (`for.`/`while.`) are invalid at script top level — wrap in a
+  `3 : 0`/`4 : 0` definition; reshape-paren tangling — use intermediate shape
+  vars; `(B, rows, cols) $ mask_1d` does NOT broadcast — use
+  `((B * rows) $ 1) (*/) mask_1d`.
+
+## jllama study (reference/jllama) — adopted / evaluated (2026-10)
+
+Deep dive on the third-party `reference/jllama` engine (tmcguirefl/jllama) — a
+much smaller, single-skeleton, CLI-only J LLM. All eight findings are resolved
+(done / adopted-in-simpler-form / evaluated-and-kept); recorded here and removed
+from PLAN.md (which keeps only planned work). Original text lived in PLAN.md's
+"jllama Study" section.
+
+1. **Boxing/packing gotcha doc — DONE.** Adopted jllama's explicit "Boxing /
+   packing rules" block as the canonical section **"Boxing / Packing Rules —
+   CRITICAL IN J"** in docs/J-KNOWLEDGE.md (the 5 rules: `<"_` enclose vs `<`,
+   multiple-assignment spread, `'a b c' =. <open_list` does NOT spread — open
+   first, chained `a ; b ; c` RE-BOXES when the left is already a box list —
+   pack mixed nested args with `(<a) , (<b) , already_boxed_c , (<d)`,
+   pure-numeric `;`). Cross-references gotchas 12/14/15/20 + the `;`-nesting
+   corollaries (max_rounds ordering, kv_write_rows precedence, _run_blocks
+   boxing, named-box catenation). AGENTS.md points to it.
+2. **F16 decode LUT — ALREADY IMPLEMENTED (assessed/closed).** jllama builds a
+   65536-entry LUT once and indexes it; we already do the same in `gguf/gguf.ijs`
+   (`f16_table` + the tacit `f16_load`, ~0.37s for 270M vs ~0.76s explicit) +
+   a per-tensor `f16_decode` fallback. No change needed.
+3. **Clone-and-run bootstrap — ASSESSED; adopted in SIMPLER FORM.** jllama's
+   `sysutils.ijs` derives ROOT from `4!:3 ''` so the checkout runs directly; we
+   REJECTED the literal ROOT-relative-load rewrite (too invasive: every module
+   uses addon-name `require`; the conditional arch `require` in
+   `load_gguf_to_llm` relies on idempotency). Adopted the same goal via
+   **auto-install**: `tests/j/run_all_tests.sh` and `scripts/lint.sh` run
+   `install_local.sh --force` up front, so tests/lint always exercise the
+   current checkout.
+4. **`sample_cfg_pack` config normalization — DONE.** Added
+   `sample_params_pack` to util/sampler.ijs (jllama `sample_cfg_pack`-style):
+   accepts an open numeric list, a `;`-list of boxes, or a double-boxed scalar
+   box of `<temp;k;p;min_p>`; returns the open flat list padded to 4 with
+   defaults (`temp=1.0, k=0, p=0.95, min_p=0.0`) and truncated to 4. Refactored
+   the three duplicate inline normalizers (`sampler_sample`, `infer_args`,
+   `gen_args`) to use it. Sampler suite 32/32.
+5. **`allclose` (atol/rtol) — DONE.** Added jllama-style
+   `x allclose y` = `*./ , (| x - y) <: ATOL + RTOL * | y` to
+   kernels/jfloat.ijs (`ATOL =: 1e_9`, `RTOL =: 1e_6`, dyadic-only); reused for
+   near-equality checks (test_swa single==batched logits). Kernel suite 32/32.
+6. **Small kernel idioms — ALREADY IMPLEMENTED (assessed/closed, no change).**
+   attention scale `1/sqrt(head_dim)` via `Q =. Q % head_dim ^ 0.5` (pre-scale,
+   llama.cpp style; granite's data-driven `0.015625` is the documented
+   exception); ravel-before-reshape `$ , y` used everywhere; fused-weight split
+   via `{."1`/`}."1`. No change.
+7. **Per-module named locales (tradeoff) — ASSESSED; keep single locale.** Our
+   single `inference` locale is deliberate — the global-verb rebinding pattern
+   (`gen_cb_g`/`chat_cb_g`/`chat_tool_fn_g`) works because verb-assignment
+   aliases the NAME where the verb is CALLED, which a named-locale split would
+   break (chat_tui.ijs). No change.
+8. **Arch-as-noun + `0!:0` rewiring (tradeoff) — ASSESSED; keep per-arch
+   modules + dispatch.** jllama defines each arch as a `0 : 0` noun and rewires
+   `model_from_gguf`/`block_full`/`block_step`/`block_prefill_cached` in place;
+   we already have shared-skeleton per-arch modules (`models/*.ijs`) + unified
+   `gen_loop_core`/`gen_loop_batch` dispatch by `llm_arch` with
+   `general.architecture` KV detection (more robust than filename substring
+   matching). No change.

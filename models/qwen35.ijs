@@ -301,6 +301,40 @@ rs_write_b =: 3 : 0
   ''
 )
 
+NB. Batched read/write: read (or write) all B sequences' conv+s recurrent state
+NB. in ONE indexed pass, mirroring rs_read_b/rs_write_b's per-seq index math.
+NB. y = <layer; B> (read) / <layer; conv_states(B,rows,ch); s_states(B,nv,Sv,Sv); B> (write).
+rs_read_b_all =: 3 : 0
+  layer =. > 0 { y
+  B =. > 1 { y
+  ord =. qw35_ssm_layers i. layer
+  cs =. rs_conv_slice rs_meta
+  ss =. rs_s_slice rs_meta
+  cb0 =. (ord * rs_batch_g) * cs
+  sb0 =. (ord * rs_batch_g) * ss
+  idxc =. cb0 + ((i. B) * cs) +/ (i. cs)
+  idxs =. sb0 + ((i. B) * ss) +/ (i. ss)
+  cshape =. B , (> 1 { rs_meta) , (> 2 { rs_meta)
+  sshape =. B , (> 4 { rs_meta) , (> 3 { rs_meta) , (> 3 { rs_meta)
+  (<cshape $ , (idxc { rs_conv_g)) , <sshape $ , (idxs { rs_s_g)
+)
+rs_write_b_all =: 3 : 0
+  layer =. > 0 { y
+  conv =. > 1 { y
+  s =. > 2 { y
+  B =. > 3 { y
+  ord =. qw35_ssm_layers i. layer
+  cs =. rs_conv_slice rs_meta
+  ss =. rs_s_slice rs_meta
+  cb0 =. (ord * rs_batch_g) * cs
+  sb0 =. (ord * rs_batch_g) * ss
+  idxc =. cb0 + ((i. B) * cs) +/ (i. cs)
+  idxs =. sb0 + ((i. B) * ss) +/ (i. ss)
+  rs_conv_g =: (, conv) (, idxc)} rs_conv_g
+  rs_s_g =: (, s) (, idxs)} rs_s_g
+  ''
+)
+
 
 NB. ---- GQA expand ----
 
@@ -455,6 +489,33 @@ qw35_ssm_recur =: 3 : 0
     t =. t + 1
   end.
   (<s) , <out
+)
+
+NB. Batched-decode recurrence: one vectorized delta-net step across B sequences
+NB. in a single pass (J threads the rank-4 matmuls over the (B, n_v_heads) cell
+NB. axes). Bit-exact vs the per-seq qw35_ssm_recur loop (verified -: on real
+NB. layer data). y = <s_states(B,nv,S_v,S_v); q(B,nv,hd); k; v; beta(B,nv);
+NB. gate(B,nv); scale>.
+qw35_ssm_recur_b =: 3 : 0
+  s =. > 0 { y
+  q =. > 1 { y
+  k =. > 2 { y
+  v =. > 3 { y
+  beta =. > 4 { y
+  gate =. > 5 { y
+  scale =. > 6 { y
+  B =. {. $ s
+  n_v_heads =. 1 { $ s
+  s_v =. 3 { $ s
+  NB. decay ^gate broadcast to (B,nv,S_v,S_v): (*/ ) outer over the two S_v axes
+  s =. s * ((B , n_v_heads , s_v , s_v) $ , ((^ gate) (*/) (s_v $ 1) (*/) (s_v $ 1)))
+  sk =. k (+/ .* "1 2) s
+  delta =. (v - sk) * beta
+  k3 =. (B , n_v_heads , s_v , 1) $ , k
+  d3 =. (B , n_v_heads , 1 , s_v) $ , delta
+  s =. s + (k3 (+/ .* "2) d3)
+  o =. (q (+/ .* "1 2) s) * scale
+  (<s) , <o
 )
 
 NB. ---- Batched SSM (gated delta net) layer forward ----
@@ -793,55 +854,35 @@ qw35_ssm_forward_bd =: 4 : 0
   NB. instead of B per-seq silu calls — cuts the per-call activation overhead)
   z3 =. (B , num_v_heads , head_v_dim) $ , z
   z_silu =. silu z3
-  finals =. ''
-  bi =. 0
-  while. bi < B do.
-    rs_state =. rs_read_b ((<layer) , <bi)
-    conv_state =. > 0 { rs_state   NB. (3, conv_dim)
-    input =. conv_state , (bi { qkv_mixed)   NB. (4, conv_dim)
-    conv_out =. ((i. 1) { input) * ((1 , conv_dim) $ (0 {"1 conv_w))
-    conv_out =. conv_out + ((1 + i. 1) { input) * ((1 , conv_dim) $ (1 {"1 conv_w))
-    conv_out =. conv_out + ((2 + i. 1) { input) * ((1 , conv_dim) $ (2 {"1 conv_w))
-    conv_out =. conv_out + ((3 + i. 1) { input) * ((1 , conv_dim) $ (3 {"1 conv_w))
-    conv_out =. silu conv_out   NB. (1, conv_dim)
-
-    NB. Split Q/K/V channels
-    q_conv =. key_dim {."1 conv_out
-    k_conv =. key_dim {."1 (key_dim }."1 conv_out)
-    v_conv =. (2 * key_dim) }."1 conv_out
-
-    NB. Reshape + L2-norm q and k
-    q3 =. (1 , num_v_heads , head_v_dim) $ , q_conv
-    k3 =. (1 , num_v_heads , head_v_dim) $ , k_conv
-    v3 =. (1 , num_v_heads , head_v_dim) $ , v_conv
-    qf =. ((num_v_heads) , head_v_dim) $ , q3
-    qf =. l2norm_rows ((< mi_rms_eps mi) , <qf)
-    q =. (1 , num_v_heads , head_v_dim) $ , qf
-    kf =. ((num_v_heads) , head_v_dim) $ , k3
-    kf =. l2norm_rows ((< mi_rms_eps mi) , <kf)
-    k =. (1 , num_v_heads , head_v_dim) $ , kf
-
-    NB. Recurrence (1 step)
-    s_state =. > 1 { rs_state
-    rec =. qw35_ssm_recur ((<s_state) , (<q) , (<k) , (<v3) , (<((bi + i. 1) { beta)) , (<((bi + i. 1) { gate)) , <scale)
-    s_new =. > 0 { rec
-    o =. > 1 { rec   NB. (1, num_v_heads, head_v_dim)
-
-    NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z) (silu precomputed)
-    o_flat =. (num_v_heads , head_v_dim) $ , o
-    o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
-    gated =. o_n * (bi { z_silu)
-    final =. (1 , d_inner) $ , gated
-    finals =. finals , <final
-
-    NB. Update conv state (last 3 rows of input) + s state
-    new_conv =. (1 + i. 3) { input
-    rs_write_b ((<layer) , (<new_conv) , (<s_new) , <bi)
-    bi =. bi + 1
-  end.
-
+  NB. Batched conv + recurrence + gated norm across all B sequences in ONE
+  NB. vectorized pass (bit-exact vs the per-seq loop it replaces): J threads the
+  NB. rank-4 matmuls over the (B, n_v_heads) cell axes, so the delta-net
+  NB. recurrence runs once for the whole batch instead of B times.
+  'conv_states_b s_states_b' =. rs_read_b_all (layer ; B)
+  input_b =. (B , 4 , conv_dim) $ , (conv_states_b ,"2 (B , 1 , conv_dim) $ , qkv_mixed)
+  c0 =. |: (0 {"2 |: input_b)
+  c1 =. |: (1 {"2 |: input_b)
+  c2 =. |: (2 {"2 |: input_b)
+  c3 =. |: (3 {"2 |: input_b)
+  conv_out_b =. (B , conv_dim) $ , ((c0 * ((B , conv_dim) $ , 0 {"1 conv_w)) + (c1 * ((B , conv_dim) $ , 1 {"1 conv_w)) + (c2 * ((B , conv_dim) $ , 2 {"1 conv_w)) + (c3 * ((B , conv_dim) $ , 3 {"1 conv_w)))
+  conv_out_b =. silu conv_out_b
+  q3_b =. (B , num_v_heads , head_v_dim) $ , (key_dim {."1 conv_out_b)
+  k3_b =. (B , num_v_heads , head_v_dim) $ , (key_dim {."1 (key_dim }."1 conv_out_b))
+  v3_b =. (B , num_v_heads , head_v_dim) $ , ((2 * key_dim) }."1 conv_out_b)
+  qf_b =. l2norm_rows ((< mi_rms_eps mi) , <((B * num_v_heads) , head_v_dim) $ , q3_b)
+  q_b =. (B , num_v_heads , head_v_dim) $ , qf_b
+  kf_b =. l2norm_rows ((< mi_rms_eps mi) , <((B * num_v_heads) , head_v_dim) $ , k3_b)
+  k_b =. (B , num_v_heads , head_v_dim) $ , kf_b
+  rec_b =. qw35_ssm_recur_b ((<s_states_b) , (<q_b) , (<k_b) , (<v3_b) , (<beta) , (<gate) , <scale)
+  s_new_b =. > 0 { rec_b
+  o_b =. > 1 { rec_b
+  o_n_b =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <((B * num_v_heads) , head_v_dim) $ , o_b)
+  gated_b =. ((B , num_v_heads , head_v_dim) $ , o_n_b) * z_silu
+  final_all =. (B , d_inner) $ , gated_b
+  NB. Update conv state (last 3 rows of input_b) + s state for all B at once
+  new_conv_b =. 1 0 2 |: ((1 + i. 3) { 1 0 2 |: input_b)
+  rs_write_b_all ((<layer) , (<new_conv_b) , (<s_new_b) , <B)
   NB. out_proj + residual + FFN (batched)
-  final_all =. (B , d_inner) $ , > finals
   out =. |: ((qw35_bd_s_out block_data) (+/ .*) |: final_all)   NB. (B, emb)
   out =. out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)

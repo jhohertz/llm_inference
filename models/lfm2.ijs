@@ -214,6 +214,31 @@ lf2_conv_write_b =: 3 : 0
   ''
 )
 
+NB. Batched read/write: all B sequences' conv state in ONE indexed pass (mirror
+NB. lf2_conv_read_b/lf2_conv_write_b's per-seq index math). y = <layer; B>
+NB. (read) / <layer; conv_states(B,d_conv,emb); B> (write).
+lf2_conv_read_b_all =: 3 : 0
+  layer =. > 0 { y
+  B =. > 1 { y
+  ord =. lf2_conv_layers i. layer
+  cs =. lf2_conv_slice lf2_conv_meta
+  cb0 =. (ord * lf2_conv_batch_g) * cs
+  idxc =. cb0 + ((i. B) * cs) +/ (i. cs)
+  cshape =. B , (> 1 { lf2_conv_meta) , (> 2 { lf2_conv_meta)
+  cshape $ , (idxc { lf2_conv_cache_g)
+)
+lf2_conv_write_b_all =: 3 : 0
+  layer =. > 0 { y
+  conv =. > 1 { y
+  B =. > 2 { y
+  ord =. lf2_conv_layers i. layer
+  cs =. lf2_conv_slice lf2_conv_meta
+  cb0 =. (ord * lf2_conv_batch_g) * cs
+  idxc =. cb0 + ((i. B) * cs) +/ (i. cs)
+  lf2_conv_cache_g =: (, conv) (, idxc)} lf2_conv_cache_g
+  ''
+)
+
 NB. ---- Attention layer forward (batched) ----
 NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 NB. LFM2 attention layers are qwen3-style: per-head Q/K RMSNorm before RoPE,
@@ -609,33 +634,33 @@ lf2_conv_forward_bp =: 4 : 0
   x_chunk =. (2 * emb) }."1 bcx
   bx =. b_chunk * x_chunk   NB. (B*c, emb)
 
-  NB. Conv1d per sequence (conv state per seq; kernel shared)
+  NB. Conv1d batched across all B (sliding 3-tap window over the (2+c) rows):
+  NB. conv_out_b[bi,i,:] = input_b[bi,i,:]*cw0 + input_b[bi,i+1,:]*cw1 +
+  NB. input_b[bi,i+2,:]*cw2, i=0..c-1.  The conv-state WRITE stays per-seq
+  NB. because the padding mask (real_c) is per-sequence.
   conv_w =. lf2_bd_conv block_data   NB. (emb, 3)
-  conv_out_all =. ''
+  conv_states_b =. lf2_conv_read_b_all (layer ; B)   NB. (B, 2, emb)
+  input_b =. (B , (2 + c) , emb) $ , (conv_states_b ,"2 ((B , c , emb) $ , bx))
+  inp0 =. 1 0 2 |: ((0 + i. c) { 1 0 2 |: input_b)
+  inp1 =. 1 0 2 |: ((1 + i. c) { 1 0 2 |: input_b)
+  inp2 =. 1 0 2 |: ((2 + i. c) { 1 0 2 |: input_b)
+  conv_out_b =. ((B , c , emb) $ , (inp0 * ((B , c , emb) $ , 0 {"1 conv_w))) + ((B , c , emb) $ , (inp1 * ((B , c , emb) $ , 1 {"1 conv_w))) + ((B , c , emb) $ , (inp2 * ((B , c , emb) $ , 2 {"1 conv_w)))
+  conv_out_arr =. ((B*c) , emb) $ , conv_out_b
+  y =. c_chunk * conv_out_arr   NB. (B*c, emb)
+  NB. Conv-state update: use only the REAL rows per seq (padding must NOT
+  NB. contaminate the sliding window — a padded sequence's state must end at its
+  NB. last real token).  input_b rows (real_c, real_c+1) hold the last 2 real bx.
+  p_chunk =. 0 { pos
   b =. 0
   while. b < B do.
-    bx_b =. (c, emb) $ , ((b * c) + i. c) { bx
-    conv_state =. lf2_conv_read_b ((<layer) , <b)   NB. (2, emb)
-    input_b =. conv_state , bx_b   NB. (2+c, emb)
-    conv_out =. (c , emb) $ 0
-    conv_out =. conv_out + ((c , emb) $ (0 {"1 conv_w)) * ((0 + i. c) { input_b)
-    conv_out =. conv_out + ((c , emb) $ (1 {"1 conv_w)) * ((1 + i. c) { input_b)
-    conv_out =. conv_out + ((c , emb) $ (2 {"1 conv_w)) * ((2 + i. c) { input_b)
-    conv_out_all =. conv_out_all , <conv_out
-    NB. Conv-state update: use only the REAL rows (padding must NOT contaminate
-    NB. the sliding window — a padded sequence's state must end at its last real
-    NB. token, not at the chunk's padding rows).  input_b = [conv_state(2); bx],
-    NB. so the last 2 REAL bx rows sit at input_b rows (real_c, real_c+1).
-    p_chunk =. 0 { pos
     real_c =. c <. ((b { lens) - p_chunk)
     if. real_c > 0 do.
-      new_conv =. (real_c + i. 2) { input_b
+      input_bi =. ((2 + c) , emb) $ , (b { input_b)
+      new_conv =. (real_c + i. 2) { input_bi
       lf2_conv_write_b ((<layer) , (<new_conv) , <b)
     end.
     b =. b + 1
   end.
-  conv_out_arr =. ((B*c) , emb) $ , > conv_out_all
-  y =. c_chunk * conv_out_arr   NB. (B*c, emb)
   out =. |: ((lf2_bd_out_proj block_data) (+/ .* ) |: y)   NB. (B*c, emb)
   sa_out_flat =. out + hidden_flat
 
@@ -852,28 +877,20 @@ lf2_conv_forward_bd =: 4 : 0
   x =. (2 * emb) }."1 bcx   NB. (B, emb)
   bx =. b * x   NB. (B, emb)
 
-  NB. Conv1d per sequence: input = [conv_state(2); bx] (3, emb), one token out,
-  NB. state update = last 2 rows (mirror lf2_conv_forward_b with L=1).
+  NB. Conv1d batched across all B (one vectorized pass; conv state per seq):
+  NB. input = [conv_state(2); bx] (3, emb) per seq, 3 taps -> (B, emb) one token
+  NB. out; state update = last 2 rows (mirror lf2_conv_forward_b with L=1).
   conv_w =. lf2_bd_conv block_data   NB. (emb, 3)
-  outs =. ''
-  bi =. 0
-  while. bi < B do.
-    conv_state =. lf2_conv_read_b ((<layer) , <bi)   NB. (2, emb)
-    input =. conv_state , (bi { bx)   NB. (3, emb)
-    conv_out =. (1 , emb) $ 0
-    conv_out =. conv_out + ((1 , emb) $ (0 {"1 conv_w)) * ((0 + i. 1) { input)
-    conv_out =. conv_out + ((1 , emb) $ (1 {"1 conv_w)) * ((1 + i. 1) { input)
-    conv_out =. conv_out + ((1 , emb) $ (2 {"1 conv_w)) * ((2 + i. 1) { input)
-    y =. ((bi + i. 1) { c) * conv_out   NB. (1, emb)
-    new_conv =. (1 + i. 2) { input
-    lf2_conv_write_b ((<layer) , (<new_conv) , <bi)
-    outs =. outs , <y
-    bi =. bi + 1
-  end.
-
-  NB. Gate: out_proj over all B, then residual
-  y_all =. (B , emb) $ , > outs
-  out =. |: ((lf2_bd_out_proj block_data) (+/ .* ) |: y_all)   NB. (B, emb)
+  conv_states_b =. lf2_conv_read_b_all (layer ; B)   NB. (B, 2, emb)
+  input_b =. (B , 3 , emb) $ , (conv_states_b ,"2 (B , 1 , emb) $ , bx)
+  c0 =. |: (0 {"2 |: input_b)
+  c1 =. |: (1 {"2 |: input_b)
+  c2 =. |: (2 {"2 |: input_b)
+  conv_out_b =. (B , emb) $ , ((c0 * ((B , emb) $ , 0 {"1 conv_w)) + (c1 * ((B , emb) $ , 1 {"1 conv_w)) + (c2 * ((B , emb) $ , 2 {"1 conv_w)))
+  y_b =. c * conv_out_b   NB. (B, emb)
+  new_conv_b =. 1 0 2 |: ((1 + i. 2) { 1 0 2 |: input_b)   NB. (B, 2, emb)
+  lf2_conv_write_b_all (layer ; new_conv_b ; B)
+  out =. |: ((lf2_bd_out_proj block_data) (+/ .* ) |: y_b)   NB. (B, emb)
   sa_out =. out + hidden
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual) — conv-layout accessors
