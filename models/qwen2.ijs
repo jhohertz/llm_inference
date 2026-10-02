@@ -281,7 +281,7 @@ NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_block_forward =: 4 : 0
   hidden =. x
   'block_data pos mi layer' =. y
-  attn_result =. hidden qw2_attention ((<block_data) , (<pos) , (<mi) , (<layer))
+  attn_result =. hidden qw2_attention y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   ffn_norm_w =. qw2_bd_ff_norm block_data
@@ -525,7 +525,7 @@ qw2_block_forward_bd =: 4 : 0
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  attn_result =. hidden qw2_attention_bd ((<block_data) , (<pos) , (<mi) , (<layer))
+  attn_result =. hidden qw2_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   ffn_norm_w =. qw2_bd_ff_norm block_data

@@ -794,7 +794,7 @@ gem3_block_forward_bd =: 4 : 0
   swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
-  attn_result =. hidden gem3_attention_bd ((<block_data) , (<pos) , (<swa) , (<mi) , (<layer))
+  attn_result =. hidden gem3_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   ff_norm_w =. gem3_bd_ff_norm block_data
@@ -845,7 +845,7 @@ gem3_block_forward =: 4 : 0
   hidden =. x
   'block_data pos swa mi layer' =. y
   
-  attn_result =. hidden gem3_attention (<block_data) , (<pos) , (<swa) , (<mi) , (<layer)
+  attn_result =. hidden gem3_attention y
   attn_out =. > 0 { attn_result
   
   sa_out =. attn_out + hidden

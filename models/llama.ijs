@@ -272,7 +272,7 @@ NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 llama_block_forward =: 4 : 0
   hidden =. x
   'block_data pos mi layer' =. y
-  attn_result =. hidden llama_attention ((<block_data) , (<pos) , (<mi) , (<layer))
+  attn_result =. hidden llama_attention y
   attn_out =. > 0 { attn_result
   attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + hidden
@@ -624,7 +624,7 @@ llama_block_forward_bd =: 4 : 0
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  attn_result =. hidden llama_attention_bd ((<block_data) , (<pos) , (<mi) , (<layer))
+  attn_result =. hidden llama_attention_bd y
   attn_out =. > 0 { attn_result
   attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + hidden
