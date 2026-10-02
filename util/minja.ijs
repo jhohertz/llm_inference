@@ -473,7 +473,6 @@ ctx_loop_outer =: 4 : 0
   NB. The loopctx's local obj carries the __loop_depth__ marker (== d);
   NB. nested loops carry deeper markers and are skipped. The returned parent
   NB. is the outer_ctx, updated with any namespace mutations made in the body.
-  d =. x
   ctx =. y
   while. -. is_null ctx do.
     'vals parent' =. ctx
@@ -482,7 +481,7 @@ ctx_loop_outer =: 4 : 0
     mi =. key_find ((<ks) , <'__loop_depth__')
     if. mi >: 0 do.
       dv =. > ((2 * mi) + 1) { it
-      if. (payload dv) = d do. parent return. end.
+      if. (payload dv) = x do. parent return. end.
     end.
     ctx =. parent
   end.
@@ -539,10 +538,9 @@ cap =: 3 : 0
   if. 0 = # s do. s else. (toupper (0 { s)) , (tolower (1 }. s)) end.
 )
 title_s =: 3 : 0
-  s =. y
   res =. ''
   prevspace =. 1
-  for_c. s do.
+  for_c. y do.
     cc =. c
     if. prevspace do. res =. res , toupper cc else. res =. res , tolower cc end.
     prevspace =. cc e. ' ',TAB,LF,CR
@@ -607,11 +605,10 @@ indent_s =: 3 : 0
   out =. ''
   is_first =. 1
   for_l. lines do.
-    line =. > l
     needs =. (-. is_first) +. first
     if. is_first do. is_first =. 0 end.
     if. needs do. out =. out , pad end.
-    out =. out , line
+    out =. out , > l
     if. -. (l -: _1 { lines) do. out =. out , LF end.
   end.
   if. (0 < # txt) *. (LF = _1 {. txt) do. out =. out , LF end.
@@ -2466,8 +2463,7 @@ rnode =: 3 : 0
     end.
   case. 'filterblk' do.
     fname =. 1 {:: node
-    body =. > 2 {:: node
-    rendered =. rnode body
+    rendered =. rnode > 2 {:: node
     callable =. eval_expr fname
     sv =. mkstr rendered
     res =. ((<(<sv)) , <'') call callable

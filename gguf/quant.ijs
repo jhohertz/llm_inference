@@ -22,10 +22,8 @@ qblk_idx =: _1 _1 0 1 _1 _1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 
 NB. ---- simple decoders (32-elem blocks) ----
 
 q4_0_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 32
-  rows =. (nb,18) $ s
+  nb =. (> 0 { y) % 32
+  rows =. (nb,18) $ > 1 { y
   d =. f16_load (<nb), <(, (0 1 {"1 rows))
   qs =. u8 (2 + i.16) {"1 rows
   lo =. (qs 17 b. 15) - 8
@@ -34,10 +32,8 @@ q4_0_decode =: 3 : 0
 )
 
 q4_1_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 32
-  rows =. (nb,20) $ s
+  nb =. (> 0 { y) % 32
+  rows =. (nb,20) $ > 1 { y
   d =. f16_load (<nb), <(, (0 1 {"1 rows))
   m =. f16_load (<nb), <(, (2 3 {"1 rows))
   qs =. u8 (4 + i.16) {"1 rows
@@ -47,10 +43,8 @@ q4_1_decode =: 3 : 0
 )
 
 q5_0_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 32
-  rows =. (nb,22) $ s
+  nb =. (> 0 { y) % 32
+  rows =. (nb,22) $ > 1 { y
   d =. f16_load (<nb), <(, (0 1 {"1 rows))
   qh =. (_2) 3!:4 , (2 + i.4) {"1 rows
   qs =. u8 (6 + i.16) {"1 rows
@@ -63,10 +57,8 @@ q5_0_decode =: 3 : 0
 )
 
 q5_1_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 32
-  rows =. (nb,24) $ s
+  nb =. (> 0 { y) % 32
+  rows =. (nb,24) $ > 1 { y
   d =. f16_load (<nb), <(, (0 1 {"1 rows))
   m =. f16_load (<nb), <(, (2 3 {"1 rows))
   qh =. (_2) 3!:4 , (4 + i.4) {"1 rows
@@ -80,10 +72,8 @@ q5_1_decode =: 3 : 0
 )
 
 q8_0_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 32
-  rows =. (nb,34) $ s
+  nb =. (> 0 { y) % 32
+  rows =. (nb,34) $ > 1 { y
   d =. f16_load (<nb), <(, (0 1 {"1 rows))
   qs =. u8 (2 + i.32) {"1 rows
   qs =. qs - 256 * qs > 127
@@ -91,10 +81,8 @@ q8_0_decode =: 3 : 0
 )
 
 iq4_nl_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 32
-  rows =. (nb,18) $ s
+  nb =. (> 0 { y) % 32
+  rows =. (nb,18) $ > 1 { y
   d =. f16_load (<nb), <(, (0 1 {"1 rows))
   qs =. u8 (2 + i.16) {"1 rows
   lo =. kvalues_iq4nl {~ qs 17 b. 15
@@ -105,18 +93,15 @@ iq4_nl_decode =: 3 : 0
 NB. ---- native integer / float types ----
 
 i8_decode =: 3 : 0
-  ne =. > 0 { y
   b =. u8 > 1 { y
   , (b - 256 * b > 127)
 )
 
 i16_decode =: 3 : 0
-  ne =. > 0 { y
   , (_1) 3!:4 > 1 { y
 )
 
 i32_decode =: 3 : 0
-  ne =. > 0 { y
   , (_2) 3!:4 > 1 { y
 )
 
@@ -126,7 +111,6 @@ u32_decode =: 3 : 0
 )
 
 i64_decode =: 3 : 0
-  ne =. > 0 { y
   , (_3) 3!:4 > 1 { y
 )
 
@@ -193,10 +177,8 @@ q6k_build =: 3 : 0
 q6k_map =: q6k_build ''
 
 q2_K_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,84) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,84) $ > 1 { y
   scales =. u8 (0 + i.16) {"1 rows
   qs =. u8 (16 + i.64) {"1 rows
   d =. f16_load (<nb), <(, (80 + i.2) {"1 rows)
@@ -213,10 +195,8 @@ q2_K_decode =: 3 : 0
 )
 
 q3_K_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,110) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,110) $ > 1 { y
   hm =. u8 (0 + i.32) {"1 rows
   qs =. u8 (32 + i.64) {"1 rows
   sc12 =. (96 + i.12) {"1 rows   NB. raw chars for 3!:4
@@ -252,10 +232,8 @@ q3_K_decode =: 3 : 0
 )
 
 q4_K_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,144) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,144) $ > 1 { y
   qs =. u8 (16 + i.128) {"1 rows
   sc12 =. u8 (4 + i.12) {"1 rows
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
@@ -281,10 +259,8 @@ q4_K_decode =: 3 : 0
 )
 
 q5_K_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,176) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,176) $ > 1 { y
   ql =. u8 (48 + i.128) {"1 rows
   qh =. u8 (16 + i.32) {"1 rows
   sc12 =. u8 (4 + i.12) {"1 rows
@@ -315,10 +291,8 @@ q5_K_decode =: 3 : 0
 )
 
 q6_K_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,210) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,210) $ > 1 { y
   ql =. u8 (0 + i.128) {"1 rows
   qh =. u8 (128 + i.64) {"1 rows
   sc =. u8 (192 + i.16) {"1 rows
@@ -341,10 +315,8 @@ q6_K_decode =: 3 : 0
 )
 
 q8_K_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,292) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,292) $ > 1 { y
   d =. f32_decode (<nb), <(, (i.4) {"1 rows)
   qs =. u8 (4 + i.256) {"1 rows
   qs =. qs - 256 * qs > 127
@@ -464,10 +436,8 @@ iq1m_idxmap =: iq1m_map ''
 NB. ---- IQ decoders ----
 
 iq4_xs_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,136) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,136) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   scales_h =. 0 (3!:4) , (2 + i.2) {"1 rows        NB. uint16 (nb,)
   scales_l =. u8 (4 + i.4) {"1 rows                NB. (nb,4)
@@ -491,10 +461,8 @@ iq4_xs_decode =: 3 : 0
 )
 
 iq2_xxs_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,66) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,66) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   qsc =. (2 + i.64) {"1 rows                       NB. chars (nb,64)
   qn =. u8 qsc                                     NB. (nb,64)
@@ -516,10 +484,8 @@ iq2_xxs_decode =: 3 : 0
 )
 
 iq2_xs_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,74) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,74) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   qs16 =. (nb,32) $ 0 (3!:4) , (2 + i.64) {"1 rows   NB. uint16 (nb,32)
   sc =. u8 (66 + i.8) {"1 rows                       NB. (nb,8)
@@ -543,10 +509,8 @@ iq2_xs_decode =: 3 : 0
 )
 
 iq2_s_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,82) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,82) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   qn =. u8 (2 + i.64) {"1 rows                       NB. (nb,64)
   qh =. u8 (66 + i.8) {"1 rows                       NB. (nb,8)
@@ -575,10 +539,8 @@ iq2_s_decode =: 3 : 0
 )
 
 iq3_xxs_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,98) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,98) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   qn =. u8 (2 + i.64) {"1 rows                        NB. (nb,64)
   sasc =. (66 + i.32) {"1 rows                        NB. chars (nb,32)
@@ -603,10 +565,8 @@ iq3_xxs_decode =: 3 : 0
 )
 
 iq3_s_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,110) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,110) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   qn =. u8 (2 + i.64) {"1 rows                        NB. (nb,64)
   qh =. u8 (66 + i.8) {"1 rows                        NB. (nb,8)
@@ -641,10 +601,8 @@ iq3_s_decode =: 3 : 0
 )
 
 iq1_s_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,50) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,50) $ > 1 { y
   d =. f16_load (<nb), <(, (i.2) {"1 rows)
   qn =. u8 (2 + i.32) {"1 rows                        NB. (nb,32)
   qh16 =. (nb,8) $ 0 (3!:4) , (34 + i.16) {"1 rows     NB. uint16 (nb,8)
@@ -664,10 +622,8 @@ iq1_s_decode =: 3 : 0
 )
 
 iq1_m_decode =: 3 : 0
-  ne =. > 0 { y
-  s =. > 1 { y
-  nb =. ne % 256
-  rows =. (nb,56) $ s
+  nb =. (> 0 { y) % 256
+  rows =. (nb,56) $ > 1 { y
   qn =. u8 (0 + i.32) {"1 rows                        NB. (nb,32) qs
   qh =. u8 (32 + i.16) {"1 rows                        NB. (nb,16) qh
   sc16 =. (nb,4) $ 0 (3!:4) , (48 + i.8) {"1 rows      NB. uint16 (nb,4) scales
@@ -698,10 +654,9 @@ NB. y = <etype; ne; <slice>> -> (ne,) float64. Unverified/absent types fall
 NB. back to zeros (no real GGUF file carries them). 2..29 quant via the
 NB. *_decode verbs; native 0/1/28/30 via gguf decoders; 24..27 via i*_decode.
 decode_tensor_flat =: 3 : 0
-  et =. > 0 { y
   ne =. > 1 { y
   s  =. > 2 { y
-  select. et
+  select. > 0 { y
   case. 0  do. f32_decode (<ne) , <s
   case. 1  do. f16_decode (<ne) , <s
   case. 28 do. f64_decode (<ne) , <s
