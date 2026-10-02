@@ -1232,4 +1232,48 @@ from PLAN.md (which keeps only planned work). Original text lived in PLAN.md's
    we already have shared-skeleton per-arch modules (`models/*.ijs`) + unified
    `gen_loop_core`/`gen_loop_batch` dispatch by `llm_arch` with
    `general.architecture` KV detection (more robust than filename substring
-   matching). No change.
+    matching). No change.
+
+## Boxing/copy elimination — generation hot paths (2026-10)
+
+A focused pass on the per-token/per-layer generation loops, eliminating needless
+value copying and boxing. All changes verified bit-exact vs `llama-cpp-python`
+(argmax pins) and batch==single (`tests/j/test_batched.ijs`); lint load-probe
+gate green throughout.
+
+- **`*_run_blocks`/`_bd` single + batched decode `bf_pre`** — the layer loop
+  re-boxed `(<pos), (<mi)` (gemma3: `+(<swa)`) every layer; pre-boxed once as
+  `bf_pre`, the loop only boxes `(<block_data), (<b)`.
+- **`*_block_forward_b`/`_bp` arg-order restructure** — reordered the batched
+  prefill block-forward `y`-args so the layer-invariant boxes are contiguous,
+  then `*_run_blocks_b`/`_bp` precompute `bfb_pre` once (llama/qwen2/qwen3:
+  `(<mi), (<start_pos), <rope` for `_b`; `(<pos), (<mi), <lens` for `_bp`;
+  gemma3 groups `(<swa)` in). Granite/ernie alias llama.
+- **qwen35/lfm2 batched run_blocks** — same `bf_pre`/`bfb_pre` hoist across the
+  SSM/attention (conv/attention) branch: `_bd` uses `((<pos), (<mi))`, `_b`
+  uses `<mi` (index 1 in both branches).
+- **`gen_loop_batch` `rnn_pre`** — pre-boxed `(< mi_rms_eps mi), (<output_norm_w)`
+  once per decode loop (was re-boxed every step).
+- **`llm_box` hoist** — `gen_loop_core`/`gen_loop_batch` re-boxed `(<llm)` per
+  chunk (prefill `rb_b`/`rb_bp`) and per decode step (`rb`/`rb_bd`); boxed once
+  as `llm_box` and reused.
+- **block_forward pass-`y`-through (single + `_bd`)** — `llama_block_forward`/
+  `_bd` (qwen2/qwen3/gemma3; granite/ernie alias) unpacked `y` (already pre-boxed
+  by `bf_pre`) then RE-BOXED `(<pos), (<mi)` for the attention call. The `y`
+  order already matched attention's expected order, so they now pass `y`
+  directly — the layer loop only boxes `(<block_data), (<b)` once.
+- **`*_attention_b`/`_bp` reorder + pass-through** — the `_b`/`_bp` block-forwards
+  had an order mismatch with their attention verbs (`y` = `block_data, b, mi, …`
+  vs attention expecting `block_data, mi, layer, …`). Reordered `*_attention_b`/
+  `_bp` unpack to `(block_data, layer, mi, …)` so `*_block_forward_b`/`_bp`
+  pass `y` directly (gemma3: `block_data, layer, swa, mi, …`).
+- **qwen35/lfm2 attention pass-through** — `qw35_block_forward_a_b`/`_a_bd`/`_a_bp`
+  and `lf2_block_forward_b`/`_bp`/`_bd` passed `y` directly to their attention
+  verbs (order already matched); the SSM/conv siblings use `y` directly already.
+
+Deferred (recorded in PLAN.md "Deferred Optimization Opportunities"): per-layer
+`mi` dict-lookup hoisting (measured ~0.38μs/lookup, ≈0.1-0.5% of a decode step —
+genuinely marginal, and invasive/conflicting with the pass-through), the
+`kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops
+(kernels already tacit; loops stay explicit — the `u^:v^:_`/`u^:n` idioms are
+rank-0 slow here).

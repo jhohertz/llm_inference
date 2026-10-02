@@ -33,6 +33,38 @@ resolved (done / adopted-in-simpler-form / evaluated-and-kept). They are
 recorded in **docs/HISTORICAL.md** ("jllama study — adopted/evaluated"); this
 section is kept only as a pointer — no planned work remains here.
 
+## Deferred Optimization Opportunities
+
+Found during the 2026-10 boxing/copy-elimination pass (see HISTORICAL.md
+"Boxing/copy elimination — generation hot paths (2026-10)"). Measured/assessed,
+left for a later pass — each is real but marginal/invasive relative to the
+matmul-dominated decode:
+
+- **Per-layer `mi` dict-lookup hoisting** (highest-value of the three): the
+  `mi_rms_eps mi` / `mi_attn_scale mi` / `mi_resid_scale mi` /
+  `mi_cos_tab mi` / `mi_sin_tab mi` accessors are hash-looked-up EVERY layer
+  inside `*_attention`/`*_block_forward` (~5-7 lookups × n_layers × tokens;
+  ≈1-2% of a decode step). **Measured 2026-10**: `mi_rms_eps mi` ≈ 0.38μs (vs
+  ~68μs for a 256×768 matmul); only ~2-4 of these lookups fire per layer, so
+  the whole hoist saves ~30-50μs per decode step against a step that runs
+  milliseconds of matmuls — **≈0.1-0.5%, genuinely marginal**. Fix = compute
+  once in `*_run_blocks` and thread the scalars/tables through the `y`
+  signatures — invasive (changes `*_attention`/`*_block_forward` arg order
+  again, all 8 arches + granite/ernie aliases) AND conflicts with the
+  pass-`y`-through landed in the same pass (adding boxes to `y` shifts the
+  unpack indices). Recommendation: keep deferred; revisit only if a profile
+  shows the lookups as a hotspot.
+- **`kv_write` re-box in single-token `*_attention`**: after `'block_data pos
+  mi layer' =. y`, `kv_write ((<layer), (<pos), (<K), (<V))` re-boxes layer/pos
+  that were already boxed in `y`. Fix = pass `(3{y), (1{y)` (index-based) to
+  reuse the existing boxes (2 boxes × n_layers × tokens; readability cost —
+  index-based arg selection is opaque vs the named spread).
+- **Tacit conversion**: the hot kernels (`rms_norm`, `rms_norm_rows`,
+  `linear_r`) are already tacit; the batched loops stay explicit `while.`
+  because the candidate `u^:v^:_` DoWhile / `u^:n` Power / `m@.v` idioms are
+  rank-0 slow for these per-layer/per-token loops — keep explicit unless a
+  measured win appears.
+
 ## Key Reference
 
 - llama.cpp: `llama.cpp/` checkout (`src/models/*.cpp`, `src/llama-graph.cpp`)
