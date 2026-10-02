@@ -170,8 +170,8 @@ NB. ---- Batched attention (prompt prefill, GQA, causal) ----
 NB. x = hidden (L, emb); y = <block_data; mi; layer>
 llama_attention_b =: 4 : 0
   block_data =. > 0 { y
-  mi =. > 1 { y
-  layer =. > 2 { y
+  layer =. > 1 { y
+  mi =. > 2 { y
   start_pos =. > 3 { y
   rope =. > 4 { y
   L =. {. $ x
@@ -294,7 +294,7 @@ llama_block_forward_b =: 4 : 0
   mi =. > 2 { y
   start_pos =. > 3 { y
   rope =. > 4 { y
-  attn_result =. hidden llama_attention_b ((<block_data) , (<mi) , (<layer) , (<start_pos) , <rope)
+  attn_result =. hidden llama_attention_b y
   attn_out =. > 0 { attn_result
   attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + hidden
@@ -512,9 +512,9 @@ NB. x = hidden (B, c, emb); y = <block_data; pos; mi; layer>
 llama_attention_bp =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
-  mi =. > 2 { y
-  layer =. > 3 { y
+  layer =. > 1 { y
+  pos =. > 2 { y
+  mi =. > 3 { y
   NB. Optional 5th arg: per-sequence REAL lengths (for padding masking).  If
   NB. provided, keys at positions >= lens[b] (padding) are excluded from
   NB. attention; if '' (empty), the mask is purely causal (equal-length).
@@ -678,7 +678,7 @@ llama_block_forward_bp =: 4 : 0
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
-  attn_result =. hidden llama_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_result =. hidden llama_attention_bp y
   attn_out =. > 0 { attn_result   NB. (B, c, emb)
   attn_out =. attn_out * mi_resid_scale mi
   sa_out =. attn_out + hidden

@@ -246,9 +246,9 @@ NB. start_pos=0 -> fresh (no prefix); start_pos>0 -> RESUME: attends to the cach
 NB. (positions 0..start_pos-1) PLUS this batch, and writes the batch K/V at start_pos.
 gem3_attention_b =: 4 : 0
   block_data =. > 0 { y
-  swa =. > 1 { y
-  mi =. > 2 { y
-  layer =. > 3 { y
+  layer =. > 1 { y
+  swa =. > 2 { y
+  mi =. > 3 { y
   start_pos =. > 4 { y
   L =. {. $ x
   n_embd =. {: $ x
@@ -378,7 +378,7 @@ gem3_block_forward_b =: 4 : 0
   mi =. > 3 { y
   start_pos =. > 4 { y
   
-  attn_result =. hidden gem3_attention_b (<block_data) , (<swa) , (<mi) , (<layer) , (<start_pos)
+  attn_result =. hidden gem3_attention_b y
   attn_out =. > 0 { attn_result
   
   sa_out =. attn_out + hidden
@@ -446,10 +446,10 @@ NB. pos; mi; layer>.
 gem3_attention_bp =: 4 : 0
   hidden =. x   NB. (B, c, emb)
   block_data =. > 0 { y
-  swa =. > 1 { y
-  pos =. > 2 { y
-  mi =. > 3 { y
-  layer =. > 4 { y
+  layer =. > 1 { y
+  swa =. > 2 { y
+  pos =. > 3 { y
+  mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
   B =. {. $ hidden
@@ -590,7 +590,7 @@ gem3_block_forward_bp =: 4 : 0
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
-  attn_result =. hidden gem3_attention_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_result =. hidden gem3_attention_bp y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   ff_norm_w =. gem3_bd_ff_norm block_data
