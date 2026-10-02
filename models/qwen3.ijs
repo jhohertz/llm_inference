@@ -330,9 +330,11 @@ qw3_run_blocks =: 4 : 0
   end.
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
+  bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state qw3_block_forward ((<block_data) , (<pos) , (<mi) , (<b))
+    result =. state qw3_block_forward ((<block_data) , bf_pre , <b)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -541,9 +543,11 @@ qw3_run_blocks_bd =: 4 : 0
   end.
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
+  bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state qw3_block_forward_bd ((<block_data) , (<pos) , (<mi) , (<b))
+    result =. state qw3_block_forward_bd ((<block_data) , bf_pre , <b)
     state =. > 0 { result
     b =. b + 1
   end.

@@ -430,23 +430,28 @@ gen_loop_core =: 4 : 0
   NB. the last prefill hidden WITHOUT re-embedding (the old code double-
   NB. processed the last prompt token); later steps embed the previous token
   NB. and run blocks at cur_pos. All arches share output_head (rms_norm + lm_head).
+  NB. Pre-box the generation-invariant args ONCE (output_head/sample_from prefixes,
+  NB. llm box) so the per-token loop only boxes the varying piece.
+  oh_pre =. ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w))
+  sf_pre =. ((<temp) , (<k) , (<p) , (<min_p))
+  llm_box =. <llm
   gen_step =. 0
   gen_s =. 0
   while. gen_step < max_steps do.
     if. cur_pos >: eff_seq do. break. end.
     if. 0 = gen_step do.
-      logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
+      logits =. output_head (oh_pre , <hidden)
       logits =. logits % logit_div
     else.
       last_tok =. > {: output
       hidden =. scale * |: (last_tok {"1 emb_w)
-      gen_s =. gen_s + 6!:2 'result =. hidden rb (<llm) , <cur_pos'
+      gen_s =. gen_s + 6!:2 'result =. hidden rb (llm_box , <cur_pos)'
       hidden =. > 0 { result
-      logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
+      logits =. output_head (oh_pre , <hidden)
       logits =. logits % logit_div
       cur_pos =. cur_pos + 1
     end.
-        pred =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
+        pred =. sample_from (sf_pre , <logits)
     if. gen_cb_on_g do. pred =. cb pred end.
     if. (stop_list i. pred) < # stop_list do. break. end.    output =. output , <pred
     gen_step =. gen_step + 1
@@ -671,6 +676,9 @@ gen_loop_batch =: 4 : 0
   end.
 
   NB. Batched decode loop: embed B last tokens, one forward pass, sample B.
+  NB. Pre-box the generation-invariant sample_from prefix once (per-token loop
+  NB. only boxes the per-sequence logits slice).
+  sf_pre =. ((<temp) , (<k) , (<p) , (<min_p))
   gen_step =. 0
   gen_s =. 0
   while. gen_step < max_steps do.
@@ -699,7 +707,7 @@ gen_loop_batch =: 4 : 0
     b =. 0
     while. b < B do.
       if. -. b { done do.
-        pred =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <(b { logits))
+        pred =. sample_from (sf_pre , <(b { logits))
         if. (stop_list i. pred) < # stop_list do.
           done =. 1 b} done
         else.
