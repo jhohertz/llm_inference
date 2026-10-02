@@ -225,24 +225,18 @@ NB. ---- Output head: rms_norm + lm_head projection ----
 NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>  (hidden is the (emb,) row;
 NB. the lm_head weight is TRANSPOSED-canonical (emb, vocab) — hidden (+/ .*) efw).
 output_head =: 3 : 0
-  eps =. > 0 { y
-  onw =. > 1 { y
-  efw =. > 2 { y
-  hidden =. rms_norm ((<eps) , (<onw) , <(> 3 { y))
-  hidden (+/ .* ) efw
+  NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>.  The caller pre-boxes
+  NB. the invariant (<rms_eps), (<output_norm_w), (<emb_w_final); reuse those
+  NB. boxes directly (0 1 { y) instead of open+reboxing them for rms_norm.
+  hidden =. rms_norm ((0 1 { y) , <(> 3 { y))
+  hidden (+/ .* ) > 2 { y
 )
 
 NB. ---- Sample from logits ----
-NB. y = <temp; k; p; min_p; logits>
+NB. y = <temp; k; p; min_p; logits>  (temp/k/p/min_p pre-boxed by the caller;
+NB. sample_params_pack opens the boxed params list directly).
 sample_from =: 3 : 0
-  temp =. > 0 { y
-  k =. > 1 { y
-  p =. > 2 { y
-  min_p =. > 3 { y
-  logits =. > 4 { y
-  flat =. temp , k , p , min_p
-  params =. <"0 flat
-  params sampler_sample logits
+  (0 1 2 3 { y) sampler_sample (> 4 { y)
 )
 
 NB. ---- Unified generation loop (all arches, fresh + resume) ----
