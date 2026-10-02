@@ -290,8 +290,8 @@ NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos; rope>
 llama_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  mi =. > 1 { y
-  layer =. > 2 { y
+  layer =. > 1 { y
+  mi =. > 2 { y
   start_pos =. > 3 { y
   rope =. > 4 { y
   attn_result =. hidden llama_attention_b ((<block_data) , (<mi) , (<layer) , (<start_pos) , <rope)
@@ -371,11 +371,13 @@ llama_run_blocks_b =: 4 : 0
   NB. reshape (n_groups,L,ctx)$mask_2d is ~100x slower); scaled at subtract.
   mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
   rope =. (<cos_all) , (<sin_all) , (<idx) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
+  NB. (<mi), (<start_pos), <rope are layer-invariant — box once, reuse per layer.
+  bfb_pre =. ((<mi) , (<start_pos) , <rope)
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state llama_block_forward_b ((<block_data) , (<mi) , (<b) , (<start_pos) , <rope)
+    result =. state llama_block_forward_b ((<block_data) , (<b) , bfb_pre)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -668,9 +670,9 @@ NB. matmuls are batched across B*c rows (amortized).  Returns <(B, c, emb)>.
 llama_block_forward_bp =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
-  mi =. > 2 { y
-  layer =. > 3 { y
+  layer =. > 1 { y
+  pos =. > 2 { y
+  mi =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
   B =. {. $ hidden
@@ -707,11 +709,13 @@ llama_run_blocks_bp =: 4 : 0
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
+  NB. (<pos), (<mi), <lens are layer-invariant — box once, reuse per layer.
+  bfb_pre =. ((<pos) , (<mi) , <lens)
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state llama_block_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+    result =. state llama_block_forward_bp ((<block_data) , (<b) , bfb_pre)
     state =. > 0 { result
     b =. b + 1
   end.

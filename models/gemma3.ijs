@@ -373,11 +373,11 @@ NB. hidden = (L, emb); y = <block_data; swa; mi; layer; start_pos>
 gem3_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  swa =. > 1 { y
-  mi =. > 2 { y
-  layer =. > 3 { y
+  layer =. > 1 { y
+  swa =. > 2 { y
+  mi =. > 3 { y
   start_pos =. > 4 { y
-
+  
   attn_result =. hidden gem3_attention_b (<block_data) , (<swa) , (<mi) , (<layer) , (<start_pos)
   attn_out =. > 0 { attn_result
   
@@ -422,14 +422,16 @@ gem3_run_blocks_b =: 4 : 0
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
 
-  b =. 0
-  block_data_list =. llm_block_data llm
-  while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state gem3_block_forward_b (<block_data) , (<swa) , (<mi) , (<b) , (<start_pos)
+   b =. 0
+   block_data_list =. llm_block_data llm
+   NB. (<swa), (<mi), (<start_pos) are layer-invariant — box once, reuse per layer.
+   bfb_pre =. (<swa) , (<mi) , (<start_pos)
+   while. b < block_count do.
+     block_data =. > b { block_data_list
+    result =. state gem3_block_forward_b (<block_data) , (<b) , bfb_pre
     state =. > 0 { result
-    b =. b + 1
-  end.
+     b =. b + 1
+   end.
 
   <state
 )
@@ -579,10 +581,10 @@ NB. x = hidden (B, c, emb); y = <block_data; swa; pos; mi; layer>.  Returns <(B,
 gem3_block_forward_bp =: 4 : 0
   hidden =. x   NB. (B, c, emb)
   block_data =. > 0 { y
-  swa =. > 1 { y
-  pos =. > 2 { y
-  mi =. > 3 { y
-  layer =. > 4 { y
+  layer =. > 1 { y
+  swa =. > 2 { y
+  pos =. > 3 { y
+  mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
   B =. {. $ hidden
@@ -624,14 +626,16 @@ gem3_run_blocks_bp =: 4 : 0
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
-  b =. 0
-  block_data_list =. llm_block_data llm
-  while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<b) , <lens)
+   b =. 0
+   block_data_list =. llm_block_data llm
+   NB. (<swa), (<pos), (<mi), <lens are layer-invariant — box once, reuse per layer.
+   bfb_pre =. (<swa) , (<pos) , (<mi) , <lens
+   while. b < block_count do.
+     block_data =. > b { block_data_list
+    result =. state gem3_block_forward_bp (<block_data) , (<b) , bfb_pre
     state =. > 0 { result
-    b =. b + 1
-  end.
+     b =. b + 1
+   end.
   <state
 )
 
