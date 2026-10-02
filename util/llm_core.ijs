@@ -375,6 +375,8 @@ gen_loop_core =: 4 : 0
   end.
   L =. # tok_list
   output =. <"0 tok_list
+  NB. Box the llm noun once — reused by the prefill rb_b calls and decode rb.
+  llm_box =. <llm
 
   if. '' -: start_pos do.
     NB. FRESH: create zeroed cache, then batched prefill the prompt in CHUNKS.
@@ -399,7 +401,7 @@ gen_loop_core =: 4 : 0
       c =. chunk_sz <. L - i
       seg =. (i + i. c) { tok_list
       emb_seg =. scale * |: (seg {"1 emb_w)
-      t =. 6!:2 'result_b =. emb_seg rb_b ((<llm) , <i)'
+      t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <i)'
       pre_s =. pre_s + t
       h_b =. > 0 { result_b
       hidden =. > (c - 1) { h_b
@@ -414,7 +416,7 @@ gen_loop_core =: 4 : 0
     NB. incremental loop is replaced: rb_b is now cache-prefix aware.)
     cur_pos =. start_pos
     emb_all =. scale * |: (tok_list {"1 emb_w)
-    pre_s =. 6!:2 'result_b =. emb_all rb_b ((<llm) , <start_pos)'
+    pre_s =. 6!:2 'result_b =. emb_all rb_b (llm_box , <start_pos)'
     h_b =. > 0 { result_b
     hidden =. > (L - 1) { h_b
     cur_pos =. cur_pos + L
@@ -428,7 +430,6 @@ gen_loop_core =: 4 : 0
   NB. llm box) so the per-token loop only boxes the varying piece.
   oh_pre =. ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w))
   sf_pre =. ((<temp) , (<k) , (<p) , (<min_p))
-  llm_box =. <llm
   gen_step =. 0
   gen_s =. 0
   while. gen_step < max_steps do.
@@ -567,6 +568,8 @@ gen_loop_batch =: 4 : 0
   last_toks =. ''
   pre_s =. 0
   pre_toks =. 0
+  NB. Box the llm noun once — reused by the prefill rb_b/rb_bp and decode rb_bd.
+  llm_box =. <llm
   if. rb_bp_flag do.
     NB. ---- Batched prefill (B sequences in lockstep, padded, lens-masked) ----
     NB. Pad every sequence to the longest prompt length, then process ALL B
@@ -611,7 +614,7 @@ gen_loop_batch =: 4 : 0
         lens_cur =. (p + (c <. ((i { lens_b) - p))) i} lens_cur
         i =. i + 1
       end.
-      t =. 6!:2 'result_b =. emb_seg rb_bp ((<llm) , (<(B $ p)) , <lens_cur)'
+      t =. 6!:2 'result_b =. emb_seg rb_bp (llm_box , (<(B $ p)) , <lens_cur)'
       pre_s =. pre_s + t
       h_b =. > 0 { result_b   NB. (B, c, emb)
       i =. 0
@@ -651,7 +654,7 @@ gen_loop_batch =: 4 : 0
         c =. prefill_chunk_sz <. L - j
         seg =. (j + i. c) { tok_list
         emb_seg =. scale * |: (seg {"1 emb_w)
-        t =. 6!:2 'result_b =. emb_seg rb_b ((<llm) , <j)'
+        t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <j)'
         pre_s =. pre_s + t
         h_b =. > 0 { result_b
         hidden =. > (c - 1) { h_b
@@ -670,9 +673,10 @@ gen_loop_batch =: 4 : 0
   end.
 
   NB. Batched decode loop: embed B last tokens, one forward pass, sample B.
-  NB. Pre-box the generation-invariant sample_from prefix once (per-token loop
-  NB. only boxes the per-sequence logits slice).
+  NB. Pre-box the generation-invariant prefixes once (per-step loop only boxes
+  NB. the varying hidden/logits slice): sample_from params + rms_norm_rows norm.
   sf_pre =. ((<temp) , (<k) , (<p) , (<min_p))
+  rnn_pre =. ((< mi_rms_eps mi) , (<output_norm_w))
   gen_step =. 0
   gen_s =. 0
   while. gen_step < max_steps do.
@@ -692,10 +696,10 @@ gen_loop_batch =: 4 : 0
       NB. token's K/V into the cache and shift the outputs by one step.
     else.
       hidden =. scale * |: (last_toks {"1 emb_w)   NB. (B, emb)
-      gen_s =. gen_s + 6!:2 'result =. hidden rb_bd (<llm) , <cur_pos'
+      gen_s =. gen_s + 6!:2 'result =. hidden rb_bd (llm_box , <cur_pos)'
       hidden =. > 0 { result
     end.
-    hidden_n =. rms_norm_rows ((< mi_rms_eps mi) , (<output_norm_w) , <hidden)
+    hidden_n =. rms_norm_rows (rnn_pre , <hidden)
     logits =. hidden_n (+/ .*) emb_w   NB. (B, vocab) — emb_w transposed (emb, vocab)
     logits =. logits % logit_div
     b =. 0
