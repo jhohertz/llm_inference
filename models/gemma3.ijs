@@ -832,7 +832,7 @@ gem3_run_blocks_bd =: 4 : 0
   bf_pre =. (<pos) , (<swa) , (<mi)
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bd ((<block_data) , bf_pre , (<b)
+    result =. state gem3_block_forward_bd ((<block_data) , bf_pre , <b)
     state =. > 0 { result
     b =. b + 1
   end.

@@ -85,7 +85,7 @@ test_swa =: 3 : 0
     single_lg =. > row_idx { sgl
     bt =. 5 {. \: batched_lg
     st =. 5 {. \: single_lg
-    assert_test (allclose single_lg batched_lg) ; ('pos ' , (": pos) , ': single == batched (SWA single-token mask)')
+    assert_test (single_lg allclose batched_lg) ; ('pos ' , (": pos) , ': single == batched (SWA single-token mask)')
     assert_test (bt -: ref_toks) ; ('pos ' , (": pos) , ': batched top-5 tokens == reference (SWA batched mask)')
     assert_test (st -: ref_toks) ; ('pos ' , (": pos) , ': single top-5 tokens == reference')
     assert_test (tol > >./ | (bt { batched_lg) - ref_vals) ; ('pos ' , (": pos) , ': batched top-5 logits within ' , (": tol) , ' of reference')
