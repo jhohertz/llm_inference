@@ -253,8 +253,7 @@ NB. Used by Gemma models for logit scaling
 NB. Dyadic: scale softcap x — scale on left, value on right
 softcap =: 4 : 0
   scale =. x
-  z =. y % scale
-  ez2 =. ^ (2 * z)
+  ez2 =. ^ (2 * y % scale)
   (ez2 - 1) % (ez2 + 1) * scale
 )
 
