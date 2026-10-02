@@ -457,12 +457,14 @@ lf2_run_blocks_b =: 4 : 0
   end.
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. <mi is layer-invariant — box once, reuse per layer (index 1 in both branches).
+  bf_pre =. <mi
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_b ((<block_data) , (<mi) , (<b))
+      result =. state lf2_conv_forward_b ((<block_data) , bf_pre , <b)
     else.
-      result =. state lf2_block_forward_b ((<block_data) , (<mi) , (<b) , (<start_pos))
+      result =. state lf2_block_forward_b ((<block_data) , bf_pre , (<b) , (<start_pos))
     end.
     state =. > 0 { result
     b =. b + 1
@@ -919,12 +921,14 @@ lf2_run_blocks_bd =: 4 : 0
   end.
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
+  bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_bd ((<block_data) , (<pos) , (<mi) , (<b))
+      result =. state lf2_conv_forward_bd ((<block_data) , bf_pre , <b)
     else.
-      result =. state lf2_block_forward_bd ((<block_data) , (<pos) , (<mi) , (<b))
+      result =. state lf2_block_forward_bd ((<block_data) , bf_pre , <b)
     end.
     state =. > 0 { result
     b =. b + 1
