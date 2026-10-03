@@ -452,6 +452,7 @@ gem3_attention_bp =: 4 : 0
   mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
+  rope =. > 6 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -488,21 +489,23 @@ gem3_attention_bp =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
   K =. (B, c, n_heads_kv, head_dim) $ , Kf
 
-  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c (PER-LAYER cos/sin tables)
-  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
-  cos_all =. pos_bc_flat { gem3_bd_cos_tab block_data   NB. (B*c, half)
-  sin_all =. pos_bc_flat { gem3_bd_sin_tab block_data
+  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c. cos/sin tables + expansions
+  NB. are layer-invariant (identical across layers; depend only on pos) —
+  NB. hoisted once in run_blocks_bp, threaded through y as <cos_all; sin_all;
+  NB. cos_exp; sin_exp; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope   NB. (B*c, half)
+  sin_all =. > 1 { rope
   Qa =. half {. "1 Q   NB. (B, c, n_heads, half)
   Qb =. half }. "1 Q
-  cos_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
-  sin_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_exp =. > 2 { rope
+  sin_exp =. > 3 { rope
   Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
   Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
   Q =. (B, c, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
   Ka =. half {. "1 K   NB. (B, c, n_heads_kv, half)
   Kb =. half }. "1 K
-  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
-  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
   Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
   K =. (B, c, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
@@ -587,6 +590,7 @@ gem3_block_forward_bp =: 4 : 0
   mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
+  rope =. > 6 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -619,6 +623,7 @@ gem3_run_blocks_bp =: 4 : 0
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
@@ -626,14 +631,27 @@ gem3_run_blocks_bp =: 4 : 0
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (identical across
+  NB. layers; depend only on pos) — compute ONCE per chunk, thread through.
+  B =. {. $ state
+  c =. 1 { $ state
+  half =. <. head_dim % 2
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  rope =. (<cos_all) , (<sin_all) , (<cos_exp) , (<sin_exp) , (<cos_expk) , (<sin_expk)
    b =. 0
    block_data_list =. llm_block_data llm
    NB. (<swa), (<pos), (<mi), <lens are layer-invariant — box once, reuse per layer.
    bfb_pre =. (<swa) , (<pos) , (<mi) , <lens
    while. b < block_count do.
      block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bp (<block_data) , (<b) , bfb_pre
-    state =. > 0 { result
+     result =. state gem3_block_forward_bp (<block_data) , (<b) , bfb_pre , <rope
+     state =. > 0 { result
      b =. b + 1
    end.
   <state
@@ -649,6 +667,7 @@ gem3_attention_bd =: 4 : 0
   swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
+  rope =. > 5 { y
   B =. {. $ x
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
@@ -681,18 +700,21 @@ gem3_attention_bd =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
   K =. (B, n_heads_kv, head_dim) $ ,Kf
 
-  NB. RoPE — batched, table-based (NEOX), PER-LAYER cos/sin tables
-  cos_all =. pos { gem3_bd_cos_tab block_data    NB. (B, half)
-  sin_all =. pos { gem3_bd_sin_tab block_data
-  cos_exp =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_exp =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  NB. RoPE — batched, table-based (NEOX). cos/sin tables + expansions are
+  NB. layer-invariant (identical across layers; depend only on pos) — hoisted
+  NB. once in run_blocks_bd, threaded through y as <cos_all; sin_all; cos_exp;
+  NB. sin_exp; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope    NB. (B, half)
+  sin_all =. > 1 { rope
+  cos_exp =. > 2 { rope
+  sin_exp =. > 3 { rope
   Qa =. half {. "1 Q
   Qb =. half }. "1 Q
   Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
   Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
   Q =. (B, n_heads, head_dim) $ ,(Qa_out ,"1 Qb_out)
-  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka =. half {. "1 K
   Kb =. half }. "1 K
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
@@ -794,6 +816,7 @@ gem3_block_forward_bd =: 4 : 0
   swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
+  rope =. > 5 { y
   attn_result =. hidden gem3_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
@@ -819,6 +842,7 @@ gem3_run_blocks_bd =: 4 : 0
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
@@ -826,13 +850,24 @@ gem3_run_blocks_bd =: 4 : 0
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (identical across
+  NB. layers; depend only on pos) — compute ONCE per step, thread through.
+  B =. {. $ state
+  half =. <. head_dim % 2
+  cos_all =. pos { mi_cos_tab mi    NB. (B, half)
+  sin_all =. pos { mi_sin_tab mi
+  cos_exp =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_exp =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<cos_exp) , (<sin_exp) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
   NB. (<pos), (<swa), (<mi) are layer-invariant — box once, reuse per layer.
   bf_pre =. (<pos) , (<swa) , (<mi)
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bd ((<block_data) , bf_pre , <b)
+    result =. state gem3_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
