@@ -1118,6 +1118,7 @@ lf2_generate_batch =: 4 : 0
   p =. > 4 { args
   min_p =. > 5 { args
   B =. # prompts
+  llm_box =. <llm
   prompts_tok =. ''
   prompts_len =. ''
   i =. 0
@@ -1125,7 +1126,7 @@ lf2_generate_batch =: 4 : 0
     text =. > i { prompts
     messages =. <('user') ; text
     prompt =. lf2_chat_prompt messages
-    tokens =. lf2_tokenize (<llm) , <prompt
+    tokens =. lf2_tokenize (llm_box , <prompt)
     tok_list =. , > tokens
     prompts_tok =. prompts_tok , <tok_list
     prompts_len =. prompts_len , <(# tok_list)
@@ -1139,7 +1140,7 @@ lf2_generate_batch =: 4 : 0
   while. i < B do.
     L =. > i { prompts_len
     gen =. (L) }. (> i { output)
-    answers =. answers , <(lf2_detokenize (<llm) , <gen)
+    answers =. answers , <(lf2_detokenize (llm_box , <gen))
     i =. i + 1
   end.
   answers
