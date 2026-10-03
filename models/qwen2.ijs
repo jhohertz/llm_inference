@@ -197,10 +197,12 @@ qw2_attention_b =: 4 : 0
   attn_norm_w =. qw2_bd_attn_norm block_data
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
-  NB. Separate Q,K,V batched projections
-  qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (L, n_heads*hd)
-  kv =. |: ((qw2_bd_attn_k block_data) (+/ .* ) |: hidden)   NB. (L, n_kv*hd)
-  vv =. |: ((qw2_bd_attn_v block_data) (+/ .* ) |: hidden)   NB. (L, n_kv*hd)
+  NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
+  NB. of the (L,emb) hidden were materializing 3 copies)
+  thin =. |: hidden
+  qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) thin)   NB. (L, n_heads*hd)
+  kv =. |: ((qw2_bd_attn_k block_data) (+/ .* ) thin)   NB. (L, n_kv*hd)
+  vv =. |: ((qw2_bd_attn_v block_data) (+/ .* ) thin)   NB. (L, n_kv*hd)
 
   NB. Qwen2: add Q/K/V biases (broadcast across L rows via reshape-cycles)
   qv =. qv + ((L , n_heads * head_dim) $ qw2_bd_q_bias block_data)
@@ -412,10 +414,12 @@ qw2_attention_bd =: 4 : 0
   attn_norm_w =. qw2_bd_attn_norm block_data
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
-  NB. Batched Q,K,V projections (weight-read amortized across B)
-  qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (B, n_heads*hd)
-  kv =. |: ((qw2_bd_attn_k block_data) (+/ .* ) |: hidden)   NB. (B, n_kv*hd)
-  vv =. |: ((qw2_bd_attn_v block_data) (+/ .* ) |: hidden)   NB. (B, n_kv*hd)
+  NB. Batched Q,K,V projections (weight-read amortized across B; |: hidden
+  NB. hoisted once — 3 transposes of the (B,emb) hidden were materializing 3 copies)
+  thin =. |: hidden
+  qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) thin)   NB. (B, n_heads*hd)
+  kv =. |: ((qw2_bd_attn_k block_data) (+/ .* ) thin)   NB. (B, n_kv*hd)
+  vv =. |: ((qw2_bd_attn_v block_data) (+/ .* ) thin)   NB. (B, n_kv*hd)
 
   NB. Qwen2: add Q/K/V biases (broadcast across B rows)
   qv =. qv + ((B , n_heads * head_dim) $ qw2_bd_q_bias block_data)
@@ -591,10 +595,12 @@ qw2_attention_bp =: 4 : 0
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
 
-  NB. Batched Q,K,V projections + biases
-  qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_heads*hd)
-  kv =. |: ((qw2_bd_attn_k block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_kv*hd)
-  vv =. |: ((qw2_bd_attn_v block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_kv*hd)
+  NB. Batched Q,K,V projections + biases (|: hidden_flat hoisted once — 3 transposes
+  NB. were materializing 3 copies)
+  thin =. |: hidden_flat
+  qv =. |: ((qw2_bd_attn_q block_data) (+/ .* ) thin)   NB. (B*c, n_heads*hd)
+  kv =. |: ((qw2_bd_attn_k block_data) (+/ .* ) thin)   NB. (B*c, n_kv*hd)
+  vv =. |: ((qw2_bd_attn_v block_data) (+/ .* ) thin)   NB. (B*c, n_kv*hd)
   qv =. qv + (((B*c) , n_heads * head_dim) $ qw2_bd_q_bias block_data)
   kv =. kv + (((B*c) , n_heads_kv * head_dim) $ qw2_bd_k_bias block_data)
   vv =. vv + (((B*c) , n_heads_kv * head_dim) $ qw2_bd_v_bias block_data)

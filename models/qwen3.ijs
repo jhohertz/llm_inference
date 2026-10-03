@@ -195,10 +195,12 @@ qw3_attention_b =: 4 : 0
   attn_norm_w =. qw3_bd_attn_norm block_data
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
-  NB. Separate Q,K,V batched projections
-  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (L, n_heads*hd)
-  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) |: hidden)   NB. (L, n_kv*hd)
-  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) |: hidden)   NB. (L, n_kv*hd)
+  NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
+  NB. of the (L,emb) hidden were materializing 3 copies)
+  thin =. |: hidden
+  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) thin)   NB. (L, n_heads*hd)
+  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) thin)   NB. (L, n_kv*hd)
+  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) thin)   NB. (L, n_kv*hd)
 
   Q =. (L, n_heads, head_dim) $ , qv
   K =. (L, n_heads_kv, head_dim) $ , kv
@@ -410,10 +412,12 @@ qw3_attention_bd =: 4 : 0
   attn_norm_w =. qw3_bd_attn_norm block_data
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
-  NB. Batched Q,K,V projections (weight-read amortized across B)
-  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (B, n_heads*hd)
-  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) |: hidden)   NB. (B, n_kv*hd)
-  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) |: hidden)   NB. (B, n_kv*hd)
+  NB. Batched Q,K,V projections (weight-read amortized across B; |: hidden
+  NB. hoisted once — 3 transposes of the (B,emb) hidden were materializing 3 copies)
+  thin =. |: hidden
+  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) thin)   NB. (B, n_heads*hd)
+  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) thin)   NB. (B, n_kv*hd)
+  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) thin)   NB. (B, n_kv*hd)
 
   Q =. (B, n_heads, head_dim) $ , qv
   K =. (B, n_heads_kv, head_dim) $ , kv
@@ -583,9 +587,12 @@ qw3_attention_bp =: 4 : 0
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
 
-  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) |: hidden_flat)
-  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) |: hidden_flat)
-  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) |: hidden_flat)
+  NB. Batched Q,K,V projections (|: hidden_flat hoisted once — 3 transposes
+  NB. were materializing 3 copies)
+  thin =. |: hidden_flat
+  qv =. |: ((qw3_bd_attn_q block_data) (+/ .* ) thin)
+  kv =. |: ((qw3_bd_attn_k block_data) (+/ .* ) thin)
+  vv =. |: ((qw3_bd_attn_v block_data) (+/ .* ) thin)
   Q =. (B, c, n_heads, head_dim) $ , qv
   K =. (B, c, n_heads_kv, head_dim) $ , kv
   V =. (B, c, n_heads_kv, head_dim) $ , vv

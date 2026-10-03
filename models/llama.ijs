@@ -195,10 +195,12 @@ llama_attention_b =: 4 : 0
   attn_norm_w =. llama_bd_attn_norm block_data
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
-  NB. Separate Q,K,V batched projections
-  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (L, n_heads*hd)
-  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) |: hidden)   NB. (L, n_kv*hd)
-  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) |: hidden)   NB. (L, n_kv*hd)
+  NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
+  NB. of the (L,emb) hidden were materializing 3 copies)
+  thin =. |: hidden
+  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) thin)   NB. (L, n_heads*hd)
+  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) thin)   NB. (L, n_kv*hd)
+  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) thin)   NB. (L, n_kv*hd)
   Q =. (L, n_heads, head_dim) $ , qv
   K =. (L, n_heads_kv, head_dim) $ , kv
   V =. (L, n_heads_kv, head_dim) $ , vv
@@ -404,10 +406,12 @@ llama_attention_bd =: 4 : 0
   attn_norm_w =. llama_bd_attn_norm block_data
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
 
-  NB. Batched Q,K,V projections (weight-read amortized across B)
-  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) |: hidden)   NB. (B, n_heads*hd)
-  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) |: hidden)   NB. (B, n_kv*hd)
-  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) |: hidden)   NB. (B, n_kv*hd)
+  NB. Batched Q,K,V projections (weight-read amortized across B; |: hidden
+  NB. hoisted once — 3 transposes of the (B,emb) hidden were materializing 3 copies)
+  thin =. |: hidden
+  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) thin)   NB. (B, n_heads*hd)
+  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) thin)   NB. (B, n_kv*hd)
+  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) thin)   NB. (B, n_kv*hd)
 
   Q =. (B, n_heads, head_dim) $ , qv
   K =. (B, n_heads_kv, head_dim) $ , kv
@@ -536,10 +540,12 @@ llama_attention_bp =: 4 : 0
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
 
-  NB. Batched Q,K,V projections (weight-read amortized across B*c rows)
-  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_heads*hd)
-  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_kv*hd)
-  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) |: hidden_flat)   NB. (B*c, n_kv*hd)
+  NB. Batched Q,K,V projections (weight-read amortized across B*c rows; |: hidden_flat
+  NB. hoisted once — 3 transposes were materializing 3 copies)
+  thin =. |: hidden_flat
+  qv =. |: ((llama_bd_attn_q block_data) (+/ .* ) thin)   NB. (B*c, n_heads*hd)
+  kv =. |: ((llama_bd_attn_k block_data) (+/ .* ) thin)   NB. (B*c, n_kv*hd)
+  vv =. |: ((llama_bd_attn_v block_data) (+/ .* ) thin)   NB. (B*c, n_kv*hd)
 
   Q =. (B, c, n_heads, head_dim) $ , qv
   K =. (B, c, n_heads_kv, head_dim) $ , kv
