@@ -677,6 +677,7 @@ qw35_attention_bd =: 4 : 0
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
+  rope =. > 4 { y
   B =. {. $ x
   n_heads =. qw35_bd_a_n_heads block_data
   head_dim =. qw35_bd_a_head_dim block_data
@@ -706,19 +707,22 @@ qw35_attention_bd =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (B , n_heads_kv , head_dim) $ , Kf
 
-  NB. Partial NEOX RoPE batched at the B positions (n_rot dims, pairs (i, i+half))
-  cos_all =. pos { mi_cos_tab mi    NB. (B, half)
-  sin_all =. pos { mi_sin_tab mi
-  cos_expq =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_expq =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  NB. Partial NEOX RoPE batched at the B positions (n_rot dims, pairs (i, i+half)).
+  NB. cos/sin tables + expansions are layer-invariant (depend only on pos) —
+  NB. hoisted once in run_blocks_bd, threaded through y as <cos_all; sin_all;
+  NB. cos_expq; sin_expq; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope    NB. (B, half)
+  sin_all =. > 1 { rope
+  cos_expq =. > 2 { rope
+  sin_expq =. > 3 { rope
   Qa =. half {."1 Q
   Qb =. half {."1 (half }."1 Q)
   Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
   Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
   Qtail =. (2 * half) }."1 Q
   Q =. (B , n_heads , head_dim) $ , ((Qa_out ,"1 Qb_out) ,"1 Qtail)
-  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka =. half {."1 K
   Kb =. half {."1 (half }."1 K)
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
@@ -805,6 +809,7 @@ qw35_block_forward_a_bd =: 4 : 0
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
+  rope =. > 4 { y
   attn_result =. hidden qw35_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
@@ -900,6 +905,7 @@ qw35_run_blocks_bd =: 4 : 0
   pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
@@ -912,6 +918,19 @@ qw35_run_blocks_bd =: 4 : 0
   if. 0 = # rs_meta do.
     rs_create ((<18) , (<3) , (<6144) , (<128) , <16)
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (depend only on
+  NB. pos) — compute ONCE per step, thread through (attention layers only;
+  NB. SSM layers don't use RoPE).
+  n_rot =. qw35_mi_n_rot mi
+  half =. <. n_rot % 2
+  B =. {. $ state
+  cos_all =. pos { mi_cos_tab mi    NB. (B, half)
+  sin_all =. pos { mi_sin_tab mi
+  cos_expq =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_expq =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
   NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
@@ -921,7 +940,7 @@ qw35_run_blocks_bd =: 4 : 0
     if. qw35_bd_is_ssm block_data do.
       result =. state qw35_block_forward_s_bd ((<block_data) , bf_pre , <b)
     else.
-      result =. state qw35_block_forward_a_bd ((<block_data) , bf_pre , <b)
+      result =. state qw35_block_forward_a_bd ((<block_data) , bf_pre , (<b) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -1138,6 +1157,7 @@ qw35_attention_bp =: 4 : 0
   layer =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
+  rope =. > 5 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -1171,20 +1191,22 @@ qw35_attention_bp =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (B , c , n_heads_kv , head_dim) $ , Kf
 
-  NB. Partial NEOX RoPE at the (B, c) positions pos[b]+i.c (n_rot dims, pairs (i, i+half))
-  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
-  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
-  sin_all =. pos_bc_flat { mi_sin_tab mi
-  cos_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
-  sin_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  NB. Partial NEOX RoPE at the (B, c) positions pos[b]+i.c (n_rot dims, pairs
+  NB. (i, i+half)). cos/sin tables + expansions are layer-invariant (depend only
+  NB. on pos) — hoisted once in run_blocks_bp, threaded through y as <cos_all;
+  NB. sin_all; cos_expq; sin_expq; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope   NB. (B*c, half)
+  sin_all =. > 1 { rope
+  cos_expq =. > 2 { rope
+  sin_expq =. > 3 { rope
   Qa =. half {."1 Q
   Qb =. half {."1 (half }."1 Q)
   Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
   Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
   Qtail =. (2 * half) }."1 Q
   Q =. (B , c , n_heads , head_dim) $ , ((Qa_out ,"1 Qb_out) ,"1 Qtail)
-  cos_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
-  sin_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka =. half {."1 K
   Kb =. half {."1 (half }."1 K)
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
@@ -1368,6 +1390,7 @@ qw35_block_forward_a_bp =: 4 : 0
   layer =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
+  rope =. > 5 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -1394,6 +1417,7 @@ qw35_run_blocks_bp =: 4 : 0
   if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
@@ -1405,14 +1429,29 @@ qw35_run_blocks_bp =: 4 : 0
   if. 0 = # rs_meta do.
     rs_create ((<18) , (<3) , (<6144) , (<128) , <16)
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (depend only on
+  NB. pos) — compute ONCE per chunk, thread through (attention layers only;
+  NB. SSM layers don't use RoPE).
+  n_rot =. qw35_mi_n_rot mi
+  half =. <. n_rot % 2
+  B =. {. $ state
+  c =. 1 { $ state
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens))
     else.
-      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
