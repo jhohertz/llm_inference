@@ -364,6 +364,9 @@ gen_loop_core =: 4 : 0
   NB. tokens; resume keeps the last eff_seq-start_pos tokens of the segment.
   eff_seq =. ctx_len
   if. 0 < kv_max_seq_g do. eff_seq =. ctx_len <. kv_max_seq_g end.
+  NB. Bound eff_seq so the KV cache fits J's array-size limit (2^31 elements)
+  NB. — mirrors kv_create's bound (huge-ctx models, e.g. qwen35 ctx=262144).
+  eff_seq =. eff_seq <. (<. (2^31) % (block_count * kv_batch_g * (n_heads_kv * head_dim)))
   if. '' -: start_pos do.
     if. L > eff_seq do. tok_list =. tok_list {~ (L - eff_seq) + i. eff_seq end.
   else.
@@ -552,6 +555,9 @@ gen_loop_batch =: 4 : 0
 
   eff_seq =. ctx_len
   if. 0 < kv_max_seq_g do. eff_seq =. ctx_len <. kv_max_seq_g end.
+  NB. Bound eff_seq so the KV cache fits J's array-size limit (2^31 elements)
+  NB. — mirrors kv_create's bound (huge-ctx models, e.g. qwen35 ctx=262144).
+  eff_seq =. eff_seq <. (<. (2^31) % (block_count * kv_batch_g * (n_heads_kv * head_dim)))
 
   NB. Prefill each sequence (chunked, per-sequence cache via kv_seq_g)
   kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))

@@ -56,6 +56,10 @@ kv_create =: 3 : 0
   head_dim =. > 3 { y
   eff_seq =. max_seq
   if. 0 < kv_max_seq_g do. eff_seq =. max_seq <. kv_max_seq_g end.
+  NB. Bound eff_seq so the KV cache (n_layers*kv_batch_g*eff_seq, n_kv*hd)
+  NB. fits J's array-size limit (2^31 elements) — huge-ctx models (qwen35
+  NB. ctx=262144) exceed it at full ctx (the full-ctx K/V is ~3.2B elements).
+  eff_seq =. eff_seq <. (<. (2^31) % (n_layers * kv_batch_g * (n_heads_kv * head_dim)))
   if. -. '' -: kv_meta do.
     if. (n_layers = > 0 { kv_meta) *. (eff_seq = > 1 { kv_meta) *. (n_heads_kv = > 2 { kv_meta) *. (head_dim = > 3 { kv_meta) *. (kv_batch_alloc_g = kv_batch_g) do.
       kv_pos_g =: 0

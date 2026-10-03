@@ -42,7 +42,15 @@ STREAM =: ''                    NB. accumulating assistant text during streaming
 NB. The message history lives in the session (held by chat_core_stream) — read
 NB. chat_core_stream) — read it back for rendering.
 get_msgs =: 3 : 0
-  if. 0 = # session do. 0 $ <'' else. > 1 { sess_chat session end.
+  NB. The session noun is the 17-field per-session entity; field 0 is the boxed
+  NB. chat-session list (empty until a chat turn populates it). Return the
+  NB. messages only when a chat turn has actually stored them — an empty session
+  NB. OR an empty chat field both mean "no history yet" (do NOT index field 0).
+  NB. J's boolean or (+.) does NOT short-circuit, so guard the field-0 access
+  NB. inside the else (indexing an empty session would itself error).
+  if. 0 = # session do. 0 $ <'' else.
+    if. 0 = # > 0 { session do. 0 $ <'' else. > 1 { sess_chat session end.
+  end.
 )
 
 NB. Terminal driver (fd-fixed j-kvm vt: read stdin fd 0, write stdout fd 1).
