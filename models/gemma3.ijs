@@ -173,10 +173,10 @@ gem3_attention =: 4 : 0
    Q =. Q % head_dim ^ 0.5
   
    NB. Write K, V to KV cache at current position
-   kv_write ((<layer) , (<pos) , (<K) , (<V))
+   kv_write ((4 { y) , (1 { y) , (<K) , (<V))
    
    NB. Read all K, V from cache up to current position
-   kv_result =. kv_read ((<layer) , <pos)
+   kv_result =. kv_read ((4 { y) , (1 { y))
    k_all =. > 0 { kv_result
    v_all =. > 1 { kv_result
   

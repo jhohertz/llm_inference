@@ -133,8 +133,9 @@ llama_attention =: 4 : 0
   Q =. Q * mi_attn_scale mi
 
   NB. Write K,V (n_kv, hd) to cache, read all up to pos
-  kv_write ((<layer) , (<pos) , (<K) , (<V))
-  kv_result =. kv_read ((<layer) , <pos)
+  NB. layer/pos are already boxed in y (indices 3/1) — pass them, no re-box.
+  kv_write ((3 { y) , (1 { y) , (<K) , (<V))
+  kv_result =. kv_read ((3 { y) , (1 { y))
   k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
   v_all =. > 1 { kv_result
   win =. pos + 1
