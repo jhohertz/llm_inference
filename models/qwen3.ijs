@@ -232,14 +232,14 @@ qw3_attention_b =: 4 : 0
   K_batch =. K
   V_batch =. V
   if. start_pos > 0 do.
-    k_pre =. > 0 { (kv_read ((<layer) , <(start_pos - 1)))
-    v_pre =. > 1 { (kv_read ((<layer) , <(start_pos - 1)))
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
     K =. k_pre , K
     V =. v_pre , V
   end.
 
   NB. Bulk write the new batch's L K/V into cache at layer, starting at start_pos
-  kv_write_rows ((<0) , (<layer) , (<start_pos) , <K_batch)
+  kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
   kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
 
   NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
@@ -488,8 +488,8 @@ qw3_attention_bd =: 4 : 0
       k_b =. (n_heads_kv, head_dim) $ , (b { K)
       v_b =. (n_heads_kv, head_dim) $ , (b { V)
       pos_b =. b { pos
-      kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
-      kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
+      kv_write ((3 { y) , (<pos_b) , (<k_b) , (<v_b) , (<b))
+      kv_result =. kv_read ((3 { y) , (<pos_b) , (<b))
       k_all =. > 0 { kv_result
       v_all =. > 1 { kv_result
       win =. pos_b + 1
