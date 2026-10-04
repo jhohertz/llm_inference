@@ -277,14 +277,16 @@ llama_block_forward =: 4 : 0
   'block_data pos mi layer' =. y
   attn_result =. hidden llama_attention y
   attn_out =. > 0 { attn_result
-  attn_out =. attn_out * mi_resid_scale mi
+  rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
+  if. rs ~: 1 do. attn_out =. attn_out * rs end.
   sa_out =. attn_out + hidden
   ffn_norm_w =. llama_bd_ff_norm block_data
   ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
   gate =. (llama_bd_ff_gate block_data) linear_r ffn_in
   up =. (llama_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (llama_bd_ff_down block_data) linear_r (gate swiglu up)
-  output =. (ffn_raw * mi_resid_scale mi) + sa_out
+  if. rs ~: 1 do. ffn_raw =. ffn_raw * rs end.
+  output =. ffn_raw + sa_out
   (<output)
 )
 
@@ -299,7 +301,8 @@ llama_block_forward_b =: 4 : 0
   rope =. > 4 { y
   attn_result =. hidden llama_attention_b y
   attn_out =. > 0 { attn_result
-  attn_out =. attn_out * mi_resid_scale mi
+  rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
+  if. rs ~: 1 do. attn_out =. attn_out * rs end.
   sa_out =. attn_out + hidden
   ffn_norm_w =. llama_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
@@ -307,7 +310,8 @@ llama_block_forward_b =: 4 : 0
   gate =. |: ((llama_bd_ff_gate block_data) (+/ .* ) ft)   NB. (L, n_ff)
   up =. |: ((llama_bd_ff_up block_data) (+/ .* ) ft)
   ffn_raw =. |: ((llama_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
-  output =. (ffn_raw * mi_resid_scale mi) + sa_out
+  if. rs ~: 1 do. ffn_raw =. ffn_raw * rs end.
+  output =. ffn_raw + sa_out
   (<output)
 )
 
@@ -640,7 +644,8 @@ llama_block_forward_bd =: 4 : 0
   rope =. > 4 { y
   attn_result =. hidden llama_attention_bd y
   attn_out =. > 0 { attn_result
-  attn_out =. attn_out * mi_resid_scale mi
+  rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
+  if. rs ~: 1 do. attn_out =. attn_out * rs end.
   sa_out =. attn_out + hidden
   ffn_norm_w =. llama_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
@@ -648,7 +653,8 @@ llama_block_forward_bd =: 4 : 0
   gate =. |: ((llama_bd_ff_gate block_data) (+/ .* ) ft)   NB. (B, n_ff)
   up =. |: ((llama_bd_ff_up block_data) (+/ .* ) ft)
   ffn_raw =. |: ((llama_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
-  output =. (ffn_raw * mi_resid_scale mi) + sa_out
+  if. rs ~: 1 do. ffn_raw =. ffn_raw * rs end.
+  output =. ffn_raw + sa_out
   (<output)
 )
 
@@ -709,7 +715,8 @@ llama_block_forward_bp =: 4 : 0
   emb_len =. 2 { $ hidden
   attn_result =. hidden llama_attention_bp y
   attn_out =. > 0 { attn_result   NB. (B, c, emb)
-  attn_out =. attn_out * mi_resid_scale mi
+  rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
+  if. rs ~: 1 do. attn_out =. attn_out * rs end.
   sa_out =. attn_out + hidden
   ffn_norm_w =. llama_bd_ff_norm block_data
   sa_flat =. ((B*c) , emb_len) $ , sa_out
@@ -718,7 +725,8 @@ llama_block_forward_bp =: 4 : 0
   gate =. |: ((llama_bd_ff_gate block_data) (+/ .* ) ft)   NB. (B*c, n_ff)
   up =. |: ((llama_bd_ff_up block_data) (+/ .* ) ft)
   ffn_raw =. |: ((llama_bd_ff_down block_data) (+/ .* ) |: (gate swiglu up))
-  output_flat =. (ffn_raw * mi_resid_scale mi) + sa_flat
+  if. rs ~: 1 do. ffn_raw =. ffn_raw * rs end.
+  output_flat =. ffn_raw + sa_flat
   output =. (B, c, emb_len) $ , output_flat
   (<output)
 )
