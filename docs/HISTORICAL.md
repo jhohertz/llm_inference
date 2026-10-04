@@ -1346,6 +1346,24 @@ and lint load-probe green.
   scaling only for gemma3 (`%: emb_len`) and granite (embed_scale=12). Gated on
   `scale ~: 1` in the four embedding sites (`gen_loop_core` prefill chunk/full +
   decode, `gen_loop_batch` decode). Commit `3534039`.
+- **Softmax directly on the group-major scores** — the GQA attention
+  (llama/granite/ernie, qwen2, qwen3, lfm2, qwen35) computed the per-row
+  softmax on a FLATTENED `scores_f`/`scores_b2` then re-grouped it
+  (`softmax_g2`/`softmax_g2_b`) for the V matmul — 2 redundant reshape copies
+  per layer. Verified in J that `>./"1`/`+/"1` over the key axis on the
+  group-major `scores2`/`scores_b` gives the same result (the ravel-order of
+  `n_kv x n_groups*L` matches the flattened `n_heads*L`), so the softmax runs
+  directly on the group-major array in the single/`_b`/`_bd` (vectorized +
+  fallback)/`_bp` paths. gemma3 kept (its KV-expansion layout mixes
+  `n_heads_kv` into the key axis — the re-ravel separates axes, not redundant).
+  Commit `ee66c93`.
+- **No-op re-reshape of per-sequence extraction** — the per-seq
+  `q_b/k_b/v_b/gate_b = (shape) $ , (b { X)` reshaped a per-sequence slice to
+  the SAME shape (`b { X` on the 4D/3D batch yields the target shape directly),
+  a redundant ravel+reshape copy per sequence. Dropped in the `_bd` fallback +
+  `_bp` per-seq loops across llama/granite/ernie, qwen2, qwen3, gemma3, lfm2
+  (incl. conv-state `input_bi`) and qwen35 (incl. sigmoid `gate_b`). Commit
+  `27233f0`.
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
