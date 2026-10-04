@@ -139,8 +139,7 @@ gem3_attention =: 4 : 0
   n_heads_kv =. gem3_bd_n_heads_kv block_data
   
   NB. Attention norm
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
   
    NB. Q, K, V projections — fused single matmul
    fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -155,10 +154,8 @@ gem3_attention =: 4 : 0
    V =. (n_heads_kv, head_dim) $ V
   
   NB. Q/K norm
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
-  Q =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Q)
-  K =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <K)
+  Q =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Q)
+  K =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <K)
   
     NB. RoPE — apply per head (Gemma3 uses NEOX layout: pairs offset by head_dim/2)
     NB. cos/sin precomputed once per position in PER-LAYER tables (dense vs SWA freq)
@@ -259,8 +256,7 @@ gem3_attention_b =: 4 : 0
   half =. <. head_dim % 2
   
   NB. Attention norm per row
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
   
   NB. Q, K, V projections — batched single matmul
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -275,13 +271,11 @@ gem3_attention_b =: 4 : 0
   V =. (L, n_heads_kv, head_dim) $ ,V
   
   NB. Q/K norm per head (flatten heads, norm rows, reshape)
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
   Qf =. ((L * n_heads) , head_dim) $ ,Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Qf)
   Q =. (L, n_heads, head_dim) $ ,Qf
   Kf =. ((L * n_heads_kv) , head_dim) $ ,K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <Kf)
   K =. (L, n_heads_kv, head_dim) $ ,Kf
   
   NB. RoPE — batched, table-based (NEOX). cos/sin per position, PER-LAYER tables.
@@ -463,9 +457,7 @@ gem3_attention_bp =: 4 : 0
   eff_seq =. > 1 { kv_meta
 
   NB. Attention norm per row (B*c)
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden_flat =. ((B*c) , emb_len) $ , hidden
-  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <(((B*c) , emb_len) $ , hidden))
 
   NB. Fused QKV projection batched across B*c rows
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -480,13 +472,11 @@ gem3_attention_bp =: 4 : 0
   V =. (B, c, n_heads_kv, head_dim) $ , V
 
   NB. Q/K norm per head (B*c*n_heads rows)
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
   Qf =. ((B*c*n_heads) , head_dim) $ , Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Qf)
   Q =. (B, c, n_heads, head_dim) $ , Qf
   Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <Kf)
   K =. (B, c, n_heads_kv, head_dim) $ , Kf
 
   NB. NEOX RoPE at the (B, c) positions pos[b]+i.c. cos/sin tables + expansions
@@ -677,8 +667,7 @@ gem3_attention_bd =: 4 : 0
   kv_len =. n_heads_kv * head_dim
 
   NB. Attention norm per row
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
 
   NB. Fused QKV projection (batched single matmul)
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -691,13 +680,11 @@ gem3_attention_bd =: 4 : 0
   V =. (B, n_heads_kv, head_dim) $ ,V
 
   NB. Q/K norm per head (flatten heads, norm rows, reshape)
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
   Qf =. ((B * n_heads) , head_dim) $ ,Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Qf)
   Q =. (B, n_heads, head_dim) $ ,Qf
   Kf =. ((B * n_heads_kv) , head_dim) $ ,K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <Kf)
   K =. (B, n_heads_kv, head_dim) $ ,Kf
 
   NB. RoPE — batched, table-based (NEOX). cos/sin tables + expansions are

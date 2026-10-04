@@ -107,8 +107,7 @@ qw3_attention =: 4 : 0
   n_groups =. n_heads % n_heads_kv
 
   NB. Attention norm
-  attn_norm_w =. qw3_bd_attn_norm block_data
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm ((< mi_rms_eps mi) , (< (qw3_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q, K, V projections
   qv =. (qw3_bd_attn_q block_data) linear_r hidden
@@ -192,8 +191,7 @@ qw3_attention_b =: 4 : 0
   mask_g2 =. > 7 { rope
 
   NB. Attention norm per row
-  attn_norm_w =. qw3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (qw3_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
   NB. of the (L,emb) hidden were materializing 3 copies)
@@ -286,8 +284,7 @@ qw3_block_forward =: 4 : 0
   attn_result =. hidden qw3_attention y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_norm_w =. qw3_bd_ff_norm block_data
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< (qw3_bd_ff_norm block_data)) , <sa_out)
   gate =. (qw3_bd_ff_gate block_data) linear_r ffn_in
   up =. (qw3_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (qw3_bd_ff_down block_data) linear_r (gate swiglu up)
@@ -307,8 +304,7 @@ qw3_block_forward_b =: 4 : 0
   attn_result =. hidden qw3_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_norm_w =. qw3_bd_ff_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (qw3_bd_ff_norm block_data)) , <sa_out)
   ft =. |: ffn_in   NB. |: ffn_in hoisted once — 2 transposes were materializing 2 copies
   gate =. |: ((qw3_bd_ff_gate block_data) (+/ .* ) ft)   NB. (L, n_ff)
   up =. |: ((qw3_bd_ff_up block_data) (+/ .* ) ft)
@@ -410,8 +406,7 @@ qw3_attention_bd =: 4 : 0
   half =. <. head_dim % 2
 
   NB. Attention norm per row
-  attn_norm_w =. qw3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (qw3_bd_attn_norm block_data)) , <x)
 
   NB. Batched Q,K,V projections (weight-read amortized across B; |: hidden
   NB. hoisted once — 3 transposes of the (B,emb) hidden were materializing 3 copies)
@@ -533,8 +528,7 @@ qw3_block_forward_bd =: 4 : 0
   attn_result =. hidden qw3_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_norm_w =. qw3_bd_ff_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (qw3_bd_ff_norm block_data)) , <sa_out)
   ft =. |: ffn_in   NB. |: ffn_in hoisted once — 2 transposes were materializing 2 copies
   gate =. |: ((qw3_bd_ff_gate block_data) (+/ .* ) ft)   NB. (B, n_ff)
   up =. |: ((qw3_bd_ff_up block_data) (+/ .* ) ft)
@@ -605,9 +599,7 @@ qw3_attention_bp =: 4 : 0
   half =. <. head_dim % 2
   eff_seq =. > 1 { kv_meta
 
-  attn_norm_w =. qw3_bd_attn_norm block_data
-  hidden_flat =. ((B*c) , emb_len) $ , hidden
-  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< (qw3_bd_attn_norm block_data)) , <(((B*c) , emb_len) $ , hidden))
 
   NB. Batched Q,K,V projections (|: hidden_flat hoisted once — 3 transposes
   NB. were materializing 3 copies)
@@ -709,9 +701,8 @@ qw3_block_forward_bp =: 4 : 0
   attn_result =. hidden qw3_attention_bp y
   attn_out =. > 0 { attn_result   NB. (B, c, emb)
   sa_out =. attn_out + hidden
-  ffn_norm_w =. qw3_bd_ff_norm block_data
   sa_flat =. ((B*c) , emb_len) $ , sa_out
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_flat)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (qw3_bd_ff_norm block_data)) , <sa_flat)
   ft =. |: ffn_in   NB. |: ffn_in hoisted once — 2 transposes were materializing 2 copies
   gate =. |: ((qw3_bd_ff_gate block_data) (+/ .* ) ft)
   up =. |: ((qw3_bd_ff_up block_data) (+/ .* ) ft)

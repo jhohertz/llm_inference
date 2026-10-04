@@ -257,8 +257,7 @@ lf2_attention_b =: 4 : 0
   half =. <. head_dim % 2
 
   NB. Attention norm per row
-  attn_norm_w =. lf2_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
   NB. of the (L,emb) hidden were materializing 3 copies)
@@ -368,8 +367,7 @@ lf2_block_forward_b =: 4 : 0
   attn_result =. hidden lf2_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_norm_w =. lf2_bd_ffn_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
   gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)   NB. (L, n_ff)
   up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
   ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
@@ -388,8 +386,7 @@ lf2_conv_forward_b =: 4 : 0
   emb =. {: $ hidden
 
   NB. Operator norm
-  attn_norm_w =. lf2_bd_attn_norm block_data
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <hidden)
 
   NB. in_proj -> split b,c,x chunks (each emb)
   bcx =. |: ((lf2_bd_in_proj block_data) (+/ .* ) |: normed)   NB. (L, 3*emb)
@@ -420,8 +417,7 @@ lf2_conv_forward_b =: 4 : 0
   lf2_conv_write ((<layer) , <new_conv)
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual) — conv-layout accessors
-  ffn_norm_w =. lf2_cv_ffn_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_cv_ffn_norm block_data)) , <sa_out)
   tfin =. |: ffn_in
   gate_f =. |: ((lf2_cv_ffn_gate block_data) (+/ .* ) tfin)
   up_f =. |: ((lf2_cv_ffn_up block_data) (+/ .* ) tfin)
@@ -495,9 +491,7 @@ lf2_attention_bp =: 4 : 0
   half =. <. head_dim % 2
   eff_seq =. > 1 { kv_meta
 
-  attn_norm_w =. lf2_bd_attn_norm block_data
-  hidden_flat =. ((B*c) , emb_len) $ , hidden
-  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <(((B*c) , emb_len) $ , hidden))
   thin =. |: hidden_flat
   qv =. |: ((lf2_bd_attn_q block_data) (+/ .* ) thin)   NB. (B*c, n_heads*hd)
   kv =. |: ((lf2_bd_attn_k block_data) (+/ .* ) thin)
@@ -598,9 +592,8 @@ lf2_block_forward_bp =: 4 : 0
   attn_result =. hidden lf2_attention_bp y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + input
-  ffn_norm_w =. lf2_bd_ffn_norm block_data
   sa_flat =. ((B*c) , emb_len) $ , sa_out
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_flat)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_flat)
   gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)
   up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
   ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
@@ -626,9 +619,8 @@ lf2_conv_forward_bp =: 4 : 0
   emb =. emb_len
 
   NB. Operator norm (B*c rows)
-  attn_norm_w =. lf2_bd_attn_norm block_data
   hidden_flat =. ((B*c) , emb_len) $ , hidden
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <hidden_flat)
   bcx =. |: ((lf2_bd_in_proj block_data) (+/ .* ) |: normed)   NB. (B*c, 3*emb)
   b_chunk =. (emb {. "1 bcx)
   c_chunk =. (emb {. "1 (emb }."1 bcx))
@@ -666,8 +658,7 @@ lf2_conv_forward_bp =: 4 : 0
   sa_out_flat =. out + hidden_flat
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual)
-  ffn_norm_w =. lf2_cv_ffn_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out_flat)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_cv_ffn_norm block_data)) , <sa_out_flat)
   tfin =. |: ffn_in
   gate_f =. |: ((lf2_cv_ffn_gate block_data) (+/ .* ) tfin)
   up_f =. |: ((lf2_cv_ffn_up block_data) (+/ .* ) tfin)
@@ -742,8 +733,7 @@ lf2_attention_bd =: 4 : 0
   half =. <. head_dim % 2
 
   NB. Attention norm per row
-  attn_norm_w =. lf2_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <x)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <x)
 
   NB. Batched Q,K,V projections (weight-read amortized across B; |: hidden hoisted)
   thin =. |: hidden
@@ -865,8 +855,7 @@ lf2_block_forward_bd =: 4 : 0
   attn_result =. hidden lf2_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + input
-  ffn_norm_w =. lf2_bd_ffn_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
   gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)   NB. (B, n_ff)
   up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
   ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
@@ -885,8 +874,7 @@ lf2_conv_forward_bd =: 4 : 0
   emb =. {: $ hidden
 
   NB. Operator norm
-  attn_norm_w =. lf2_bd_attn_norm block_data
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <hidden)
 
   NB. in_proj -> split b,c,x chunks (each emb)
   bcx =. |: ((lf2_bd_in_proj block_data) (+/ .* ) |: normed)   NB. (B, 3*emb)
@@ -912,8 +900,7 @@ lf2_conv_forward_bd =: 4 : 0
   sa_out =. out + hidden
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual) — conv-layout accessors
-  ffn_norm_w =. lf2_cv_ffn_norm block_data
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ffn_norm_w) , <sa_out)
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_cv_ffn_norm block_data)) , <sa_out)
   tfin =. |: ffn_in
   gate_f =. |: ((lf2_cv_ffn_gate block_data) (+/ .* ) tfin)
   up_f =. |: ((lf2_cv_ffn_up block_data) (+/ .* ) tfin)
