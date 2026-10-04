@@ -774,10 +774,10 @@ qw35_attention_bd =: 4 : 0
     attn_out =. ''
     b =. 0
     while. b < B do.
-      q_b =. (n_heads, head_dim) $ , (b { Q)
-      k_b =. (n_heads_kv, head_dim) $ , (b { K)
-      v_b =. (n_heads_kv, head_dim) $ , (b { V)
-      gate_b =. (n_heads, head_dim) $ , (b { gate)
+      q_b =. b { Q
+      k_b =. b { K
+      v_b =. b { V
+      gate_b =. b { gate
       pos_b =. b { pos
       kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
       kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
@@ -1229,10 +1229,10 @@ qw35_attention_bp =: 4 : 0
   attn_out =. ''
   b =. 0
   while. b < B do.
-    q_b =. (c, n_heads, head_dim) $ , (b { Q)
-    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
-    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
-    gate_b =. (c, n_heads, head_dim) $ , (b { gate)
+    q_b =. b { Q
+    k_b =. b { K
+    v_b =. b { V
+    gate_b =. b { gate
     pos_b =. b { pos
     base_b =. ((layer * kv_batch_g) + b) * eff_seq
     idxw =. base_b + pos_b + i. c

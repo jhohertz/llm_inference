@@ -541,9 +541,9 @@ lf2_attention_bp =: 4 : 0
   attn_out =. ''
   b =. 0
   while. b < B do.
-    q_b =. (c, n_heads, head_dim) $ , (b { Q)
-    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
-    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
+    q_b =. b { Q
+    k_b =. b { K
+    v_b =. b { V
     pos_b =. b { pos
     base_b =. ((layer * kv_batch_g) + b) * eff_seq
     idxw =. base_b + pos_b + i. c
@@ -656,7 +656,7 @@ lf2_conv_forward_bp =: 4 : 0
   while. b < B do.
     real_c =. c <. ((b { lens) - p_chunk)
     if. real_c > 0 do.
-      input_bi =. ((2 + c) , emb) $ , (b { input_b)
+      input_bi =. b { input_b
       new_conv =. (real_c + i. 2) { input_bi
       lf2_conv_write_b ((<layer) , (<new_conv) , <b)
     end.
@@ -823,9 +823,9 @@ lf2_attention_bd =: 4 : 0
     attn_out =. ''
     b =. 0
     while. b < B do.
-      q_b =. (n_heads, head_dim) $ , (b { Q)
-      k_b =. (n_heads_kv, head_dim) $ , (b { K)
-      v_b =. (n_heads_kv, head_dim) $ , (b { V)
+      q_b =. b { Q
+      k_b =. b { K
+      v_b =. b { V
       pos_b =. b { pos
       kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
       kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
