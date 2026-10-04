@@ -429,16 +429,15 @@ qw35_attention_b =: 4 : 0
   mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
   scores2 =. scores2 -"2 (mask_g2 * 1e9)
 
-  NB. Softmax over j per (g,r,t) row (order-independent)
-  scores_f =. ((n_heads * L) , start_pos + L) $ , scores2
-  max_sf =. >./"1 scores_f
-  exp_sf =. ^ (scores_f - max_sf)
+  NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
+  NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
+  max_sf =. >./"1 scores2
+  exp_sf =. ^ (scores2 - max_sf)
   softmax_f =. exp_sf % +/"1 exp_sf
-  softmax_g2 =. (n_heads_kv , (n_groups * L) , start_pos + L) $ , softmax_f
 
   NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
   Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
-  attn2 =. softmax_g2 (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
+  attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
   attn_raw =. (n_heads, L, head_dim) $ , attn2   NB. [h,t,d]
   attn_raw =. (L , n_heads , head_dim) $ , (1 0 2 |: attn_raw)
 
@@ -761,13 +760,13 @@ qw35_attention_bd =: 4 : 0
     Kp_b =. (0 2 3 1) |: k_rows_b
     Q_g2_b =. (B , n_heads_kv , n_groups , head_dim) $ , Q
     scores_b =. Q_g2_b (+/ .* "2) Kp_b   NB. (B, n_kv, groups, win)
-    scores_b2 =. (B , n_heads , win) $ , scores_b   NB. (B, n_heads, win)
-    max_sf_b =. >./"1 scores_b2
-    exp_sf_b =. ^ (scores_b2 - max_sf_b)
+    NB. Softmax directly on the 4D scores_b (the old scores_b2 flatten +
+    NB. softmax_g2_b re-group were 2 redundant reshape copies per layer)
+    max_sf_b =. >./"1 scores_b
+    exp_sf_b =. ^ (scores_b - max_sf_b)
     softmax_b =. exp_sf_b % +/"1 exp_sf_b
-    softmax_g2_b =. (B , n_heads_kv , n_groups , win) $ , softmax_b
     Vp_b =. (0 2 1 3) |: v_rows_b   NB. (B, n_kv, win, hd)
-    attn2_b =. softmax_g2_b (+/ .* "2) Vp_b   NB. (B, n_kv, groups, hd)
+    attn2_b =. softmax_b (+/ .* "2) Vp_b   NB. (B, n_kv, groups, hd)
     attn_b3 =. (B , n_heads , head_dim) $ , attn2_b
     attn_gated_b =. attn_b3 * (sigmoid gate)   NB. gate (B, n_heads, hd)
     attn_all =. (B , n_heads * head_dim) $ , attn_gated_b   NB. (B, n_heads*hd) flat
@@ -788,13 +787,13 @@ qw35_attention_bd =: 4 : 0
       Q_g2 =. (n_heads_kv , n_groups , head_dim) $ , q_b
       Kp2 =. 1 2 0 |: k_all
       scores2 =. Q_g2 (+/ .* "2) Kp2
-      scores =. (n_heads, win) $ , scores2
-      max_sf =. >./"1 scores
-      exp_sf =. ^ (scores - max_sf)
+      NB. Softmax directly on the 3D scores2 (the old scores flatten +
+      NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
+      max_sf =. >./"1 scores2
+      exp_sf =. ^ (scores2 - max_sf)
       softmax =. exp_sf % +/"1 exp_sf
-      softmax_g2 =. (n_heads_kv , n_groups , win) $ , softmax
       Vp =. 1 0 2 |: v_all
-      attn2 =. softmax_g2 (+/ .* "2) Vp
+      attn2 =. softmax (+/ .* "2) Vp
       attn_raw =. (n_heads, head_dim) $ , attn2
       attn_gated =. attn_raw * (sigmoid gate_b)
       attn_raw_flat =. (n_heads * head_dim) $ , attn_gated
@@ -1253,13 +1252,13 @@ qw35_attention_bp =: 4 : 0
     Kp2 =. 1 2 0 |: k_all
     scores2 =. Q_g2 (+/ .* "2) Kp2
     scores2 =. scores2 -"2 (mask_g2 * 1e9)
-    scores_f =. ((n_heads*c), win) $ , scores2
-    max_sf =. >./"1 scores_f
-    exp_sf =. ^ (scores_f - max_sf)
+    NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
+    NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
+    max_sf =. >./"1 scores2
+    exp_sf =. ^ (scores2 - max_sf)
     softmax_f =. exp_sf % +/"1 exp_sf
-    softmax_g2 =. (n_heads_kv, (n_groups*c), win) $ , softmax_f
     Vp =. 1 0 2 |: v_all
-    attn2 =. softmax_g2 (+/ .* "2) Vp
+    attn2 =. softmax_f (+/ .* "2) Vp
     attn_raw =. (n_heads, c, head_dim) $ , attn2
     attn_raw =. (c, n_heads, head_dim) $ , (1 0 2 |: attn_raw)
     attn_gated =. attn_raw * (sigmoid gate_b)
