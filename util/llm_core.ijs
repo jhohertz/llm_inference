@@ -418,7 +418,8 @@ gen_loop_core =: 4 : 0
     NB. batch, and writes the batch K/V at start_pos. (The old per-token
     NB. incremental loop is replaced: rb_b is now cache-prefix aware.)
     cur_pos =. start_pos
-    emb_all =. scale * |: (tok_list {"1 emb_w)
+    emb_all =. |: (tok_list {"1 emb_w)
+    if. scale ~: 1 do. emb_all =. emb_all * scale end.
     pre_s =. 6!:2 'result_b =. emb_all rb_b (llm_box , <start_pos)'
     h_b =. > 0 { result_b
     hidden =. > (L - 1) { h_b
@@ -442,7 +443,8 @@ gen_loop_core =: 4 : 0
       if. logit_div ~: 1 do. logits =. logits % logit_div end.
     else.
       last_tok =. > {: output
-      hidden =. scale * |: (last_tok {"1 emb_w)
+      hidden =. |: (last_tok {"1 emb_w)
+      if. scale ~: 1 do. hidden =. hidden * scale end.
       gen_s =. gen_s + 6!:2 'result =. hidden rb (llm_box , <cur_pos)'
       hidden =. > 0 { result
       logits =. output_head (oh_pre , <hidden)
@@ -659,7 +661,8 @@ gen_loop_batch =: 4 : 0
       while. j < L do.
         c =. prefill_chunk_sz <. L - j
         seg =. (j + i. c) { tok_list
-        emb_seg =. scale * |: (seg {"1 emb_w)
+      emb_seg =. |: (seg {"1 emb_w)
+      if. scale ~: 1 do. emb_seg =. emb_seg * scale end.
         t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <j)'
         pre_s =. pre_s + t
         h_b =. > 0 { result_b
@@ -701,7 +704,8 @@ gen_loop_batch =: 4 : 0
       NB. gen_loop_core. Re-embedding at pos L would duplicate the last prompt
       NB. token's K/V into the cache and shift the outputs by one step.
     else.
-      hidden =. scale * |: (last_toks {"1 emb_w)   NB. (B, emb)
+      hidden =. |: (last_toks {"1 emb_w)   NB. (B, emb)
+      if. scale ~: 1 do. hidden =. hidden * scale end.
       gen_s =. gen_s + 6!:2 'result =. hidden rb_bd (llm_box , <cur_pos)'
       hidden =. > 0 { result
     end.
