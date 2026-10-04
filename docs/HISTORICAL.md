@@ -1364,6 +1364,15 @@ and lint load-probe green.
   `_bp` per-seq loops across llama/granite/ernie, qwen2, qwen3, gemma3, lfm2
   (incl. conv-state `input_bi`) and qwen35 (incl. sigmoid `gate_b`). Commit
   `27233f0`.
+- **Inline single-use norm-weight fetches** — the per-layer norm weights
+  (`attn_norm_w`/`ffn_norm_w`/`q_norm_w`/`k_norm_w`) were assigned to a local
+  then used exactly once on the next line — a needless intermediate. Inlined
+  the block_data access into the rms_norm call across the single/_b/_bd/_bp
+  attention and block-forward paths in llama/granite/ernie, qwen2, qwen3,
+  gemma3 (incl. per-head Q/K norm) and lfm2 (incl. the conv ffn norm
+  `lf2_cv_ffn_norm`), also folding the single-use prefill ravel+reshape
+  (`((B*c),emb) $ , hidden`) into its rms_norm call where used once. Commit
+  `0022a68`.
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
