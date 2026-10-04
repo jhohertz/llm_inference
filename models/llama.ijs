@@ -241,7 +241,7 @@ llama_attention_b =: 4 : 0
   NB. qwen2.5, 4x llama/granite, 2x qwen3). Q reshaped group-major so the
   NB. frames (n_heads_kv) align for +/ .*"2.
   Qp =. 1 0 2 |: Q        NB. (n_heads, L, hd)
-  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , ((n_heads_kv , n_groups , L , head_dim) $ , Qp)
+  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
   Kp2 =. 1 2 0 |: K        NB. (n_heads_kv, hd, start_pos+L) — one transpose
   scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
   NB. causal mask: mask[h,t,j]=1 if j>t; query t at position start_pos+t, keys
@@ -607,7 +607,7 @@ llama_attention_bp =: 4 : 0
     end.
     mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
     Qp =. 1 0 2 |: q_b   NB. (n_heads, c, hd)
-    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , ((n_heads_kv, n_groups, c, head_dim) $ , Qp)
+    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
     Kp2 =. 1 2 0 |: k_all   NB. (n_kv, hd, win)
     scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, groups*c, win)
     scores2 =. scores2 -"2 (mask_g2 * 1e9)
