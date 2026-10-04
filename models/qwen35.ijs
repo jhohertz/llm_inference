@@ -355,14 +355,15 @@ qw35_attention_b =: 4 : 0
 
   NB. Attention norm
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
-  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (L, 2*head_dim*n_heads)
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) nt)   NB. (L, 2*head_dim*n_heads)
   qg3 =. (L , n_heads , 2 * head_dim) $ , qg
   Q =. head_dim {."1 qg3    NB. (L, n_heads, head_dim)
   gate =. head_dim }."1 qg3  NB. (L, n_heads, head_dim)
-  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (L, n_kv*head_dim)
-  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) nt)   NB. (L, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) nt)
   K =. (L , n_heads_kv , head_dim) $ , kv
   V =. (L , n_heads_kv , head_dim) $ , vv
 
@@ -531,17 +532,18 @@ qw35_ssm_forward_b =: 4 : 0
 
   NB. Attention norm
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
   value_dim =. head_v_dim * num_v_heads
   conv_dim =. (key_dim * 2) + value_dim
 
   NB. Projections (batched)
-  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (L, conv_dim)
-  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (L, value_dim)
-  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (L, num_v_heads)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) nt)   NB. (L, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) nt)   NB. (L, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) nt)   NB. (L, num_v_heads)
   beta =. sigmoid beta_p
-  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (L, num_v_heads)
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) nt)   NB. (L, num_v_heads)
   alpha =. alpha_p + ((L , num_v_heads) $ qw35_bd_s_dt block_data)
   alpha =. softplus alpha
   gate =. alpha * ((L , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
@@ -598,8 +600,9 @@ qw35_ssm_forward_b =: 4 : 0
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual)
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + out
   <output
@@ -617,8 +620,9 @@ qw35_block_forward_a_b =: 4 : 0
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <sa_out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + sa_out
   <output
@@ -688,14 +692,15 @@ qw35_attention_bd =: 4 : 0
 
   NB. Attention norm per row
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
-  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (B, 2*head_dim*n_heads)
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) nt)   NB. (B, 2*head_dim*n_heads)
   qg3 =. (B , n_heads , 2 * head_dim) $ , qg
   Q =. head_dim {."1 qg3    NB. (B, n_heads, head_dim)
   gate =. head_dim }."1 qg3  NB. (B, n_heads, head_dim)
-  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (B, n_kv*head_dim)
-  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) nt)   NB. (B, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) nt)
   K =. (B , n_heads_kv , head_dim) $ , kv
   V =. (B , n_heads_kv , head_dim) $ , vv
 
@@ -814,8 +819,9 @@ qw35_block_forward_a_bd =: 4 : 0
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <sa_out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + sa_out
   <output
@@ -836,17 +842,18 @@ qw35_ssm_forward_bd =: 4 : 0
 
   NB. Attention norm per row
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
   value_dim =. head_v_dim * num_v_heads
   conv_dim =. (key_dim * 2) + value_dim
 
   NB. Projections (batched)
-  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (B, conv_dim)
-  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (B, value_dim)
-  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (B, num_v_heads)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) nt)   NB. (B, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) nt)   NB. (B, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) nt)   NB. (B, num_v_heads)
   beta =. sigmoid beta_p
-  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (B, num_v_heads)
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) nt)   NB. (B, num_v_heads)
   alpha =. alpha_p + ((B , num_v_heads) $ qw35_bd_s_dt block_data)
   alpha =. softplus alpha
   gate =. alpha * ((B , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
@@ -890,8 +897,9 @@ qw35_ssm_forward_bd =: 4 : 0
   out =. |: ((qw35_bd_s_out block_data) (+/ .*) |: final_all)   NB. (B, emb)
   out =. out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + out
   <output
@@ -1172,14 +1180,15 @@ qw35_attention_bp =: 4 : 0
   NB. Attention norm per row (batched)
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden_flat)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
-  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (B*c, 2*head_dim*n_heads)
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) nt)   NB. (B*c, 2*head_dim*n_heads)
   qg3 =. (B , c , n_heads , 2 * head_dim) $ , qg
   Q =. head_dim {."1 qg3    NB. (B, c, n_heads, head_dim)
   gate =. head_dim }."1 qg3  NB. (B, c, n_heads, head_dim)
-  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (B*c, n_kv*head_dim)
-  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) nt)   NB. (B*c, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) nt)
   K =. (B , c , n_heads_kv , head_dim) $ , kv
   V =. (B , c , n_heads_kv , head_dim) $ , vv
 
@@ -1287,17 +1296,18 @@ qw35_ssm_forward_bp =: 4 : 0
   NB. Attention norm per row (batched)
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden_flat)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
   value_dim =. head_v_dim * num_v_heads
   conv_dim =. (key_dim * 2) + value_dim
 
   NB. Projections (batched across B*c rows)
-  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (B*c, conv_dim)
-  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (B*c, value_dim)
-  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (B*c, num_v_heads)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) nt)   NB. (B*c, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) nt)   NB. (B*c, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) nt)   NB. (B*c, num_v_heads)
   beta =. sigmoid beta_p
-  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (B*c, num_v_heads)
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) nt)   NB. (B*c, num_v_heads)
   alpha =. alpha_p + (((B*c) , num_v_heads) $ qw35_bd_s_dt block_data)
   alpha =. softplus alpha
   gate =. alpha * (((B*c) , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
@@ -1373,8 +1383,9 @@ qw35_ssm_forward_bp =: 4 : 0
   out =. |: ((qw35_bd_s_out block_data) (+/ .*) |: final_flat)   NB. (B*c, emb)
   out =. out + hidden_flat
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output_flat =. ffn_raw + out
   output =. (B , c , emb_len) $ , output_flat
@@ -1399,8 +1410,9 @@ qw35_block_forward_a_bp =: 4 : 0
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + input
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <(((B*c) , emb_len) $ , sa_out))
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output_flat =. ffn_raw + (((B*c) , emb_len) $ , sa_out)
   output =. (B , c , emb_len) $ , output_flat
