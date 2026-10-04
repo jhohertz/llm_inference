@@ -796,7 +796,7 @@ gem3_attention_bd =: 4 : 0
       attn_out =. attn_out , <attn_raw_flat
       b =. b + 1
     end.
-    attn_all =. (B , n_heads * head_dim) $ , > attn_out
+    attn_all =. > attn_out
   end.
 
   NB. Output projection + post-attention norm

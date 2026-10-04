@@ -517,7 +517,7 @@ qw3_attention_bd =: 4 : 0
       attn_out =. attn_out , <attn_raw_flat
       b =. b + 1
     end.
-    attn_all =. (B , n_heads * head_dim) $ , > attn_out
+    attn_all =. > attn_out
   end.
   attn_result =. |: ((qw3_bd_attn_o block_data) (+/ .* ) |: attn_all)   NB. (B, emb)
   (<attn_result)
@@ -688,7 +688,7 @@ qw3_attention_bp =: 4 : 0
     attn_out =. attn_out , <attn_raw_flat
     b =. b + 1
   end.
-  attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
+  attn_all =. > attn_out
   attn_result =. |: ((qw3_bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
   attn_result =. (B, c, emb_len) $ , attn_result
   (<attn_result)

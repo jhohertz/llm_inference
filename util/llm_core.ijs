@@ -615,8 +615,8 @@ gen_loop_batch =: 4 : 0
       i =. 0
       while. i < B do.
         seg =. (p + i. c) { > i { padded
-        es =. scale * |: (seg {"1 emb_w)   NB. (c, emb)
-        emb_seg =. ((c, emb_len) $ , es) i} emb_seg
+        es =. scale * |: (seg {"1 emb_w)   NB. (c, emb) — already the row shape, no re-reshape needed
+        emb_seg =. es i} emb_seg
         lens_cur =. (p + (c <. ((i { lens_b) - p))) i} lens_cur
         i =. i + 1
       end.
@@ -643,7 +643,7 @@ gen_loop_batch =: 4 : 0
       outputs =. outputs , <(<"0 (> i { prompts_tok))
       i =. i + 1
     end.
-    hidden =. (B , emb_len) $ , > hidden_all
+    hidden =. > hidden_all   NB. (B, emb) — already the row shape, no re-reshape needed
     cur_pos =. pos
     done =. B $ 0
   else.
@@ -673,7 +673,7 @@ gen_loop_batch =: 4 : 0
       i =. i + 1
     end.
     kv_seq_g =: 0
-    hidden =. (B , emb_len) $ , > hidden_all
+    hidden =. > hidden_all   NB. (B, emb) — already the row shape, no re-reshape needed
     cur_pos =. pos
     done =. B $ 0
   end.
