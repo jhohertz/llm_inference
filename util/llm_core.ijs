@@ -439,14 +439,14 @@ gen_loop_core =: 4 : 0
     if. cur_pos >: eff_seq do. break. end.
     if. 0 = gen_step do.
       logits =. output_head (oh_pre , <hidden)
-      logits =. logits % logit_div
+      if. logit_div ~: 1 do. logits =. logits % logit_div end.
     else.
       last_tok =. > {: output
       hidden =. scale * |: (last_tok {"1 emb_w)
       gen_s =. gen_s + 6!:2 'result =. hidden rb (llm_box , <cur_pos)'
       hidden =. > 0 { result
       logits =. output_head (oh_pre , <hidden)
-      logits =. logits % logit_div
+      if. logit_div ~: 1 do. logits =. logits % logit_div end.
       cur_pos =. cur_pos + 1
     end.
         pred =. sample_from (sf_pre , <logits)
@@ -707,7 +707,7 @@ gen_loop_batch =: 4 : 0
     end.
     hidden_n =. rms_norm_rows (rnn_pre , <hidden)
     logits =. hidden_n (+/ .*) emb_w   NB. (B, vocab) — emb_w transposed (emb, vocab)
-    logits =. logits % logit_div
+    if. logit_div ~: 1 do. logits =. logits % logit_div end.
     b =. 0
     while. b < B do.
       if. -. b { done do.
