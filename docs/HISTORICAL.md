@@ -1277,3 +1277,51 @@ genuinely marginal, and invasive/conflicting with the pass-through), the
 `kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops
 (kernels already tacit; loops stay explicit — the `u^:v^:_`/`u^:n` idioms are
 rank-0 slow here).
+
+## Redundant computation elimination — generation hot paths (2026-10)
+
+A follow-up pass on the same hot paths, targeting REDUNDANT COMPUTATION (not
+boxing/copy): redoing work per-layer/per-step that is invariant. All changes
+verified bit-exact (batch==single across all 8 arches, `tests/j/test_batched.ijs`)
+and lint load-probe green.
+
+- **`|: hidden` transpose hoist (`*_attention_b`/`_bd`/`_bp`)** — the batched
+  Q/K/V projections in llama/qwen2/qwen3 recomputed `|: hidden` (and
+  `|: hidden_flat`) THREE times (one per projection) — 3 materializing copies
+  of the `(L,emb)`/`(B,emb)` input per layer per chunk. Hoisted to one `thin` in
+  lfm2's existing pattern. Commits `bc41a66` (llama, granite/ernie alias),
+  `dd81433` (qwen2/qwen3).
+- **RoPE table+expansion hoist (`*_run_blocks_bd`/`_bp`)** — the batched
+  attention `*_attention_bd`/`_bp` recomputed the RoPE cos/sin table ROW FETCHES
+  (`pos { mi_cos_tab mi`) plus the `(B,*,half)` expansion broadcasts PER LAYER —
+  all layer-invariant (depend only on `pos`, not `layer`). Mirroring the
+  existing `*_run_blocks_b` hoist, `*_run_blocks_bd`/`_bp` now build the rope
+  box once per step/chunk and thread it through `*_block_forward_bd`/`_bp` →
+  `*_attention_bd`/`_bp`. Arch-specific rope contents: interleaved (`idx`) for
+  llama/granite/ernie, NEOX for qwen2/qwen3/gemma3/lfm2, partial NEOX (`n_rot`)
+  for qwen35. Commits `489b797` (llama), `dd81433` (qwen2/qwen3), `410ce48`
+  (gemma3), `e08de52` (qwen35/lfm2).
+  - **Hybrid arches (qwen35/lfm2): rope threaded ONLY to attention layers** —
+    their SSM (delta-net) / shortconv layers don't use RoPE, so
+    `*_block_forward_s_bd`/`_bp` and `*_conv_forward_bd`/`_bp` keep their
+    original arg counts.
+  - **gemma3**: its cos/sin tables are per-layer in `block_data` but identical
+    across layers (loader reuses the same `build_rope_tables` objects AND puts
+    them in `mi`), so the hoist reads them from `mi_cos_tab`/`mi_sin_tab`.
+  - **J gotcha**: `bf_pre , <b , <rope` mis-parses as a numeric/boxed domain
+    error (the `, <b` after a boxed-list variable); parenthesize as `(<b)`.
+    Recorded in docs/J-KNOWLEDGE.md §Boxing/Packing Rules.
+- **`sampler_softmax` dead `allsame` guard** — the `allsame =. *./ shifted =
+  max_x` check + branch was provably dead: when all logits equal `max_x`,
+  `shifted` is all 0 so `2 ^ shifted` = all 1.0 = the `1 #~ # y` branch. Removed
+  the full-vocab `*./` reduction (2 passes per sampled token in the temp>0
+  path). Commit `1583dbb`.
+- **J gotcha**: `n $ x` (reshape without explicit `,` ravel) can raise "a system
+  limit was exceeded" on non-contiguous arrays (e.g., matmul results); use
+  `n $ , x` for safety. Recorded in docs/J-KNOWLEDGE.md.
+
+Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
+single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
+`mi_resid_scale`/`mi_cos_tab`/`mi_sin_tab` in `*_attention`/`*_block_forward` —
+the `_bd`/`_bp` RoPE-table part was eliminated by the hoist above), the
+`kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops.

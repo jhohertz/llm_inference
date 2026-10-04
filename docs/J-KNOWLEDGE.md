@@ -446,6 +446,11 @@ Corollaries we hit in this repo:
 - Named-box catenation: this J9.8 build's `;` ravel-concatenates two box lists
   and `<x> , <y>` parses the closed `>` as a dyad — build list args from named
   box vars (http/server.ijs, http/builders.ijs).
+- `boxed_list , <b , <rope` mis-parses as a numeric/boxed domain error: the
+  `, <b` after a boxed-list variable groups as `b , <rope` (numeric concat
+  boxed). Parenthesize the scalar — `boxed_list , (<b) , <rope` (hit in the
+  `*_run_blocks_bd` RoPE threading; see HISTORICAL.md "Redundant computation
+  elimination").
 
 ---
 
@@ -572,6 +577,12 @@ Corollaries we hit in this repo:
     is (4,3) yields (2,3,3) — J applies Reshape at a per-cell rank, appending
     m's trailing axis, instead of reshaping the whole array. Flatten the
     right first: `(2 3) $ , m` gives (2,3).
+30. **`n $ x` WITHOUT THE RAVEL CAN RAISE "a system limit was exceeded".** On a
+    non-contiguous right operand (e.g. a `+/ .*` matmul result), bare `n $ x`
+    (reshape without the explicit `,` ravel) can fail with a system-limit
+    error; `n $ , x` is safe. Reshape-without-ravel is NOT equivalent to
+    reshape-with-ravel for such arrays. (Hit in a `$ ,` → `$` micro-optimization;
+    see HISTORICAL.md "Redundant computation elimination".)
 
 ## Numeric Representation Gotchas
 

@@ -38,9 +38,12 @@ section is kept only as a pointer — no planned work remains here.
 Found during the 2026-10 boxing/copy-elimination pass (see HISTORICAL.md
 "Boxing/copy elimination — generation hot paths (2026-10)"). Measured/assessed,
 left for a later pass — each is real but marginal/invasive relative to the
-matmul-dominated decode:
+matmul-dominated decode. The RoPE table+expansion hoist for the batched paths
+(`*_run_blocks_bd`/`_bp` → `*_block_forward` → `*_attention`, all 8 arches) is
+now DONE — see HISTORICAL.md "Redundant computation elimination — generation
+hot paths (2026-10)".
 
-- **Per-layer `mi` dict-lookup hoisting** (highest-value of the three): the
+- **Per-layer `mi` dict-lookup hoisting** (single-token path): the
   `mi_rms_eps mi` / `mi_attn_scale mi` / `mi_resid_scale mi` /
   `mi_cos_tab mi` / `mi_sin_tab mi` accessors are hash-looked-up EVERY layer
   inside `*_attention`/`*_block_forward` (~5-7 lookups × n_layers × tokens;
@@ -53,7 +56,10 @@ matmul-dominated decode:
   again, all 8 arches + granite/ernie aliases) AND conflicts with the
   pass-`y`-through landed in the same pass (adding boxes to `y` shifts the
   unpack indices). Recommendation: keep deferred; revisit only if a profile
-  shows the lookups as a hotspot.
+  shows the lookups as a hotspot. (The `_bd`/`_bp` RoPE-table part — the
+  `mi_cos_tab`/`mi_sin_tab` fetches + expansion broadcasts — was eliminated by
+  the RoPE hoist above; only the single-token `*_attention`/`*_block_forward`
+  path still does the per-layer `mi_*` lookups.)
 - **`kv_write` re-box in single-token `*_attention`**: after `'block_data pos
   mi layer' =. y`, `kv_write ((<layer), (<pos), (<K), (<V))` re-boxes layer/pos
   that were already boxed in `y`. Fix = pass `(3{y), (1{y)` (index-based) to

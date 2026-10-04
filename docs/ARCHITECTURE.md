@@ -588,7 +588,12 @@ Prefill is likewise batched: each arch adds `*_attention_bp`/
 in lockstep (ONE forward per chunk; weight-read amortized over B*c rows), and
 masks each sequence's padding with a per-seq `lens` — only the hidden of each
 sequence's LAST real token is kept (captured in the chunk covering its final
-position). Recurrent-state arches (lfm2 conv, qwen35 delta-net) batch the
+position). The RoPE cos/sin tables + expansion broadcasts are layer-invariant
+(depend only on `pos`), so `*_run_blocks_b`/`_bd`/`_bp` build a `rope` box ONCE
+per step/chunk and thread it through `*_block_forward_b`/`_bd`/`_bp` →
+`*_attention_b`/`_bd`/`_bp` (see HISTORICAL.md "Redundant computation
+elimination — generation hot paths (2026-10)"; qwen35/lfm2 thread it only to
+their attention layers — SSM/conv layers don't use RoPE). Recurrent-state arches (lfm2 conv, qwen35 delta-net) batch the
 projections/FFN across B*c rows but run the conv1d + recurrence per sequence
 (per-seq conv/s state via `lf2_conv_read_b`/`rs_read_b`), and update their
 conv state from only the REAL rows (padding must not contaminate the sliding
