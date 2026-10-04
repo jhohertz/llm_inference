@@ -1319,6 +1319,23 @@ and lint load-probe green.
 - **J gotcha**: `n $ x` (reshape without explicit `,` ravel) can raise "a system
   limit was exceeded" on non-contiguous arrays (e.g., matmul results); use
   `n $ , x` for safety. Recorded in docs/J-KNOWLEDGE.md.
+- **FFN + qwen35 projection transpose hoist** — the batched FFN gate/up
+  projections recomputed `|: ffn_in` TWICE (llama/qwen2/qwen3 `*_block_forward_b`/
+  `_bd`/`_bp`) and qwen35 recomputed `|: post` twice (FFN) and `|: normed`
+  3× (attention Q+GATE/K/V) / 4× (SSM wqkv/z/beta/alpha). Hoisted to one `ft`/
+  `pt`/`nt` (mirror lfm2's `tfin`). Commit `aa8881d`.
+- **Q_g2 double-reshape** — `(n_kv, n_groups*L, hd) $ , ((n_kv, n_groups, L,
+  hd) $ , Qp)` had a redundant intermediate 4D reshape (verified equal to the
+  direct `$ , Qp`); simplified to one ravel+reshape in the `_b` and `_bp`
+  group-major reshape across llama/qwen2/qwen3/lfm2/qwen35. Commit `c77a43e`.
+- **`logit_div` no-op scale** — `logits % logit_div` is a vocab-sized no-op
+  copy+divide per generated token for every arch except granite (logit_div=1);
+  gated to only divide when logit_div differs from 1. Commit `132ab09`.
+- **No-op re-reshape of already-correct shapes** — `(B, emb_len) $ , > hidden_all`
+  → `> hidden_all`, the batched-prefill `(c, emb_len) $ , es` → `es` (es is
+  already `(c, emb)`), and `(B, ...) $ , > attn_out` → `> attn_out` in the
+  `*_attention_bd`/`_bp` fallbacks (llama/granite/ernie, qwen2, qwen3, gemma3,
+  lfm2, qwen35). Commit `8908bd6`.
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
