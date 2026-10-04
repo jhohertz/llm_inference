@@ -1336,6 +1336,16 @@ and lint load-probe green.
   already `(c, emb)`), and `(B, ...) $ , > attn_out` → `> attn_out` in the
   `*_attention_bd`/`_bp` fallbacks (llama/granite/ernie, qwen2, qwen3, gemma3,
   lfm2, qwen35). Commit `8908bd6`.
+- **`resid_scale` no-op multiply** — `attn_out * mi_resid_scale mi` and
+  `ffn_raw * mi_resid_scale mi` were no-op copy+multiply for llama/ernie
+  (resid_scale=1); real scaling only for granite (0.263/0.22). Gated on
+  `rs ~: 1` in all four llama block_forward paths (single, `_b`, `_bd`, `_bp`).
+  Commit `5a70bd5`.
+- **embedding `scale` no-op multiply** — `scale * |: (x {"1 emb_w)` was a no-op
+  copy+multiply for llama/ernie/qwen2/qwen3/lfm2/qwen35 (scale=1); real
+  scaling only for gemma3 (`%: emb_len`) and granite (embed_scale=12). Gated on
+  `scale ~: 1` in the four embedding sites (`gen_loop_core` prefill chunk/full +
+  decode, `gen_loop_batch` decode). Commit `3534039`.
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
