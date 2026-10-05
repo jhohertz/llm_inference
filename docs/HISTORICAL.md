@@ -1373,6 +1373,20 @@ and lint load-probe green.
   `lf2_cv_ffn_norm`), also folding the single-use prefill ravel+reshape
   (`((B*c),emb) $ , hidden`) into its rms_norm call where used once. Commit
   `0022a68`.
+- **Inline single-use attention output intermediates** — the attention
+  materialized `attn_raw`/`attn_raw_flat` (a reshape + ravel+reshape of
+  `attn2`) and `attn_o_w` (a single-use weight fetch) then flattened them for
+  the output projection. Inlined the reshape straight into the projection
+  (`(n_heads*hd) $ , attn2`) in the single/_b/_bd (vectorized+fallback)/_bp
+  paths across llama/granite/ernie, qwen2, qwen3, gemma3, lfm2 and qwen35
+  (incl. qwen35's gated-output chain); gemma3's `attn_o_w`/`attn_pn_w`/
+  `attn_all` in the batched output projection. Commits `3dca593`, `50a27da`.
+- **Inline single-use attention score intermediates** — the single-token and
+  `_b`/`_bd` attention materialized `Q_g2`/`Qp` (group-major reshapes),
+  `Kp2`/`Kp_b` (transposes) and `Vp`/`Vp_b` (transposes) — each used once.
+  Inlined into `scores2`/`attn_out` (and `attn2`/`softmax` into the output
+  projection), dropping ~4 per-layer copies; removed the dead `scores` reshape
+  in qwen3. Commits `5977ee9`, `e692e64`.
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
