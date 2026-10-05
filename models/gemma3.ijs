@@ -548,12 +548,9 @@ gem3_attention_bp =: 4 : 0
   end.
 
   NB. Batched output projection (B*c rows) + post-attention norm
-  attn_all =. (B, c, n_heads*head_dim) $ , > attn_raw_all
-  attn_o_w =. gem3_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  attn_out =. |: ((gem3_bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , > attn_raw_all))
   attn_out =. ((B*c) , emb_len) $ , attn_out
-  attn_pn_w =. gem3_bd_attn_pn block_data
-  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_pn_w) , <attn_out)
+  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_pn block_data)) , <attn_out)
   attn_out =. (B, c, emb_len) $ , attn_out
   (<attn_out)
 )
@@ -774,10 +771,8 @@ gem3_attention_bd =: 4 : 0
   end.
 
   NB. Output projection + post-attention norm
-  attn_o_w =. gem3_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: attn_all)   NB. (B, emb)
-  attn_pn_w =. gem3_bd_attn_pn block_data
-  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_pn_w) , <attn_out)
+  attn_out =. |: ((gem3_bd_attn_o block_data) (+/ .* ) |: attn_all)   NB. (B, emb)
+  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_pn block_data)) , <attn_out)
   (<attn_out)
 )
 
