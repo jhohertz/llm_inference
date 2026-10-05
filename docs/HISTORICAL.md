@@ -1387,6 +1387,17 @@ and lint load-probe green.
   Inlined into `scores2`/`attn_out` (and `attn2`/`softmax` into the output
   projection), dropping ~4 per-layer copies; removed the dead `scores` reshape
   in qwen3. Commits `5977ee9`, `e692e64`.
+- **Inline single-use batched-attention intermediates (`_bd`/`_bp`)** — the
+  batched-decode vectorized path materialized `k_rows_b`/`v_rows_b` (cache-window
+  gathers), `Kp_b`/`Q_g2_b`/`Vp_b`, `attn2_b` and (qwen35) `attn_b3`/
+  `attn_gated_b` — each used once. The `_bd` fallback and `_bp` per-seq loop
+  materialized `k_all`/`v_all` (cache reads), `Q_g2`/`Qp`/`Kp2`/`Vp`
+  (reshapes/transposes), `mask_g2`/`mask_3d`/`mask_f`, `attn2` and the redundant
+  `softmax`→`softmax_flat` reshape pair (gemma3 — reshaped straight back to 2D),
+  plus the single-use `q_b`/`k_b`/`v_b` extractions. Inlined all into
+  `scores_b`/`scores_f`/the append, dropping ~6-8 per-layer copies across the
+  three paths. Commits `b3f70f3` (llama), `50ffe3d` (qwen2/qwen3), `37efb5f`
+  (gemma3), `b61477e` (lfm2/qwen35).
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
