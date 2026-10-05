@@ -596,10 +596,7 @@ NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 qw35_block_forward_a_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  layer =. > 1 { y
   mi =. > 2 { y
-  start_pos =. > 3 { y
-  rope =. > 4 { y
   attn_result =. hidden qw35_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
@@ -798,10 +795,7 @@ NB. ---- Batched-DECODE attention block forward ----
 qw35_block_forward_a_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
-  layer =. > 3 { y
-  rope =. > 4 { y
   attn_result =. hidden qw35_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
@@ -819,7 +813,6 @@ NB. x = hidden (B, emb); y = <block_data; pos; mi; layer>
 qw35_ssm_forward_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
   B =. {. $ hidden
@@ -1368,12 +1361,9 @@ NB. ---- Batched-PREFILL block forwards (qwen35) ----
 qw35_block_forward_a_bp =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
-  layer =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
-  rope =. > 5 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden

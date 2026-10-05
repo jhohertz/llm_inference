@@ -185,8 +185,6 @@ gem3_attention =: 4 : 0
     NB. k_all: (win, n_heads_kv, head_dim)
     NB. v_all: (win, n_heads_kv, head_dim)
       
-        n_groups =. n_heads % n_heads_kv
-      
         NB. Compute Q·K^T: (n_heads, head_dim) · (head_dim, n_heads_kv, win) → (n_heads, n_heads_kv, win)
          NB. Move last axis to front: (win,nhkv,hd) -> (hd,nhkv,win)
           k_trans =. 2 0 1 |: k_all
@@ -239,12 +237,9 @@ NB. (positions 0..start_pos-1) PLUS this batch, and writes the batch K/V at star
 gem3_attention_b =: 4 : 0
   block_data =. > 0 { y
   layer =. > 1 { y
-  swa =. > 2 { y
   mi =. > 3 { y
   start_pos =. > 4 { y
   L =. {. $ x
-  n_embd =. {: $ x
-  
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
   n_heads_kv =. gem3_bd_n_heads_kv block_data
@@ -358,10 +353,7 @@ NB. hidden = (L, emb); y = <block_data; swa; mi; layer; start_pos>
 gem3_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  layer =. > 1 { y
-  swa =. > 2 { y
   mi =. > 3 { y
-  start_pos =. > 4 { y
   
   attn_result =. hidden gem3_attention_b y
   attn_out =. > 0 { attn_result
@@ -400,7 +392,6 @@ gem3_run_blocks_b =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  L =. {. $ x
 
   state =. x
   if. 0 = # kv_meta do.
@@ -432,7 +423,6 @@ gem3_attention_bp =: 4 : 0
   hidden =. x   NB. (B, c, emb)
   block_data =. > 0 { y
   layer =. > 1 { y
-  swa =. > 2 { y
   pos =. > 3 { y
   mi =. > 4 { y
   lens =. ''
@@ -547,13 +537,9 @@ NB. x = hidden (B, c, emb); y = <block_data; swa; pos; mi; layer>.  Returns <(B,
 gem3_block_forward_bp =: 4 : 0
   hidden =. x   NB. (B, c, emb)
   block_data =. > 0 { y
-  layer =. > 1 { y
-  swa =. > 2 { y
-  pos =. > 3 { y
   mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
-  rope =. > 6 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -627,7 +613,6 @@ NB. y = <block_data; pos; swa; mi; layer>
 gem3_attention_bd =: 4 : 0
   block_data =. > 0 { y
   pos =. > 1 { y
-  swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
   rope =. > 5 { y
@@ -750,11 +735,7 @@ NB. x = hidden (B, emb); y = <block_data; pos; swa; mi; layer>
 gem3_block_forward_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
-  swa =. > 2 { y
   mi =. > 3 { y
-  layer =. > 4 { y
-  rope =. > 5 { y
   attn_result =. hidden gem3_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
@@ -975,15 +956,11 @@ gem3_infer =: 4 : 0
   
     emb_w =. 'token_embd.weight' get_tensor_cached_d llm
      scale =. %: n_embd
-     vsz =. {: $ emb_w
       NB. token_embd is stored transposed (emb, vocab) — column tok is embedding
       
      tok_list =. , > tokens
     
     output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-    block_data_list =. llm_block_data llm
-    swa =. mi_swa mi
-    mi_for_blocks =. mi
     
     NB. Embed all input tokens (llama.cpp: no sqrt(n_embd) scale, no output_norm before blocks)
     n_tokens =. # tok_list

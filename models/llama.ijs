@@ -165,7 +165,6 @@ llama_attention_b =: 4 : 0
   start_pos =. > 3 { y
   rope =. > 4 { y
   L =. {. $ x
-  n_embd =. {: $ x
   n_heads =. llama_bd_n_heads block_data
   head_dim =. llama_bd_head_dim block_data
   n_heads_kv =. llama_bd_n_heads_kv block_data
@@ -279,10 +278,7 @@ NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos; rope>
 llama_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  layer =. > 1 { y
   mi =. > 2 { y
-  start_pos =. > 3 { y
-  rope =. > 4 { y
   attn_result =. hidden llama_attention_b y
   attn_out =. > 0 { attn_result
   rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
@@ -389,7 +385,6 @@ llama_attention_bd =: 4 : 0
   head_dim =. llama_bd_head_dim block_data
   n_heads_kv =. llama_bd_n_heads_kv block_data
   n_groups =. n_heads % n_heads_kv
-  half =. <. head_dim % 2
 
   NB. Attention norm per row
   hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (llama_bd_attn_norm block_data)) , <x)
@@ -510,7 +505,6 @@ llama_attention_bp =: 4 : 0
   head_dim =. llama_bd_head_dim block_data
   n_heads_kv =. llama_bd_n_heads_kv block_data
   n_groups =. n_heads % n_heads_kv
-  half =. <. head_dim % 2
   eff_seq =. > 1 { kv_meta
 
   NB. Attention norm per row (B*c)
@@ -591,10 +585,7 @@ NB. x = hidden (B, emb); y = <block_data; pos; mi; layer>
 llama_block_forward_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
-  layer =. > 3 { y
-  rope =. > 4 { y
   attn_result =. hidden llama_attention_bd y
   attn_out =. > 0 { attn_result
   rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
@@ -656,12 +647,9 @@ NB. matmuls are batched across B*c rows (amortized).  Returns <(B, c, emb)>.
 llama_block_forward_bp =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  layer =. > 1 { y
-  pos =. > 2 { y
   mi =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
-  rope =. > 5 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
