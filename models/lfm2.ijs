@@ -326,10 +326,7 @@ lf2_attention_b =: 4 : 0
   NB. K/V stay (n_heads_kv, ctx, hd), never expanded to n_heads (7x KV for
   NB. qwen2.5, 4x llama/granite, 2x qwen3). Q reshaped group-major so the
   NB. frames (n_heads_kv) align for +/ .*"2.
-  Qp =. 1 0 2 |: Q        NB. (n_heads, L, hd)
-  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
-  Kp2 =. 1 2 0 |: K        NB. (n_heads_kv, hd, start_pos+L) — one transpose
-  scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
+  scores2 =. ((n_heads_kv , (n_groups * L) , head_dim) $ , (1 0 2 |: Q)) (+/ .* "2) (1 2 0 |: K)   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
   NB. Causal mask: mask[h,t,j]=1 if j>t — hoisted once per chunk (mask_g2).
   scores2 =. scores2 -"2 (mask_g2 * 1e9)
 
@@ -339,11 +336,8 @@ lf2_attention_b =: 4 : 0
   exp_sf =. ^ (scores2 - max_sf)
   softmax_f =. exp_sf % +/"1 exp_sf
 
-  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
-  Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
-  attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
-  NB. Output projection (batched)
-  attn_out =. |: ((lf2_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , attn2))))   NB. (L, emb)
+  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]; output projection
+  attn_out =. |: ((lf2_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , (softmax_f (+/ .* "2) (1 0 2 |: V))))))   NB. (L, emb)
 
   (<attn_out)
 )

@@ -417,12 +417,7 @@ qw35_attention_b =: 4 : 0
   NB. GQA without expanding KV over the combined keys: group the query heads
   NB. (n_heads_kv groups of n_groups) and batched-matmul each group's Q against
   NB. its shared K/V — K/V stay (n_heads_kv, ctx, hd), never expanded to n_heads.
-  Qp =. 1 0 2 |: Q        NB. (n_heads, L, hd)
-  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
-  Kp2 =. 1 2 0 |: K        NB. (n_heads_kv, hd, start_pos+L) — one transpose
-  scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
-  NB. causal mask: query t at start_pos+t, keys 0..start_pos+L-1. Keep scores
-  NB. group-major: tile the 2D mask r-major (row r*L+t needs mask row t) and
+  scores2 =. ((n_heads_kv , (n_groups * L) , head_dim) $ , (1 0 2 |: Q)) (+/ .* "2) (1 2 0 |: K)   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
   NB. Causal mask: hoisted once per chunk (mask_g2).
   scores2 =. scores2 -"2 (mask_g2 * 1e9)
 
@@ -432,11 +427,8 @@ qw35_attention_b =: 4 : 0
   exp_sf =. ^ (scores2 - max_sf)
   softmax_f =. exp_sf % +/"1 exp_sf
 
-  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
-  Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
-  attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
-  NB. Gated output: multiply by sigmoid(gate) per head, then wo
-  attn_flat =. (L , n_heads * head_dim) $ , (((L, n_heads, head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , attn2))) * (sigmoid gate))
+  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]; gated, then wo
+  attn_flat =. (L , n_heads * head_dim) $ , (((L, n_heads, head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , (softmax_f (+/ .* "2) (1 0 2 |: V))))) * (sigmoid gate))
   out =. |: ((qw35_bd_a_o block_data) (+/ .*) |: attn_flat)   NB. (L, emb)
   <out
 )
