@@ -455,21 +455,15 @@ qw2_attention_bd =: 4 : 0
     kv_pos_g =: kv_pos_g >. (0 { pos) + 1
     NB. Gather all B windows in one indexed fetch (rows (base_b[b]+i.win))
     idxr =. base_b +/ i. win
-    k_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)
-    v_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g)
     NB. Batched GQA scores, softmax, V (threaded over B; no causal mask —
     NB. all cached j <= pos valid in single-token decode)
-    Kp_b =. (0 2 3 1) |: k_rows_b
-    Q_g2_b =. (B , n_heads_kv , n_groups , head_dim) $ , Q
-    scores_b =. Q_g2_b (+/ .* "2) Kp_b   NB. (B, n_kv, groups, win)
+    scores_b =. ((B , n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) ((0 2 3 1) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)))   NB. (B, n_kv, groups, win)
     NB. Softmax directly on the 4D scores_b (the old scores_b2 flatten +
     NB. softmax_g2_b re-group were 2 redundant reshape copies per layer)
     max_sf_b =. >./"1 scores_b
     exp_sf_b =. ^ (scores_b - max_sf_b)
     softmax_b =. exp_sf_b % +/"1 exp_sf_b
-    Vp_b =. (0 2 1 3) |: v_rows_b   NB. (B, n_kv, win, hd)
-    attn2_b =. softmax_b (+/ .* "2) Vp_b   NB. (B, n_kv, groups, hd)
-    attn_all =. (B , n_heads * head_dim) $ , attn2_b   NB. (B, n_heads*hd) flat
+    attn_all =. (B , n_heads * head_dim) $ , (softmax_b (+/ .* "2) ((0 2 1 3) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g))))   NB. (B, n_heads*hd) flat
   else.
     attn_out =. ''
     b =. 0
@@ -480,22 +474,16 @@ qw2_attention_bd =: 4 : 0
       pos_b =. b { pos
       kv_write ((3 { y) , (<pos_b) , (<k_b) , (<v_b) , (<b))
       kv_result =. kv_read ((3 { y) , (<pos_b) , (<b))
-      k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
-      v_all =. > 1 { kv_result
       win =. pos_b + 1
       NB. GQA group-major scores (same as the single-token path)
-      Q_g2 =. (n_heads_kv , n_groups , head_dim) $ , q_b
-      Kp2 =. 1 2 0 |: k_all
-      scores2 =. Q_g2 (+/ .* "2) Kp2
+      scores2 =. ((n_heads_kv , n_groups , head_dim) $ , q_b) (+/ .* "2) (1 2 0 |: (> 0 { kv_result))
       NB. Single-token decode: all cached j <= pos_b valid (causal), no mask.
       NB. Softmax directly on the 3D scores2 (the old scores flatten +
       NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
       max_sf =. >./"1 scores2
       exp_sf =. ^ (scores2 - max_sf)
       softmax =. exp_sf % +/"1 exp_sf
-      Vp =. 1 0 2 |: v_all
-      attn2 =. softmax (+/ .* "2) Vp
-      attn_out =. attn_out , <((n_heads * head_dim) $ , attn2)
+      attn_out =. attn_out , <((n_heads * head_dim) $ , (softmax (+/ .* "2) (1 0 2 |: (> 1 { kv_result))))
       b =. b + 1
     end.
     attn_all =. > attn_out
@@ -639,34 +627,25 @@ qw2_attention_bp =: 4 : 0
   while. b < B do.
     q_b =. b { Q
     k_b =. b { K
-    v_b =. b { V
     pos_b =. b { pos
     base_b =. ((layer * kv_batch_g) + b) * eff_seq
     idxw =. base_b + pos_b + i. c
-    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
-    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { K)) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { V)) idxw} v_cache_g
     kv_pos_g =: kv_pos_g >. pos_b + c
     win =. pos_b + c
-    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
-    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
     mask_2d =. (pos_b + i. c) </ i. win   NB. (c, win)
     if. 0 < # lens do.
       mask_2d =. mask_2d +. ((i. win) >: b { lens)
     end.
-    mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
-    Qp =. 1 0 2 |: q_b   NB. (n_heads, c, hd)
-    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
-    Kp2 =. 1 2 0 |: k_all   NB. (n_kv, hd, win)
-    scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, groups*c, win)
-    scores2 =. scores2 -"2 (mask_g2 * 1e9)
+    scores2 =. ((n_heads_kv, (n_groups*c), head_dim) $ , (1 0 2 |: (b { Q))) (+/ .* "2) (1 2 0 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)))   NB. (n_kv, groups*c, win)
+    scores2 =. scores2 -"2 (((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1))) * 1e9)
     NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
     NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
     max_sf =. >./"1 scores2
     exp_sf =. ^ (scores2 - max_sf)
     softmax_f =. exp_sf % +/"1 exp_sf
-    Vp =. 1 0 2 |: v_all   NB. (n_kv, win, hd)
-    attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, groups*c, hd)
-    attn_out =. attn_out , <((c, n_heads*head_dim) $ , (1 0 2 |: ((n_heads, c, head_dim) $ , attn2)))
+    attn_out =. attn_out , <((c, n_heads*head_dim) $ , (1 0 2 |: ((n_heads, c, head_dim) $ , (softmax_f (+/ .* "2) (1 0 2 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)))))))
     b =. b + 1
   end.
   attn_all =. > attn_out
