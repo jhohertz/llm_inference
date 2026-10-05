@@ -499,23 +499,16 @@ gem3_attention_bp =: 4 : 0
   attn_raw_all =. ''
   b =. 0
   while. b < B do.
-    q_b =. b { Q
-    k_b =. b { K
-    v_b =. b { V
     pos_b =. b { pos
     base_b =. ((layer * kv_batch_g) + b) * eff_seq
     idxw =. base_b + pos_b + i. c
-    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
-    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { K)) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { V)) idxw} v_cache_g
     kv_pos_g =: kv_pos_g >. pos_b + c
     win =. pos_b + c
-    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
-    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
 
     NB. scores: Qf·Kf^T over the window (c*nh, win*nk)
-    Qf =. ((c * n_heads) , head_dim) $ , q_b
-    Kf =. ((win * n_heads_kv) , head_dim) $ , k_all
-    scores_all =. Qf (+/ .* ) |: Kf   NB. (c*nh, win*nk)
+    scores_f =. ((c * n_heads * n_heads_kv) , win) $ , ((((c * n_heads) , head_dim) $ , (b { Q)) (+/ .* ) |: (((win * n_heads_kv) , head_dim) $ , ((base_b + i. win) { k_cache_g)))
 
     NB. mask: causal + SWA (window swa_l) + lens (padding)
     key_pos =. i. win
@@ -529,21 +522,15 @@ gem3_attention_bp =: 4 : 0
       mask_2d =. mask_2d +. ((i. win) >: b { lens)
     end.
     NB. Fused mask (c,win) -> (c*nh*nk, win) [t,g,j] row order g = h*nk+k
-    mask_3d =. (0 2 1) |: (mask_2d (*/) ((n_heads * n_heads_kv) $ 1))
-    mask_f =. ((c * n_heads * n_heads_kv) , win) $ , mask_3d
-    scores_f =. ((c * n_heads * n_heads_kv) , win) $ , scores_all
-    scores_f =. scores_f - (mask_f * 1e9)
+    scores_f =. scores_f - (((c * n_heads * n_heads_kv) , win) $ , ((0 2 1) |: (mask_2d (*/) ((n_heads * n_heads_kv) $ 1))) * 1e9)
 
     NB. per-row softmax over j
     max_sf =. >./"1 scores_f
     exp_sf =. ^ (scores_f - max_sf)
     softmax_f =. exp_sf % +/"1 exp_sf
-    softmax =. (c, n_heads, n_heads_kv, win) $ , softmax_f
 
     NB. attn_raw[t,h] = sum_{k,j} softmax[t,h,k,j] * V[j,k]
-    softmax_flat =. ((c * n_heads) , (n_heads_kv * win)) $ , softmax
-    v_flat =. ((n_heads_kv * win) , head_dim) $ , (1 0 2 |: v_all)
-    attn_raw_all =. attn_raw_all , <((c, n_heads, head_dim) $ , (softmax_flat (+/ .* ) v_flat))
+    attn_raw_all =. attn_raw_all , <((c, n_heads, head_dim) $ , ((((c * n_heads) , (n_heads_kv * win)) $ , softmax_f) (+/ .* ) ((n_heads_kv * win) , head_dim) $ , (1 0 2 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)))))
     b =. b + 1
   end.
 
@@ -714,57 +701,39 @@ gem3_attention_bd =: 4 : 0
     kv_pos_g =: kv_pos_g >. (0 { pos) + 1
     NB. Gather all B windows in one indexed fetch
     idxr =. base_b +/ i. win
-    k_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)
-    v_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g)
     NB. Batched MQA scores (each query head attends the shared n_kv heads)
     n_groups =. n_heads % n_heads_kv
-    Q_g2_b =. (B , n_heads_kv , n_groups , head_dim) $ , Q
-    Kp_b =. (0 2 3 1) |: k_rows_b   NB. (B, n_kv, hd, win)
-    scores_b =. Q_g2_b (+/ .* "2) Kp_b   NB. (B, n_kv, groups, win)
+    scores_b =. ((B , n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) ((0 2 3 1) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)))   NB. (B, n_kv, groups, win)
     scores_b2 =. (B , n_heads , win) $ , scores_b
     NB. SWA + causal mask (B-independent in lockstep: win is shared)
     swa_l =. gem3_bd_swa_l block_data
     mask_1d =. (i. win) < (win - swa_l)
     mask_1d =. (swa_l > 0) *. mask_1d
-    mask_3d_b =. (B , n_heads , win) $ , (((B * n_heads) $ 1) (*/) mask_1d)
-    scores_b2 =. scores_b2 - (mask_3d_b * 1e9)
+    scores_b2 =. scores_b2 - (((B , n_heads , win) $ , (((B * n_heads) $ 1) (*/) mask_1d)) * 1e9)
     max_sf_b =. >./"1 scores_b2
     exp_sf_b =. ^ (scores_b2 - max_sf_b)
     softmax_b =. exp_sf_b % +/"1 exp_sf_b
-    softmax_g2_b =. (B , n_heads_kv , n_groups , win) $ , softmax_b
-    Vp_b =. (0 2 1 3) |: v_rows_b   NB. (B, n_kv, win, hd)
-    attn2_b =. softmax_g2_b (+/ .* "2) Vp_b   NB. (B, n_kv, groups, hd)
-    attn_all =. (B , n_heads * head_dim) $ , attn2_b
+    attn_all =. (B , n_heads * head_dim) $ , (((B , n_heads_kv , n_groups , win) $ , softmax_b) (+/ .* "2) ((0 2 1 3) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g))))
   else.
     NB. Per-sequence: SWA-masked causal scores/softmax/output (gem3_attention shape)
     attn_out =. ''
     b =. 0
     while. b < B do.
-      q_b =. (n_heads, head_dim) $ ,(b { Q)
-      k_b =. (n_heads_kv, head_dim) $ ,(b { K)
-      v_b =. (n_heads_kv, head_dim) $ ,(b { V)
       pos_b =. b { pos
-      kv_write ((4 { y) , (<pos_b) , (<k_b) , (<v_b) , (<b))
+      kv_write ((4 { y) , (<pos_b) , (<((n_heads_kv, head_dim) $ ,(b { K))) , (<((n_heads_kv, head_dim) $ ,(b { V))) , (<b))
       kv_result =. kv_read ((4 { y) , (<pos_b) , (<b))
-      k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
-      v_all =. > 1 { kv_result
       win =. pos_b + 1
       NB. Causal + sliding window mask (swa_l per-layer; dense layers swa_l=0)
       swa_l =. gem3_bd_swa_l block_data
       mask_1d =. (i. win) < (win - swa_l)
       mask_1d =. (swa_l > 0) *. mask_1d
-      mask_3d =. (n_heads, win, n_heads_kv) $ mask_1d
-      k_trans =. 2 0 1 |: k_all   NB. (hd, win, n_kv)
-      scores =. q_b (+/ .* ) k_trans   NB. (n_heads, win, n_kv)
-      scores =. scores - (mask_3d * 1e9)
+      scores =. ((n_heads, head_dim) $ ,(b { Q)) (+/ .* ) (2 0 1 |: (> 0 { kv_result))   NB. (n_heads, win, n_kv)
+      scores =. scores - (((n_heads, win, n_heads_kv) $ mask_1d) * 1e9)
       scores_f =. (n_heads, n_heads_kv * win) $ ,scores
       max_sf =. >./"1 scores_f
       exp_sf =. ^ (scores_f - max_sf)
       softmax_f =. exp_sf % +/"1 exp_sf
-      softmax =. (n_heads, n_heads_kv, win) $ ,softmax_f
-      v_flat =. (n_heads_kv * win, head_dim) $ ,(1 0 2 |: v_all)
-      softmax_flat =. (n_heads, n_heads_kv * win) $ ,softmax
-      attn_out =. attn_out , <((n_heads * head_dim) $ , (softmax_flat (+/ .* ) v_flat))
+      attn_out =. attn_out , <((n_heads * head_dim) $ , (softmax_f (+/ .* ) ((n_heads_kv * win, head_dim) $ , (1 0 2 |: (> 1 { kv_result)))))
       b =. b + 1
     end.
     attn_all =. > attn_out
