@@ -142,9 +142,7 @@ llama_attention =: 4 : 0
   NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
   NB. n_groups) and matmul each group's Q against its shared K/V — k_all/v_all
   NB. stay (win, n_heads_kv, hd), never expanded to n_heads (4x llama).
-  Q_g2 =. (n_heads_kv , n_groups , head_dim) $ , Q   NB. Q (n_heads, hd) -> (n_kv, n_g, hd)
-  Kp2 =. 1 2 0 |: k_all   NB. (n_kv, hd, win) — one transpose (the 1 0 2 |: + |:"2 two-pass was ~4x slower)
-  scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups, win): Q[g,r,d] vs K[j,g,d]
+  scores2 =. ((n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) (1 2 0 |: k_all)   NB. (n_kv, n_groups, win): Q[g,r,d] vs K[j,g,d]
   NB. Single-token decode: all cached j <= pos valid (causal), no mask.
 
   NB. Softmax directly on the 3D scores2 (the old scores flatten +
@@ -153,11 +151,8 @@ llama_attention =: 4 : 0
   exp_sf =. ^ (scores2 - max_sf)
   softmax =. exp_sf % +/"1 exp_sf   NB. (n_kv, n_groups, win)
 
-  NB. Output: attn[h] = sum_j softmax[h,j] * V[j,g(h)]
-  Vp =. 1 0 2 |: v_all   NB. (n_kv, win, hd)
-  attn2 =. softmax (+/ .* "2) Vp   NB. (n_kv, n_groups, hd)
-  NB. Output projection
-  attn_out =. (llama_bd_attn_o block_data) linear_r ((n_heads * head_dim) $ , attn2)
+  NB. Output: attn[h] = sum_j softmax[h,j] * V[j,g(h)]; output projection
+  attn_out =. (llama_bd_attn_o block_data) linear_r ((n_heads * head_dim) $ , (softmax (+/ .* "2) (1 0 2 |: v_all)))
   (<attn_out)
 )
 
