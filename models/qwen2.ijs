@@ -158,11 +158,8 @@ qw2_attention =: 4 : 0
   NB. Output: attn[h] = sum_j softmax[h,j] * V[j,g(h)]
   Vp =. 1 0 2 |: v_all   NB. (n_kv, win, hd)
   attn2 =. softmax (+/ .* "2) Vp   NB. (n_kv, n_groups, hd)
-  attn_raw =. (n_heads, head_dim) $ , attn2   NB. [h,d]
-
   NB. Output projection
-  attn_raw_flat =. (n_heads * head_dim) $ , attn_raw
-  attn_out =. (qw2_bd_attn_o block_data) linear_r attn_raw_flat
+  attn_out =. (qw2_bd_attn_o block_data) linear_r ((n_heads * head_dim) $ , attn2)
   (<attn_out)
 )
 
@@ -264,11 +261,8 @@ qw2_attention_b =: 4 : 0
   NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
   Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
   attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
-  attn_raw =. (n_heads, L, head_dim) $ , attn2   NB. [h,t,d]
-
   NB. Output projection (batched)
-  attn_o_w =. qw2_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: attn_raw)))   NB. (L, emb)
+  attn_out =. |: ((qw2_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , attn2))))   NB. (L, emb)
 
   (<attn_out)
 )
@@ -506,9 +500,7 @@ qw2_attention_bd =: 4 : 0
       softmax =. exp_sf % +/"1 exp_sf
       Vp =. 1 0 2 |: v_all
       attn2 =. softmax (+/ .* "2) Vp
-      attn_raw =. (n_heads, head_dim) $ , attn2
-      attn_raw_flat =. (n_heads * head_dim) $ , attn_raw
-      attn_out =. attn_out , <attn_raw_flat
+      attn_out =. attn_out , <((n_heads * head_dim) $ , attn2)
       b =. b + 1
     end.
     attn_all =. > attn_out
@@ -679,9 +671,7 @@ qw2_attention_bp =: 4 : 0
     softmax_f =. exp_sf % +/"1 exp_sf
     Vp =. 1 0 2 |: v_all   NB. (n_kv, win, hd)
     attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, groups*c, hd)
-    attn_raw =. (n_heads, c, head_dim) $ , attn2   NB. [h, row, d]
-    attn_raw_flat =. (c, n_heads*head_dim) $ , (1 0 2 |: attn_raw)
-    attn_out =. attn_out , <attn_raw_flat
+    attn_out =. attn_out , <((c, n_heads*head_dim) $ , (1 0 2 |: ((n_heads, c, head_dim) $ , attn2)))
     b =. b + 1
   end.
   attn_all =. > attn_out

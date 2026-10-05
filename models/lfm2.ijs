@@ -245,9 +245,18 @@ NB. LFM2 attention layers are qwen3-style: per-head Q/K RMSNorm before RoPE,
 NB. NEOX RoPE, scale 1/sqrt(head_dim), GQA, no QKV biases.
 lf2_attention_b =: 4 : 0
   block_data =. > 0 { y
-  mi =. > 1 { y
-  layer =. > 2 { y
+  layer =. > 1 { y
+  mi =. > 2 { y
   start_pos =. > 3 { y
+  rope =. > 4 { y
+  NB. rope = <cos_all; sin_all; cos_expq; sin_expq; cos_expk; sin_expk; mask_g2>
+  cos_all =. > 0 { rope
+  sin_all =. > 1 { rope
+  cos_expq =. > 2 { rope
+  sin_expq =. > 3 { rope
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
+  mask_g2 =. > 6 { rope
   L =. {. $ x
   n_embd =. {: $ x
   n_heads =. lf2_bd_n_heads block_data
@@ -281,20 +290,15 @@ lf2_attention_b =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_k_norm block_data) , <Kf)
   K =. (L, n_heads_kv, head_dim) $ , Kf
 
-  NB. NEOX RoPE batched (table-based): pairs (i, i+half) per row
-  cos_all =. (start_pos + i. L) { mi_cos_tab mi    NB. (L, half)
-  sin_all =. (start_pos + i. L) { mi_sin_tab mi
+  NB. NEOX RoPE batched (table-based): pairs (i, i+half) per row — tables +
+  NB. expansions hoisted once per chunk (mirror llama_run_blocks_b).
   Qa =. half {. "1 Q        NB. (L, n_heads, half) first half
   Qb =. half }. "1 Q        NB. (L, n_heads, half) second half
-  cos_expq =. (0 2 1) |: ((L , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_expq =. (0 2 1) |: ((L , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
   Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
   Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
   Q =. (L, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
   Ka =. half {. "1 K        NB. (L, n_heads_kv, half)
   Kb =. half }. "1 K
-  cos_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
   Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
   K =. (L, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
@@ -326,16 +330,7 @@ lf2_attention_b =: 4 : 0
   Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
   Kp2 =. 1 2 0 |: K        NB. (n_heads_kv, hd, start_pos+L) — one transpose
   scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
-  NB. causal mask: mask[h,t,j]=1 if j>t; query t at position start_pos+t, keys
-  NB. 0..start_pos+L-1. Keep scores group-major: tile the 2D mask r-major
-  NB. (row r*L+t needs mask row t) and subtract with rank over the kv-head
-  NB. frame — no (n_heads, L, tot) 3D mask and no scores re-shape copy.
-  key_pos =. i. (start_pos + L)
-  q_pos =. start_pos + i. L
-  mask_2d =. q_pos </ key_pos
-  NB. Fast r-major boolean tile via the (*/) broadcast (the cyclic boolean
-  NB. reshape (n_groups,L,ctx)$mask_2d is ~100x slower); scaled at subtract.
-  mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+  NB. Causal mask: mask[h,t,j]=1 if j>t — hoisted once per chunk (mask_g2).
   scores2 =. scores2 -"2 (mask_g2 * 1e9)
 
   NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
@@ -347,11 +342,8 @@ lf2_attention_b =: 4 : 0
   NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
   Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
   attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
-  attn_raw =. (n_heads, L, head_dim) $ , attn2   NB. [h,t,d]
-
   NB. Output projection (batched)
-  attn_o_w =. lf2_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: attn_raw)))   NB. (L, emb)
+  attn_out =. |: ((lf2_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , attn2))))   NB. (L, emb)
 
   (<attn_out)
 )
@@ -361,9 +353,10 @@ NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 lf2_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  mi =. > 1 { y
-  layer =. > 2 { y
+  layer =. > 1 { y
+  mi =. > 2 { y
   start_pos =. > 3 { y
+  rope =. > 4 { y
   attn_result =. hidden lf2_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
@@ -450,16 +443,35 @@ lf2_run_blocks_b =: 4 : 0
       lf2_conv_create ((<lf2_n_conv_g) , (<2) , (<emb_len))
     end.
   end.
+  NB. RoPE tables are per-model and identical across layers (freq is model
+  NB. level): compute the cos/sin tables + expansions ONCE per chunk and thread
+  NB. through the layer loop (mirror llama_run_blocks_b), instead of recomputing
+  NB. them in every layer.  The causal mask is layer-invariant too.
+  L =. {. $ x
+  half =. <. head_dim % 2
+  n_heads =. mi_n_heads mi
+  cos_all =. (start_pos + i. L) { mi_cos_tab mi
+  sin_all =. (start_pos + i. L) { mi_sin_tab mi
+  cos_expq =. (0 2 1) |: ((L , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_expq =. (0 2 1) |: ((L , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  n_groups =. n_heads % n_heads_kv
+  key_pos =. i. (start_pos + L)
+  q_pos =. start_pos + i. L
+  mask_2d =. q_pos </ key_pos
+  mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. <mi is layer-invariant — box once, reuse per layer (index 1 in both branches).
-  bf_pre =. <mi
+  NB. <mi, <start_pos, <rope are layer-invariant — box once, reuse per layer.
+  bf_pre =. ((<mi) , (<start_pos) , <rope)
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_b ((<block_data) , bf_pre , <b)
+      result =. state lf2_conv_forward_b ((<block_data) , (<mi) , <b)
     else.
-      result =. state lf2_block_forward_b ((<block_data) , bf_pre , (<b) , (<start_pos))
+      result =. state lf2_block_forward_b ((<block_data) , (<b) , bf_pre)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -564,9 +576,7 @@ lf2_attention_bp =: 4 : 0
     softmax_f =. exp_sf % +/"1 exp_sf
     Vp =. 1 0 2 |: v_all
     attn2 =. softmax_f (+/ .* "2) Vp
-    attn_raw =. (n_heads, c, head_dim) $ , attn2
-    attn_raw_flat =. (c, n_heads*head_dim) $ , (1 0 2 |: attn_raw)
-    attn_out =. attn_out , <attn_raw_flat
+    attn_out =. attn_out , <((c, n_heads*head_dim) $ , (1 0 2 |: ((n_heads, c, head_dim) $ , attn2)))
     b =. b + 1
   end.
   attn_all =. > attn_out
@@ -832,9 +842,7 @@ lf2_attention_bd =: 4 : 0
       softmax =. exp_sf % +/"1 exp_sf
       Vp =. 1 0 2 |: v_all
       attn2 =. softmax (+/ .* "2) Vp
-      attn_raw =. (n_heads, head_dim) $ , attn2
-      attn_raw_flat =. (n_heads * head_dim) $ , attn_raw
-      attn_out =. attn_out , <attn_raw_flat
+      attn_out =. attn_out , <((n_heads * head_dim) $ , attn2)
       b =. b + 1
     end.
     attn_all =. > attn_out

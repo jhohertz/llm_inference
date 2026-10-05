@@ -220,13 +220,8 @@ gem3_attention =: 4 : 0
       
       NB. Flatten softmax to 2D for matrix multiply
       softmax_flat =. (n_heads, n_heads_kv * win) $ , softmax
-        attn_raw =. softmax_flat (+/ .* ) v_flat   NB. (n_heads, head_dim)
-      
-         NB. Output projection: attn_o is [in, out] = [n_heads*head_dim, emb_len]
-         NB. Flatten attn_raw from (n_heads, head_dim) to (n_heads*head_dim,) for matmul
-         attn_o_w =. gem3_bd_attn_o block_data
-         attn_raw_flat =. (n_heads * head_dim) $ , attn_raw
-         attn_out =. attn_o_w (+/ .* ) attn_raw_flat
+        NB. Output projection: attn_o is [in, out] = [n_heads*head_dim, emb_len]
+        attn_out =. (gem3_bd_attn_o block_data) (+/ .* ) ((n_heads * head_dim) $ , (softmax_flat (+/ .* ) v_flat))
      
      NB. Post-attention norm
     attn_pn_w =. gem3_bd_attn_pn block_data
@@ -348,12 +343,8 @@ gem3_attention_b =: 4 : 0
   NB. attn_raw[t,h] = sum_{k,j} softmax[t,h,k,j] * V[j,k]
   softmax_flat =. ((L * n_heads) , (n_heads_kv * (start_pos + L))) $ , softmax
   v_flat =. ((n_heads_kv * (start_pos + L)) , head_dim) $ , (1 0 2 |: V)   NB. (L,nk,hd)->(nk,L,hd)->flat
-  attn_raw_flat =. softmax_flat (+/ .* ) v_flat          NB. (L*nh, hd)
-  attn_raw =. (L, n_heads, head_dim) $ ,attn_raw_flat
-  
   NB. Output projection attn_o: [emb, n_heads*head_dim]; batched
-  attn_o_w =. gem3_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: ((L, n_heads * head_dim) $ ,attn_raw))   NB. (L, emb)
+  attn_out =. |: ((gem3_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , ((L, n_heads, head_dim) $ , (softmax_flat (+/ .* ) v_flat))))   NB. (L, emb)
   
   NB. Post-attention norm per row
   attn_pn_w =. gem3_bd_attn_pn block_data
@@ -552,9 +543,7 @@ gem3_attention_bp =: 4 : 0
     NB. attn_raw[t,h] = sum_{k,j} softmax[t,h,k,j] * V[j,k]
     softmax_flat =. ((c * n_heads) , (n_heads_kv * win)) $ , softmax
     v_flat =. ((n_heads_kv * win) , head_dim) $ , (1 0 2 |: v_all)
-    attn_raw_flat =. softmax_flat (+/ .* ) v_flat   NB. (c*nh, hd)
-    attn_raw =. (c, n_heads, head_dim) $ , attn_raw_flat
-    attn_raw_all =. attn_raw_all , <attn_raw
+    attn_raw_all =. attn_raw_all , <((c, n_heads, head_dim) $ , (softmax_flat (+/ .* ) v_flat))
     b =. b + 1
   end.
 
@@ -778,9 +767,7 @@ gem3_attention_bd =: 4 : 0
       softmax =. (n_heads, n_heads_kv, win) $ ,softmax_f
       v_flat =. (n_heads_kv * win, head_dim) $ ,(1 0 2 |: v_all)
       softmax_flat =. (n_heads, n_heads_kv * win) $ ,softmax
-      attn_raw =. softmax_flat (+/ .* ) v_flat   NB. (n_heads, hd)
-      attn_raw_flat =. (n_heads * head_dim) $ ,attn_raw
-      attn_out =. attn_out , <attn_raw_flat
+      attn_out =. attn_out , <((n_heads * head_dim) $ , (softmax_flat (+/ .* ) v_flat))
       b =. b + 1
     end.
     attn_all =. > attn_out
