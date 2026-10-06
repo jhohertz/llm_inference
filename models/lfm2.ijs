@@ -351,9 +351,7 @@ lf2_block_forward_b =: 4 : 0
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
-  gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)   NB. (L, n_ff)
-  up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
-  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
+  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in) swiglu ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in))
   output =. ffn_raw + sa_out
   (<output)
 )
@@ -580,9 +578,7 @@ lf2_block_forward_bp =: 4 : 0
   sa_out =. attn_out + input
   sa_flat =. ((B*c) , emb_len) $ , sa_out
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_flat)
-  gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)
-  up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
-  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
+  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in) swiglu ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in))
   output_flat =. ffn_raw + sa_flat
   output =. (B, c, emb_len) $ , output_flat
   (<output)
@@ -825,9 +821,7 @@ lf2_block_forward_bd =: 4 : 0
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + input
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
-  gate =. |: ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in)   NB. (B, n_ff)
-  up =. |: ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in)
-  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) |: (gate swiglu up))
+  ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in) swiglu ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in))
   output =. ffn_raw + sa_out
   (<output)
 )
