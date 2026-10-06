@@ -1398,6 +1398,20 @@ and lint load-probe green.
   `scores_b`/`scores_f`/the append, dropping ~6-8 per-layer copies across the
   three paths. Commits `b3f70f3` (llama), `50ffe3d` (qwen2/qwen3), `37efb5f`
   (gemma3), `b61477e` (lfm2/qwen35).
+- **Inline single-use FFN gate/up projections (`_b`/`_bd`/`_bp`)** — the FFN
+  materialized `gate`/`up` (the `|:`-transposed gate/up matmul results) as
+  locals used only in `gate swiglu up`; gemma3 materialized `gate_out`/`up_out`
+  (its fused gate+up split). Inlined them straight into the down-projection
+  (`ffn_raw =. |: ((ff_down (+/ .* ) ((ff_gate (+/ .* ) ft) swiglu (ff_up (+/ .* ) ft))))` —
+  the swiglu result is already `(n_ff, rows)` so the extra `|:` before the
+  down-matmul is dropped; verified bit-identical since `swiglu`/`geglu` are
+  elementwise and the transpose cancels in the down contraction). Removes ~2
+  per-layer copies across llama/granite/ernie, qwen2, qwen3, lfm2 and gemma3.
+  Commit `5889eab`.
+  - **Regression caught**: an incomplete gemma3 revert left `ff_down_w`
+    undefined in `_bp`/`_bd`, which (via a stale global of the wrong shape)
+    made the down-matmul materialize a huge array — OOM during batched. Fixed
+    by keeping the `ff_down_w` fetch alongside the inline.
 
 Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
 single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
