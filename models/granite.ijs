@@ -265,17 +265,25 @@ granite_infer =: 4 : 0
   if. 1 = n_tokens do.
     tok =. 0 { tok_list
     hidden =. scale * |: (tok {"1 emb_w)
-    pre_s =. 6!:2 'result =. hidden granite_run_blocks (<llm) , <0'
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result =. hidden granite_run_blocks (<llm) , <0'
+    else.
+      result =. hidden granite_run_blocks (<llm) , <0
+    end.
     hidden =. > 0 { result
   else.
     emb_all =. scale * |: (tok_list {"1 emb_w)
-    pre_s =. 6!:2 'result_b =. emb_all granite_run_blocks_b ((<llm) , <0)'
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result_b =. emb_all granite_run_blocks_b ((<llm) , <0)'
+    else.
+      result_b =. emb_all granite_run_blocks_b ((<llm) , <0)
+    end.
     h_b =. > 0 { result_b
     hidden =. > (n_tokens - 1) { h_b
   end.
   logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
   logits =. logits % granite_mi_logit_scale mi
-  report_prefill (pre_s , n_tokens)
+  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
   pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
   decoded =. granite_detokenize (<llm) , <pred_tok
   tokens ; pred_tok ; decoded ; logits
