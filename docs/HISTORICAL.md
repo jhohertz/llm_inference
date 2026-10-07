@@ -1134,3 +1134,308 @@ beneficial application in the codebase:
 
 So LoopWithInitial stays as a general idiom in docs/J-KNOWLEDGE.md (Ch 36
 review); no current call site. Not a planned item.
+
+## Batched decode vectorization — qwen35 / lfm2 / gemma3 (2026-10)
+
+The batched-decode path (`gen_loop_batch` → `*_run_blocks_bd`) is now fully
+vectorized in the common lockstep case (all sequences share a position), and the
+arches with per-sequence recurrent state got their always-hit per-seq loops
+collapsed into one vectorized pass. Verified bit-exact vs single inference
+(`tests/j/test_batched.ijs` 11/11 — B=2, B=3, variable-length across all 8
+arches; lint load-probe gate green).
+
+- **qwen35 (gated-delta-net SSM)** — `models/qwen35.ijs`. Added
+  `qw35_ssm_recur_b` (one vectorized delta-net recurrence across all B sequences;
+  J threads the rank-4 matmuls over the `(B, n_v_heads)` cell axes) and
+  `rs_read_b_all`/`rs_write_b_all` (single indexed pass over all B sequences'
+  conv+s recurrent state). The per-seq loop in `qw35_ssm_forward_bd` is now a
+  single vectorized pass (conv + l2norm + recurrence + gated norm + state write).
+  Bit-exact vs the per-seq path (q/k/v/conv/s_new/o and the full forward `-:`);
+  ~3.9x per-sequence throughput at B=4.
+- **lfm2 (shortconv)** — `models/lfm2.ijs`. Added
+  `lf2_conv_read_b_all`/`lf2_conv_write_b_all` and vectorized the per-seq conv in
+  both `lf2_conv_forward_bd` (decode, c=1) and `lf2_conv_forward_bp` (batched
+  prefill — sliding 3-tap window over the `(2+c)` rows). The prefill conv-state
+  WRITE stays per-seq because the padding mask (`real_c`) is per-sequence
+  (correct — padding must not contaminate the sliding window). Verified B=2
+  identical + variable-length (long+short) == single.
+- **gemma3 (MQA + SWA)** — `models/gemma3.ijs`. `gem3_attention_bd` gained a
+  batched LOCKSTEP branch before the per-seq fallback: ONE list-selector KV
+  cache write, ONE indexed gather of the B windows, threaded batched
+  scores/softmax/V (`n_groups = n_heads/n_heads_kv`; gemma3 is MQA — n_heads=4,
+  n_heads_kv=1), with the per-layer SWA causal mask broadcast over B
+  (B-independent in lockstep). The per-seq loop remains as the fallback for
+  unequal positions (verified correct). ~3.6x per-sequence throughput at B=4.
+- **llama / qwen2 / qwen3 / granite / ernie** — already had the batched lockstep
+  branch in `*_attention_bd`; no change needed.
+- **J gotchas hit while wiring these**: `;`-chaining RE-BOXES when the left is
+  already a box list (the debug-block double-box bug); `(bi + i. 1){x` is
+  `(1, n)` but `bi{x` is `(n,)` (scalar-vs-row shape for the recurrence decay);
+  control words (`for.`/`while.`) are invalid at script top level — wrap in a
+  `3 : 0`/`4 : 0` definition; reshape-paren tangling — use intermediate shape
+  vars; `(B, rows, cols) $ mask_1d` does NOT broadcast — use
+  `((B * rows) $ 1) (*/) mask_1d`.
+
+## jllama study (reference/jllama) — adopted / evaluated (2026-10)
+
+Deep dive on the third-party `reference/jllama` engine (tmcguirefl/jllama) — a
+much smaller, single-skeleton, CLI-only J LLM. All eight findings are resolved
+(done / adopted-in-simpler-form / evaluated-and-kept); recorded here and removed
+from PLAN.md (which keeps only planned work). Original text lived in PLAN.md's
+"jllama Study" section.
+
+1. **Boxing/packing gotcha doc — DONE.** Adopted jllama's explicit "Boxing /
+   packing rules" block as the canonical section **"Boxing / Packing Rules —
+   CRITICAL IN J"** in docs/J-KNOWLEDGE.md (the 5 rules: `<"_` enclose vs `<`,
+   multiple-assignment spread, `'a b c' =. <open_list` does NOT spread — open
+   first, chained `a ; b ; c` RE-BOXES when the left is already a box list —
+   pack mixed nested args with `(<a) , (<b) , already_boxed_c , (<d)`,
+   pure-numeric `;`). Cross-references gotchas 12/14/15/20 + the `;`-nesting
+   corollaries (max_rounds ordering, kv_write_rows precedence, _run_blocks
+   boxing, named-box catenation). AGENTS.md points to it.
+2. **F16 decode LUT — ALREADY IMPLEMENTED (assessed/closed).** jllama builds a
+   65536-entry LUT once and indexes it; we already do the same in `gguf/gguf.ijs`
+   (`f16_table` + the tacit `f16_load`, ~0.37s for 270M vs ~0.76s explicit) +
+   a per-tensor `f16_decode` fallback. No change needed.
+3. **Clone-and-run bootstrap — ASSESSED; adopted in SIMPLER FORM.** jllama's
+   `sysutils.ijs` derives ROOT from `4!:3 ''` so the checkout runs directly; we
+   REJECTED the literal ROOT-relative-load rewrite (too invasive: every module
+   uses addon-name `require`; the conditional arch `require` in
+   `load_gguf_to_llm` relies on idempotency). Adopted the same goal via
+   **auto-install**: `tests/j/run_all_tests.sh` and `scripts/lint.sh` run
+   `install_local.sh --force` up front, so tests/lint always exercise the
+   current checkout.
+4. **`sample_cfg_pack` config normalization — DONE.** Added
+   `sample_params_pack` to util/sampler.ijs (jllama `sample_cfg_pack`-style):
+   accepts an open numeric list, a `;`-list of boxes, or a double-boxed scalar
+   box of `<temp;k;p;min_p>`; returns the open flat list padded to 4 with
+   defaults (`temp=1.0, k=0, p=0.95, min_p=0.0`) and truncated to 4. Refactored
+   the three duplicate inline normalizers (`sampler_sample`, `infer_args`,
+   `gen_args`) to use it. Sampler suite 32/32.
+5. **`allclose` (atol/rtol) — DONE.** Added jllama-style
+   `x allclose y` = `*./ , (| x - y) <: ATOL + RTOL * | y` to
+   kernels/jfloat.ijs (`ATOL =: 1e_9`, `RTOL =: 1e_6`, dyadic-only); reused for
+   near-equality checks (test_swa single==batched logits). Kernel suite 32/32.
+6. **Small kernel idioms — ALREADY IMPLEMENTED (assessed/closed, no change).**
+   attention scale `1/sqrt(head_dim)` via `Q =. Q % head_dim ^ 0.5` (pre-scale,
+   llama.cpp style; granite's data-driven `0.015625` is the documented
+   exception); ravel-before-reshape `$ , y` used everywhere; fused-weight split
+   via `{."1`/`}."1`. No change.
+7. **Per-module named locales (tradeoff) — ASSESSED; keep single locale.** Our
+   single `inference` locale is deliberate — the global-verb rebinding pattern
+   (`gen_cb_g`/`chat_cb_g`/`chat_tool_fn_g`) works because verb-assignment
+   aliases the NAME where the verb is CALLED, which a named-locale split would
+   break (chat_tui.ijs). No change.
+8. **Arch-as-noun + `0!:0` rewiring (tradeoff) — ASSESSED; keep per-arch
+   modules + dispatch.** jllama defines each arch as a `0 : 0` noun and rewires
+   `model_from_gguf`/`block_full`/`block_step`/`block_prefill_cached` in place;
+   we already have shared-skeleton per-arch modules (`models/*.ijs`) + unified
+   `gen_loop_core`/`gen_loop_batch` dispatch by `llm_arch` with
+   `general.architecture` KV detection (more robust than filename substring
+    matching). No change.
+
+## Boxing/copy elimination — generation hot paths (2026-10)
+
+A focused pass on the per-token/per-layer generation loops, eliminating needless
+value copying and boxing. All changes verified bit-exact vs `llama-cpp-python`
+(argmax pins) and batch==single (`tests/j/test_batched.ijs`); lint load-probe
+gate green throughout.
+
+- **`*_run_blocks`/`_bd` single + batched decode `bf_pre`** — the layer loop
+  re-boxed `(<pos), (<mi)` (gemma3: `+(<swa)`) every layer; pre-boxed once as
+  `bf_pre`, the loop only boxes `(<block_data), (<b)`.
+- **`*_block_forward_b`/`_bp` arg-order restructure** — reordered the batched
+  prefill block-forward `y`-args so the layer-invariant boxes are contiguous,
+  then `*_run_blocks_b`/`_bp` precompute `bfb_pre` once (llama/qwen2/qwen3:
+  `(<mi), (<start_pos), <rope` for `_b`; `(<pos), (<mi), <lens` for `_bp`;
+  gemma3 groups `(<swa)` in). Granite/ernie alias llama.
+- **qwen35/lfm2 batched run_blocks** — same `bf_pre`/`bfb_pre` hoist across the
+  SSM/attention (conv/attention) branch: `_bd` uses `((<pos), (<mi))`, `_b`
+  uses `<mi` (index 1 in both branches).
+- **`gen_loop_batch` `rnn_pre`** — pre-boxed `(< mi_rms_eps mi), (<output_norm_w)`
+  once per decode loop (was re-boxed every step).
+- **`llm_box` hoist** — `gen_loop_core`/`gen_loop_batch` re-boxed `(<llm)` per
+  chunk (prefill `rb_b`/`rb_bp`) and per decode step (`rb`/`rb_bd`); boxed once
+  as `llm_box` and reused.
+- **block_forward pass-`y`-through (single + `_bd`)** — `llama_block_forward`/
+  `_bd` (qwen2/qwen3/gemma3; granite/ernie alias) unpacked `y` (already pre-boxed
+  by `bf_pre`) then RE-BOXED `(<pos), (<mi)` for the attention call. The `y`
+  order already matched attention's expected order, so they now pass `y`
+  directly — the layer loop only boxes `(<block_data), (<b)` once.
+- **`*_attention_b`/`_bp` reorder + pass-through** — the `_b`/`_bp` block-forwards
+  had an order mismatch with their attention verbs (`y` = `block_data, b, mi, …`
+  vs attention expecting `block_data, mi, layer, …`). Reordered `*_attention_b`/
+  `_bp` unpack to `(block_data, layer, mi, …)` so `*_block_forward_b`/`_bp`
+  pass `y` directly (gemma3: `block_data, layer, swa, mi, …`).
+- **qwen35/lfm2 attention pass-through** — `qw35_block_forward_a_b`/`_a_bd`/`_a_bp`
+  and `lf2_block_forward_b`/`_bp`/`_bd` passed `y` directly to their attention
+  verbs (order already matched); the SSM/conv siblings use `y` directly already.
+
+Deferred (recorded in PLAN.md "Deferred Optimization Opportunities"): per-layer
+`mi` dict-lookup hoisting (measured ~0.38μs/lookup, ≈0.1-0.5% of a decode step —
+genuinely marginal, and invasive/conflicting with the pass-through), the
+`kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops
+(kernels already tacit; loops stay explicit — the `u^:v^:_`/`u^:n` idioms are
+rank-0 slow here).
+
+## Redundant computation elimination — generation hot paths (2026-10)
+
+A follow-up pass on the same hot paths, targeting REDUNDANT COMPUTATION (not
+boxing/copy): redoing work per-layer/per-step that is invariant. All changes
+verified bit-exact (batch==single across all 8 arches, `tests/j/test_batched.ijs`)
+and lint load-probe green.
+
+- **`|: hidden` transpose hoist (`*_attention_b`/`_bd`/`_bp`)** — the batched
+  Q/K/V projections in llama/qwen2/qwen3 recomputed `|: hidden` (and
+  `|: hidden_flat`) THREE times (one per projection) — 3 materializing copies
+  of the `(L,emb)`/`(B,emb)` input per layer per chunk. Hoisted to one `thin` in
+  lfm2's existing pattern. Commits `bc41a66` (llama, granite/ernie alias),
+  `dd81433` (qwen2/qwen3).
+- **RoPE table+expansion hoist (`*_run_blocks_bd`/`_bp`)** — the batched
+  attention `*_attention_bd`/`_bp` recomputed the RoPE cos/sin table ROW FETCHES
+  (`pos { mi_cos_tab mi`) plus the `(B,*,half)` expansion broadcasts PER LAYER —
+  all layer-invariant (depend only on `pos`, not `layer`). Mirroring the
+  existing `*_run_blocks_b` hoist, `*_run_blocks_bd`/`_bp` now build the rope
+  box once per step/chunk and thread it through `*_block_forward_bd`/`_bp` →
+  `*_attention_bd`/`_bp`. Arch-specific rope contents: interleaved (`idx`) for
+  llama/granite/ernie, NEOX for qwen2/qwen3/gemma3/lfm2, partial NEOX (`n_rot`)
+  for qwen35. Commits `489b797` (llama), `dd81433` (qwen2/qwen3), `410ce48`
+  (gemma3), `e08de52` (qwen35/lfm2).
+  - **Hybrid arches (qwen35/lfm2): rope threaded ONLY to attention layers** —
+    their SSM (delta-net) / shortconv layers don't use RoPE, so
+    `*_block_forward_s_bd`/`_bp` and `*_conv_forward_bd`/`_bp` keep their
+    original arg counts.
+  - **gemma3**: its cos/sin tables are per-layer in `block_data` but identical
+    across layers (loader reuses the same `build_rope_tables` objects AND puts
+    them in `mi`), so the hoist reads them from `mi_cos_tab`/`mi_sin_tab`.
+  - **J gotcha**: `bf_pre , <b , <rope` mis-parses as a numeric/boxed domain
+    error (the `, <b` after a boxed-list variable); parenthesize as `(<b)`.
+    Recorded in docs/J-KNOWLEDGE.md §Boxing/Packing Rules.
+- **`sampler_softmax` dead `allsame` guard** — the `allsame =. *./ shifted =
+  max_x` check + branch was provably dead: when all logits equal `max_x`,
+  `shifted` is all 0 so `2 ^ shifted` = all 1.0 = the `1 #~ # y` branch. Removed
+  the full-vocab `*./` reduction (2 passes per sampled token in the temp>0
+  path). Commit `1583dbb`.
+- **J gotcha**: `n $ x` (reshape without explicit `,` ravel) can raise "a system
+  limit was exceeded" on non-contiguous arrays (e.g., matmul results); use
+  `n $ , x` for safety. Recorded in docs/J-KNOWLEDGE.md.
+- **FFN + qwen35 projection transpose hoist** — the batched FFN gate/up
+  projections recomputed `|: ffn_in` TWICE (llama/qwen2/qwen3 `*_block_forward_b`/
+  `_bd`/`_bp`) and qwen35 recomputed `|: post` twice (FFN) and `|: normed`
+  3× (attention Q+GATE/K/V) / 4× (SSM wqkv/z/beta/alpha). Hoisted to one `ft`/
+  `pt`/`nt` (mirror lfm2's `tfin`). Commit `aa8881d`.
+- **Q_g2 double-reshape** — `(n_kv, n_groups*L, hd) $ , ((n_kv, n_groups, L,
+  hd) $ , Qp)` had a redundant intermediate 4D reshape (verified equal to the
+  direct `$ , Qp`); simplified to one ravel+reshape in the `_b` and `_bp`
+  group-major reshape across llama/qwen2/qwen3/lfm2/qwen35. Commit `c77a43e`.
+- **`logit_div` no-op scale** — `logits % logit_div` is a vocab-sized no-op
+  copy+divide per generated token for every arch except granite (logit_div=1);
+  gated to only divide when logit_div differs from 1. Commit `132ab09`.
+- **No-op re-reshape of already-correct shapes** — `(B, emb_len) $ , > hidden_all`
+  → `> hidden_all`, the batched-prefill `(c, emb_len) $ , es` → `es` (es is
+  already `(c, emb)`), and `(B, ...) $ , > attn_out` → `> attn_out` in the
+  `*_attention_bd`/`_bp` fallbacks (llama/granite/ernie, qwen2, qwen3, gemma3,
+  lfm2, qwen35). Commit `8908bd6`.
+- **`resid_scale` no-op multiply** — `attn_out * mi_resid_scale mi` and
+  `ffn_raw * mi_resid_scale mi` were no-op copy+multiply for llama/ernie
+  (resid_scale=1); real scaling only for granite (0.263/0.22). Gated on
+  `rs ~: 1` in all four llama block_forward paths (single, `_b`, `_bd`, `_bp`).
+  Commit `5a70bd5`.
+- **embedding `scale` no-op multiply** — `scale * |: (x {"1 emb_w)` was a no-op
+  copy+multiply for llama/ernie/qwen2/qwen3/lfm2/qwen35 (scale=1); real
+  scaling only for gemma3 (`%: emb_len`) and granite (embed_scale=12). Gated on
+  `scale ~: 1` in the four embedding sites (`gen_loop_core` prefill chunk/full +
+  decode, `gen_loop_batch` decode). Commit `3534039`.
+- **Softmax directly on the group-major scores** — the GQA attention
+  (llama/granite/ernie, qwen2, qwen3, lfm2, qwen35) computed the per-row
+  softmax on a FLATTENED `scores_f`/`scores_b2` then re-grouped it
+  (`softmax_g2`/`softmax_g2_b`) for the V matmul — 2 redundant reshape copies
+  per layer. Verified in J that `>./"1`/`+/"1` over the key axis on the
+  group-major `scores2`/`scores_b` gives the same result (the ravel-order of
+  `n_kv x n_groups*L` matches the flattened `n_heads*L`), so the softmax runs
+  directly on the group-major array in the single/`_b`/`_bd` (vectorized +
+  fallback)/`_bp` paths. gemma3 kept (its KV-expansion layout mixes
+  `n_heads_kv` into the key axis — the re-ravel separates axes, not redundant).
+  Commit `ee66c93`.
+- **No-op re-reshape of per-sequence extraction** — the per-seq
+  `q_b/k_b/v_b/gate_b = (shape) $ , (b { X)` reshaped a per-sequence slice to
+  the SAME shape (`b { X` on the 4D/3D batch yields the target shape directly),
+  a redundant ravel+reshape copy per sequence. Dropped in the `_bd` fallback +
+  `_bp` per-seq loops across llama/granite/ernie, qwen2, qwen3, gemma3, lfm2
+  (incl. conv-state `input_bi`) and qwen35 (incl. sigmoid `gate_b`). Commit
+  `27233f0`.
+- **Inline single-use norm-weight fetches** — the per-layer norm weights
+  (`attn_norm_w`/`ffn_norm_w`/`q_norm_w`/`k_norm_w`) were assigned to a local
+  then used exactly once on the next line — a needless intermediate. Inlined
+  the block_data access into the rms_norm call across the single/_b/_bd/_bp
+  attention and block-forward paths in llama/granite/ernie, qwen2, qwen3,
+  gemma3 (incl. per-head Q/K norm) and lfm2 (incl. the conv ffn norm
+  `lf2_cv_ffn_norm`), also folding the single-use prefill ravel+reshape
+  (`((B*c),emb) $ , hidden`) into its rms_norm call where used once. Commit
+  `0022a68`.
+- **Inline single-use attention output intermediates** — the attention
+  materialized `attn_raw`/`attn_raw_flat` (a reshape + ravel+reshape of
+  `attn2`) and `attn_o_w` (a single-use weight fetch) then flattened them for
+  the output projection. Inlined the reshape straight into the projection
+  (`(n_heads*hd) $ , attn2`) in the single/_b/_bd (vectorized+fallback)/_bp
+  paths across llama/granite/ernie, qwen2, qwen3, gemma3, lfm2 and qwen35
+  (incl. qwen35's gated-output chain); gemma3's `attn_o_w`/`attn_pn_w`/
+  `attn_all` in the batched output projection. Commits `3dca593`, `50a27da`.
+- **Inline single-use attention score intermediates** — the single-token and
+  `_b`/`_bd` attention materialized `Q_g2`/`Qp` (group-major reshapes),
+  `Kp2`/`Kp_b` (transposes) and `Vp`/`Vp_b` (transposes) — each used once.
+  Inlined into `scores2`/`attn_out` (and `attn2`/`softmax` into the output
+  projection), dropping ~4 per-layer copies; removed the dead `scores` reshape
+  in qwen3. Commits `5977ee9`, `e692e64`.
+- **Inline single-use batched-attention intermediates (`_bd`/`_bp`)** — the
+  batched-decode vectorized path materialized `k_rows_b`/`v_rows_b` (cache-window
+  gathers), `Kp_b`/`Q_g2_b`/`Vp_b`, `attn2_b` and (qwen35) `attn_b3`/
+  `attn_gated_b` — each used once. The `_bd` fallback and `_bp` per-seq loop
+  materialized `k_all`/`v_all` (cache reads), `Q_g2`/`Qp`/`Kp2`/`Vp`
+  (reshapes/transposes), `mask_g2`/`mask_3d`/`mask_f`, `attn2` and the redundant
+  `softmax`→`softmax_flat` reshape pair (gemma3 — reshaped straight back to 2D),
+  plus the single-use `q_b`/`k_b`/`v_b` extractions. Inlined all into
+  `scores_b`/`scores_f`/the append, dropping ~6-8 per-layer copies across the
+  three paths. Commits `b3f70f3` (llama), `50ffe3d` (qwen2/qwen3), `37efb5f`
+  (gemma3), `b61477e` (lfm2/qwen35).
+- **Inline single-use FFN gate/up projections (`_b`/`_bd`/`_bp`)** — the FFN
+  materialized `gate`/`up` (the `|:`-transposed gate/up matmul results) as
+  locals used only in `gate swiglu up`; gemma3 materialized `gate_out`/`up_out`
+  (its fused gate+up split). Inlined them straight into the down-projection
+  (`ffn_raw =. |: ((ff_down (+/ .* ) ((ff_gate (+/ .* ) ft) swiglu (ff_up (+/ .* ) ft))))` —
+  the swiglu result is already `(n_ff, rows)` so the extra `|:` before the
+  down-matmul is dropped; verified bit-identical since `swiglu`/`geglu` are
+  elementwise and the transpose cancels in the down contraction). Removes ~2
+  per-layer copies across llama/granite/ernie, qwen2, qwen3, lfm2 and gemma3.
+  Commit `5889eab`.
+  - **Regression caught**: an incomplete gemma3 revert left `ff_down_w`
+    undefined in `_bp`/`_bd`, which (via a stale global of the wrong shape)
+    made the down-matmul materialize a huge array — OOM during batched. Fixed
+    by keeping the `ff_down_w` fetch alongside the inline.
+
+Deferred (still open, see PLAN.md "Deferred Optimization Opportunities"): the
+single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
+`mi_resid_scale`/`mi_cos_tab`/`mi_sin_tab` in `*_attention`/`*_block_forward` —
+the `_bd`/`_bp` RoPE-table part was eliminated by the hoist above), the
+`kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops.
+
+## Optional generation timing gate (2026-10)
+
+`gen_loop_core`/`gen_loop_batch` measured every prefill chunk + decode step with
+`6!:2` (string-eval) and called `report_timing` — ALWAYS ON. The per-step
+`6!:2` string-eval is overhead when timing isn't wanted (library use), so the
+measurement + report is now gated behind `gen_timing_g =: 0` (default OFF);
+set `gen_timing_g =: 1` for the CLI/chat tok/s report or timing tests. The
+arch `*_infer` verbs keep their single-call `6!:2` timing (one forward pass,
+negligible overhead — not in the generation hot path). Commit `49e7a58`.
+
+- **J gotcha (why it's INLINE, not a helper verb)**: the timed string
+  (`'result =. hidden rb (llm_box , <cur_pos)'`, etc.) references the CALLER's
+  locals (`hidden`, `result_b`, `emb_seg`, `emb_all`, `llm_box`). A helper verb
+  (`timed_run` running `0!:0 y`) executes in ITS OWN scope — those locals are
+  not visible there, so `0!:0 'hidden rb ...'` treats `hidden` as an undefined
+  noun followed by the `rb` verb → `"unexecutable fragment (noun verb)"`. The
+  `if. gen_timing_g do. 6!:2 '...' else. (direct run) end.` must be INLINE at
+  each site so both the timed and direct paths execute in the loop verb's scope.
+  (The `6!:2`/`0!:0` string-evals persist their `=.` locals in the caller's
+  scope, so the timed path is correct when the flag is on.)

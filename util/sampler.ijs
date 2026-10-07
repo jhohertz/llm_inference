@@ -27,15 +27,10 @@ NB. ----------------------------------------------------------------
 sampler_softmax =: 3 : 0
   max_x =. >./ y
   shifted =. y - max_x
-  
-  allsame =. *./ shifted = max_x
-  
-  if. allsame do.
-    e =. 1 #~ # y
-  else.
-    e =. 2 ^ shifted
-  end.
-  
+  NB. `2 ^ shifted` handles the all-equal case exactly (shifted all 0 -> all 1.0),
+  NB. so the old `allsame` guard (a full-vocab *./ reduction per sampled token)
+  NB. was dead code — both branches produced identical results.
+  e =. 2 ^ shifted
   denom =. +/ e
   e % denom
 )
@@ -174,8 +169,7 @@ NB. Returns: scalar token index
 NB. Default params: <1.0; 0; 0.95; 0.0> (k=0 means disabled)
 NB. ----------------------------------------------------------------
 sampler_sample =: 4 : 0
-  params =. x
-  flat =. sample_params_pack params   NB. open <temp;k;p;min_p>, defaults filled
+  flat =. sample_params_pack x   NB. open <temp;k;p;min_p>, defaults filled
   temp =. 0 { flat
   k =. 1 { flat
   p =. 2 { flat

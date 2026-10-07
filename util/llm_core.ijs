@@ -28,6 +28,16 @@ NB. be distinguished from a noun by `-:`/`3!:0`, so a noun flag gates it.
 gen_cb_on_g =: 0
 gen_cb_g =: ]
 
+NB. ---- Optional generation timing (tok/s report) ----
+NB. gen_loop_core/gen_loop_batch measure each prefill chunk + decode step with
+NB. 6!:2 and call report_timing. Gated by gen_timing_g (default OFF) — the
+NB. per-step 6!:2 string-eval is overhead when timing isn't needed (library
+NB. use); turn on for the CLI/chat tok/s report or timing tests. NOTE: the
+NB. timed string-eval must run INLINE (not via a helper verb) — the string
+NB. references the caller's locals (hidden, result_b, emb_seg, llm_box), which
+NB. are not visible inside a helper verb's scope.
+gen_timing_g =: 0
+
 NB. ---- llm noun layout (shared across architectures) ----
 NB. llm = <path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
 NB.       block_data; kv_data; arch>
@@ -222,27 +232,21 @@ NB. ---- Embed token list -> hidden states ----
 NB. y = <emb_w; scale; tok_list>  (emb_w is TRANSPOSED-canonical (emb, vocab); the
 NB. embedding is a column access |: (tok {"1 emb_w), NOT tok { emb_w)
 NB. ---- Output head: rms_norm + lm_head projection ----
-NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>
+NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>  (hidden is the (emb,) row;
+NB. the lm_head weight is TRANSPOSED-canonical (emb, vocab) — hidden (+/ .*) efw).
 output_head =: 3 : 0
-  eps =. > 0 { y
-  onw =. > 1 { y
-  efw =. > 2 { y
-  hidden =. > 3 { y
-  hidden =. rms_norm ((<eps) , (<onw) , <hidden)
-  hidden (+/ .* ) efw
+  NB. y = <rms_eps; output_norm_w; emb_w_final; hidden>.  The caller pre-boxes
+  NB. the invariant (<rms_eps), (<output_norm_w), (<emb_w_final); reuse those
+  NB. boxes directly (0 1 { y) instead of open+reboxing them for rms_norm.
+  hidden =. rms_norm ((0 1 { y) , <(> 3 { y))
+  hidden (+/ .* ) > 2 { y
 )
 
 NB. ---- Sample from logits ----
-NB. y = <temp; k; p; min_p; logits>
+NB. y = <temp; k; p; min_p; logits>  (temp/k/p/min_p pre-boxed by the caller;
+NB. sample_params_pack opens the boxed params list directly).
 sample_from =: 3 : 0
-  temp =. > 0 { y
-  k =. > 1 { y
-  p =. > 2 { y
-  min_p =. > 3 { y
-  logits =. > 4 { y
-  flat =. temp , k , p , min_p
-  params =. <"0 flat
-  params sampler_sample logits
+  (0 1 2 3 { y) sampler_sample (> 4 { y)
 )
 
 NB. ---- Unified generation loop (all arches, fresh + resume) ----
@@ -370,6 +374,9 @@ gen_loop_core =: 4 : 0
   NB. tokens; resume keeps the last eff_seq-start_pos tokens of the segment.
   eff_seq =. ctx_len
   if. 0 < kv_max_seq_g do. eff_seq =. ctx_len <. kv_max_seq_g end.
+  NB. Bound eff_seq so the KV cache fits J's array-size limit (2^31 elements)
+  NB. — mirrors kv_create's bound (huge-ctx models, e.g. qwen35 ctx=262144).
+  eff_seq =. eff_seq <. (<. (2^31) % (block_count * kv_batch_g * (n_heads_kv * head_dim)))
   if. '' -: start_pos do.
     if. L > eff_seq do. tok_list =. tok_list {~ (L - eff_seq) + i. eff_seq end.
   else.
@@ -381,6 +388,8 @@ gen_loop_core =: 4 : 0
   end.
   L =. # tok_list
   output =. <"0 tok_list
+  NB. Box the llm noun once — reused by the prefill rb_b calls and decode rb.
+  llm_box =. <llm
 
   if. '' -: start_pos do.
     NB. FRESH: create zeroed cache, then batched prefill the prompt in CHUNKS.
@@ -405,8 +414,12 @@ gen_loop_core =: 4 : 0
       c =. chunk_sz <. L - i
       seg =. (i + i. c) { tok_list
       emb_seg =. scale * |: (seg {"1 emb_w)
-      t =. 6!:2 'result_b =. emb_seg rb_b ((<llm) , <i)'
-      pre_s =. pre_s + t
+      if. gen_timing_g do.
+        t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <i)'
+        pre_s =. pre_s + t
+      else.
+        result_b =. emb_seg rb_b (llm_box , <i)
+      end.
       h_b =. > 0 { result_b
       hidden =. > (c - 1) { h_b
       i =. i + c
@@ -419,8 +432,14 @@ gen_loop_core =: 4 : 0
     NB. batch, and writes the batch K/V at start_pos. (The old per-token
     NB. incremental loop is replaced: rb_b is now cache-prefix aware.)
     cur_pos =. start_pos
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    pre_s =. 6!:2 'result_b =. emb_all rb_b ((<llm) , <start_pos)'
+    emb_all =. |: (tok_list {"1 emb_w)
+    if. scale ~: 1 do. emb_all =. emb_all * scale end.
+    if. gen_timing_g do.
+      t =. 6!:2 'result_b =. emb_all rb_b (llm_box , <start_pos)'
+      pre_s =. pre_s + t
+    else.
+      result_b =. emb_all rb_b (llm_box , <start_pos)
+    end.
     h_b =. > 0 { result_b
     hidden =. > (L - 1) { h_b
     cur_pos =. cur_pos + L
@@ -430,28 +449,38 @@ gen_loop_core =: 4 : 0
   NB. the last prefill hidden WITHOUT re-embedding (the old code double-
   NB. processed the last prompt token); later steps embed the previous token
   NB. and run blocks at cur_pos. All arches share output_head (rms_norm + lm_head).
+  NB. Pre-box the generation-invariant args ONCE (output_head/sample_from prefixes,
+  NB. llm box) so the per-token loop only boxes the varying piece.
+  oh_pre =. ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w))
+  sf_pre =. ((<temp) , (<k) , (<p) , (<min_p))
   gen_step =. 0
   gen_s =. 0
   while. gen_step < max_steps do.
     if. cur_pos >: eff_seq do. break. end.
     if. 0 = gen_step do.
-      logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-      logits =. logits % logit_div
+      logits =. output_head (oh_pre , <hidden)
+      if. logit_div ~: 1 do. logits =. logits % logit_div end.
     else.
       last_tok =. > {: output
-      hidden =. scale * |: (last_tok {"1 emb_w)
-      gen_s =. gen_s + 6!:2 'result =. hidden rb (<llm) , <cur_pos'
+      hidden =. |: (last_tok {"1 emb_w)
+      if. scale ~: 1 do. hidden =. hidden * scale end.
+      if. gen_timing_g do.
+        t =. 6!:2 'result =. hidden rb (llm_box , <cur_pos)'
+        gen_s =. gen_s + t
+      else.
+        result =. hidden rb (llm_box , <cur_pos)
+      end.
       hidden =. > 0 { result
-      logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-      logits =. logits % logit_div
+      logits =. output_head (oh_pre , <hidden)
+      if. logit_div ~: 1 do. logits =. logits % logit_div end.
       cur_pos =. cur_pos + 1
     end.
-        pred =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
+        pred =. sample_from (sf_pre , <logits)
     if. gen_cb_on_g do. pred =. cb pred end.
     if. (stop_list i. pred) < # stop_list do. break. end.    output =. output , <pred
     gen_step =. gen_step + 1
   end.
-  (pre_s , gen_s) report_timing (L , gen_step)
+  if. gen_timing_g do. (pre_s , gen_s) report_timing (L , gen_step) end.
   if. 0 < # sess_cur_g do.
     sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
     sess_cur_g =: (<kv_meta) (13) } sess_cur_g
@@ -552,6 +581,9 @@ gen_loop_batch =: 4 : 0
 
   eff_seq =. ctx_len
   if. 0 < kv_max_seq_g do. eff_seq =. ctx_len <. kv_max_seq_g end.
+  NB. Bound eff_seq so the KV cache fits J's array-size limit (2^31 elements)
+  NB. — mirrors kv_create's bound (huge-ctx models, e.g. qwen35 ctx=262144).
+  eff_seq =. eff_seq <. (<. (2^31) % (block_count * kv_batch_g * (n_heads_kv * head_dim)))
 
   NB. Prefill each sequence (chunked, per-sequence cache via kv_seq_g)
   kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
@@ -568,6 +600,8 @@ gen_loop_batch =: 4 : 0
   last_toks =. ''
   pre_s =. 0
   pre_toks =. 0
+  NB. Box the llm noun once — reused by the prefill rb_b/rb_bp and decode rb_bd.
+  llm_box =. <llm
   if. rb_bp_flag do.
     NB. ---- Batched prefill (B sequences in lockstep, padded, lens-masked) ----
     NB. Pad every sequence to the longest prompt length, then process ALL B
@@ -607,13 +641,17 @@ gen_loop_batch =: 4 : 0
       i =. 0
       while. i < B do.
         seg =. (p + i. c) { > i { padded
-        es =. scale * |: (seg {"1 emb_w)   NB. (c, emb)
-        emb_seg =. ((c, emb_len) $ , es) i} emb_seg
+        es =. scale * |: (seg {"1 emb_w)   NB. (c, emb) — already the row shape, no re-reshape needed
+        emb_seg =. es i} emb_seg
         lens_cur =. (p + (c <. ((i { lens_b) - p))) i} lens_cur
         i =. i + 1
       end.
-      t =. 6!:2 'result_b =. emb_seg rb_bp ((<llm) , (<(B $ p)) , <lens_cur)'
-      pre_s =. pre_s + t
+      if. gen_timing_g do.
+        t =. 6!:2 'result_b =. emb_seg rb_bp (llm_box , (<(B $ p)) , <lens_cur)'
+        pre_s =. pre_s + t
+      else.
+        result_b =. emb_seg rb_bp (llm_box , (<(B $ p)) , <lens_cur)
+      end.
       h_b =. > 0 { result_b   NB. (B, c, emb)
       i =. 0
       while. i < B do.
@@ -635,7 +673,7 @@ gen_loop_batch =: 4 : 0
       outputs =. outputs , <(<"0 (> i { prompts_tok))
       i =. i + 1
     end.
-    hidden =. (B , emb_len) $ , > hidden_all
+    hidden =. > hidden_all   NB. (B, emb) — already the row shape, no re-reshape needed
     cur_pos =. pos
     done =. B $ 0
   else.
@@ -651,9 +689,14 @@ gen_loop_batch =: 4 : 0
       while. j < L do.
         c =. prefill_chunk_sz <. L - j
         seg =. (j + i. c) { tok_list
-        emb_seg =. scale * |: (seg {"1 emb_w)
-        t =. 6!:2 'result_b =. emb_seg rb_b ((<llm) , <j)'
-        pre_s =. pre_s + t
+      emb_seg =. |: (seg {"1 emb_w)
+      if. scale ~: 1 do. emb_seg =. emb_seg * scale end.
+        if. gen_timing_g do.
+          t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <j)'
+          pre_s =. pre_s + t
+        else.
+          result_b =. emb_seg rb_b (llm_box , <j)
+        end.
         h_b =. > 0 { result_b
         hidden =. > (c - 1) { h_b
         j =. j + c
@@ -665,12 +708,16 @@ gen_loop_batch =: 4 : 0
       i =. i + 1
     end.
     kv_seq_g =: 0
-    hidden =. (B , emb_len) $ , > hidden_all
+    hidden =. > hidden_all   NB. (B, emb) — already the row shape, no re-reshape needed
     cur_pos =. pos
     done =. B $ 0
   end.
 
   NB. Batched decode loop: embed B last tokens, one forward pass, sample B.
+  NB. Pre-box the generation-invariant prefixes once (per-step loop only boxes
+  NB. the varying hidden/logits slice): sample_from params + rms_norm_rows norm.
+  sf_pre =. ((<temp) , (<k) , (<p) , (<min_p))
+  rnn_pre =. ((< mi_rms_eps mi) , (<output_norm_w))
   gen_step =. 0
   gen_s =. 0
   while. gen_step < max_steps do.
@@ -689,17 +736,23 @@ gen_loop_batch =: 4 : 0
       NB. gen_loop_core. Re-embedding at pos L would duplicate the last prompt
       NB. token's K/V into the cache and shift the outputs by one step.
     else.
-      hidden =. scale * |: (last_toks {"1 emb_w)   NB. (B, emb)
-      gen_s =. gen_s + 6!:2 'result =. hidden rb_bd (<llm) , <cur_pos'
+      hidden =. |: (last_toks {"1 emb_w)   NB. (B, emb)
+      if. scale ~: 1 do. hidden =. hidden * scale end.
+      if. gen_timing_g do.
+        t =. 6!:2 'result =. hidden rb_bd (llm_box , <cur_pos)'
+        gen_s =. gen_s + t
+      else.
+        result =. hidden rb_bd (llm_box , <cur_pos)
+      end.
       hidden =. > 0 { result
     end.
-    hidden_n =. rms_norm_rows ((< mi_rms_eps mi) , (<output_norm_w) , <hidden)
+    hidden_n =. rms_norm_rows (rnn_pre , <hidden)
     logits =. hidden_n (+/ .*) emb_w   NB. (B, vocab) — emb_w transposed (emb, vocab)
-    logits =. logits % logit_div
+    if. logit_div ~: 1 do. logits =. logits % logit_div end.
     b =. 0
     while. b < B do.
       if. -. b { done do.
-        pred =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <(b { logits))
+        pred =. sample_from (sf_pre , <(b { logits))
         if. (stop_list i. pred) < # stop_list do.
           done =. 1 b} done
         else.
@@ -715,7 +768,7 @@ gen_loop_batch =: 4 : 0
     end.
     gen_step =. gen_step + 1
   end.
-  (pre_s , gen_s) report_timing (pre_toks , gen_step)
+  if. gen_timing_g do. (pre_s , gen_s) report_timing (pre_toks , gen_step) end.
   if. 0 < # sess_cur_g do.
     sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
     sess_cur_g =: (<kv_meta) (13) } sess_cur_g

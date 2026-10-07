@@ -312,9 +312,8 @@ ct_normalize =: 3 : 0
 
 NB. ct_parse_args tool_calls -> tool_calls with string arguments parsed to objects.
 ct_parse_args =: 3 : 0
-  tcs =. y
   out =. mkarr_minja_ ''
-  for_tc. arr_items_minja_ tcs do.
+  for_tc. arr_items_minja_ y do.
     tc =. > tc
     fin =. ('function') obj_get_minja_ tc
     args =. ('arguments') obj_get_minja_ fin
@@ -438,9 +437,8 @@ ct_parse_json =: 3 : 0
 
 NB. ct_tool_calls_polyfill tool_calls -> array of {name, arguments[, id]}.
 ct_tool_calls_polyfill =: 3 : 0
-  tcs =. y
   out =. mkarr_minja_ ''
-  for_tc. arr_items_minja_ tcs do.
+  for_tc. arr_items_minja_ y do.
     tc =. > tc
     if. -. ((<'function') e. (obj_keys_minja_ tc)) do. continue. end.
     fin =. ('function') obj_get_minja_ tc

@@ -129,8 +129,8 @@ gem3_pre_build_block_data =: 3 : 0
 
 NB. ---- Standard self-attention for Gemma3 ----
 NB. Computes attention for the CURRENT token only against all cached K/V
+NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_attention =: 4 : 0
-  hidden =. x
   'block_data pos swa mi layer' =. y
   
   n_heads =. gem3_bd_n_heads block_data
@@ -139,8 +139,7 @@ gem3_attention =: 4 : 0
   n_heads_kv =. gem3_bd_n_heads_kv block_data
   
   NB. Attention norm
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
   
    NB. Q, K, V projections — fused single matmul
    fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -155,10 +154,8 @@ gem3_attention =: 4 : 0
    V =. (n_heads_kv, head_dim) $ V
   
   NB. Q/K norm
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
-  Q =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Q)
-  K =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <K)
+  Q =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Q)
+  K =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <K)
   
     NB. RoPE — apply per head (Gemma3 uses NEOX layout: pairs offset by head_dim/2)
     NB. cos/sin precomputed once per position in PER-LAYER tables (dense vs SWA freq)
@@ -173,10 +170,10 @@ gem3_attention =: 4 : 0
    Q =. Q % head_dim ^ 0.5
   
    NB. Write K, V to KV cache at current position
-   kv_write ((<layer) , (<pos) , (<K) , (<V))
+   kv_write ((4 { y) , (1 { y) , (<K) , (<V))
    
    NB. Read all K, V from cache up to current position
-   kv_result =. kv_read ((<layer) , <pos)
+   kv_result =. kv_read ((4 { y) , (1 { y))
    k_all =. > 0 { kv_result
    v_all =. > 1 { kv_result
   
@@ -187,8 +184,6 @@ gem3_attention =: 4 : 0
     NB. Q: (n_heads, head_dim) — current token only
     NB. k_all: (win, n_heads_kv, head_dim)
     NB. v_all: (win, n_heads_kv, head_dim)
-      
-        n_groups =. n_heads % n_heads_kv
       
         NB. Compute Q·K^T: (n_heads, head_dim) · (head_dim, n_heads_kv, win) → (n_heads, n_heads_kv, win)
          NB. Move last axis to front: (win,nhkv,hd) -> (hd,nhkv,win)
@@ -223,13 +218,8 @@ gem3_attention =: 4 : 0
       
       NB. Flatten softmax to 2D for matrix multiply
       softmax_flat =. (n_heads, n_heads_kv * win) $ , softmax
-        attn_raw =. softmax_flat (+/ .* ) v_flat   NB. (n_heads, head_dim)
-      
-         NB. Output projection: attn_o is [in, out] = [n_heads*head_dim, emb_len]
-         NB. Flatten attn_raw from (n_heads, head_dim) to (n_heads*head_dim,) for matmul
-         attn_o_w =. gem3_bd_attn_o block_data
-         attn_raw_flat =. (n_heads * head_dim) $ , attn_raw
-         attn_out =. attn_o_w (+/ .* ) attn_raw_flat
+        NB. Output projection: attn_o is [in, out] = [n_heads*head_dim, emb_len]
+        attn_out =. (gem3_bd_attn_o block_data) (+/ .* ) ((n_heads * head_dim) $ , (softmax_flat (+/ .* ) v_flat))
      
      NB. Post-attention norm
     attn_pn_w =. gem3_bd_attn_pn block_data
@@ -245,23 +235,18 @@ NB. y = <block_data; swa; mi; layer; start_pos>   (positions start_pos .. start_
 NB. start_pos=0 -> fresh (no prefix); start_pos>0 -> RESUME: attends to the cache prefix
 NB. (positions 0..start_pos-1) PLUS this batch, and writes the batch K/V at start_pos.
 gem3_attention_b =: 4 : 0
-  hidden =. x   NB. (L, emb)
   block_data =. > 0 { y
-  swa =. > 1 { y
-  mi =. > 2 { y
-  layer =. > 3 { y
+  layer =. > 1 { y
+  mi =. > 3 { y
   start_pos =. > 4 { y
-  L =. {. $ hidden
-  n_embd =. {: $ hidden
-  
+  L =. {. $ x
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
   n_heads_kv =. gem3_bd_n_heads_kv block_data
   half =. <. head_dim % 2
   
   NB. Attention norm per row
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
   
   NB. Q, K, V projections — batched single matmul
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -276,13 +261,11 @@ gem3_attention_b =: 4 : 0
   V =. (L, n_heads_kv, head_dim) $ ,V
   
   NB. Q/K norm per head (flatten heads, norm rows, reshape)
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
   Qf =. ((L * n_heads) , head_dim) $ ,Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Qf)
   Q =. (L, n_heads, head_dim) $ ,Qf
   Kf =. ((L * n_heads_kv) , head_dim) $ ,K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <Kf)
   K =. (L, n_heads_kv, head_dim) $ ,Kf
   
   NB. RoPE — batched, table-based (NEOX). cos/sin per position, PER-LAYER tables.
@@ -311,15 +294,15 @@ gem3_attention_b =: 4 : 0
   K_batch =. K
   V_batch =. V
   if. start_pos > 0 do.
-    k_pre =. > 0 { (kv_read ((<layer) , <(start_pos - 1)))
-    v_pre =. > 1 { (kv_read ((<layer) , <(start_pos - 1)))
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
     K =. k_pre , K
     V =. v_pre , V
   end.
 
   NB. Bulk-write the new batch's L K/V rows into cache at layer, starting at start_pos
   NB. (one amend per row box). K/V above include the prefix — write the saved batch.
-  kv_write_rows ((<0) , (<layer) , (<start_pos) , <K_batch)
+  kv_write_rows ((<0) , (1 { y) , (4 { y) , <K_batch)
   kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
 
   NB. Batched causal+sliding-window scores: Qf·Kf^T over all (t,j) in
@@ -355,12 +338,8 @@ gem3_attention_b =: 4 : 0
   NB. attn_raw[t,h] = sum_{k,j} softmax[t,h,k,j] * V[j,k]
   softmax_flat =. ((L * n_heads) , (n_heads_kv * (start_pos + L))) $ , softmax
   v_flat =. ((n_heads_kv * (start_pos + L)) , head_dim) $ , (1 0 2 |: V)   NB. (L,nk,hd)->(nk,L,hd)->flat
-  attn_raw_flat =. softmax_flat (+/ .* ) v_flat          NB. (L*nh, hd)
-  attn_raw =. (L, n_heads, head_dim) $ ,attn_raw_flat
-  
   NB. Output projection attn_o: [emb, n_heads*head_dim]; batched
-  attn_o_w =. gem3_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: ((L, n_heads * head_dim) $ ,attn_raw))   NB. (L, emb)
+  attn_out =. |: ((gem3_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , ((L, n_heads, head_dim) $ , (softmax_flat (+/ .* ) v_flat))))   NB. (L, emb)
   
   NB. Post-attention norm per row
   attn_pn_w =. gem3_bd_attn_pn block_data
@@ -374,17 +353,12 @@ NB. hidden = (L, emb); y = <block_data; swa; mi; layer; start_pos>
 gem3_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  swa =. > 1 { y
-  mi =. > 2 { y
-  layer =. > 3 { y
-  start_pos =. > 4 { y
-
-  input =. hidden
-
-  attn_result =. hidden gem3_attention_b (<block_data) , (<swa) , (<mi) , (<layer) , (<start_pos)
+  mi =. > 3 { y
+  
+  attn_result =. hidden gem3_attention_b y
   attn_out =. > 0 { attn_result
   
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   
   ff_norm_w =. gem3_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
@@ -392,11 +366,9 @@ gem3_block_forward_b =: 4 : 0
   fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
   gate_up =. |: (fused_ff_gu_w (+/ .* ) |: ffn_in)   NB. (L, 2*n_ff)
   n_ff =. gem3_bd_n_ff block_data
-  gate_out =. (n_ff {. "1 gate_up)
-  up_out =. (n_ff }. "1 gate_up)
-  
   ff_down_w =. gem3_bd_ff_down block_data
-  ffn_raw =. |: (ff_down_w (+/ .* ) |: (gate_out geglu up_out))   NB. GEGLU(GELU(gate)*up) -> (L, emb)
+  ff_down_w =. gem3_bd_ff_down block_data
+  ffn_raw =. |: (ff_down_w (+/ .* ) |: ((n_ff {. "1 gate_up) geglu (n_ff }. "1 gate_up)))   NB. GEGLU(GELU(gate)*up) -> (L, emb)
   
   ff_pn_w =. gem3_bd_ff_pn block_data
   ffn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_pn_w) , <ffn_raw)
@@ -410,31 +382,30 @@ NB. ---- Run all Gemma3 blocks in a batched prefill pass ----
 NB. input = (L, emb); args = <llm; start_pos>  (positions start_pos..start_pos+L-1;
 NB. cache lives in kv_cache_g). start_pos=0 -> fresh; >0 -> resume (attends to cache prefix).
 gem3_run_blocks_b =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  start_pos =. > 1 { args
+  llm =. > 0 { y
+  start_pos =. > 1 { y
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  L =. {. $ input
 
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
 
-  b =. 0
-  block_data_list =. llm_block_data llm
-  while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state gem3_block_forward_b (<block_data) , (<swa) , (<mi) , (<b) , (<start_pos)
+   b =. 0
+   block_data_list =. llm_block_data llm
+   NB. (<swa), (<mi), (<start_pos) are layer-invariant — box once, reuse per layer.
+   bfb_pre =. (<swa) , (<mi) , (<start_pos)
+   while. b < block_count do.
+     block_data =. > b { block_data_list
+    result =. state gem3_block_forward_b (<block_data) , (<b) , bfb_pre
     state =. > 0 { result
-    b =. b + 1
-  end.
+     b =. b + 1
+   end.
 
   <state
 )
@@ -449,12 +420,12 @@ NB. pos; mi; layer>.
 gem3_attention_bp =: 4 : 0
   hidden =. x   NB. (B, c, emb)
   block_data =. > 0 { y
-  swa =. > 1 { y
-  pos =. > 2 { y
-  mi =. > 3 { y
-  layer =. > 4 { y
+  layer =. > 1 { y
+  pos =. > 3 { y
+  mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
+  rope =. > 6 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -465,9 +436,7 @@ gem3_attention_bp =: 4 : 0
   eff_seq =. > 1 { kv_meta
 
   NB. Attention norm per row (B*c)
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden_flat =. ((B*c) , emb_len) $ , hidden
-  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden_flat)
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <(((B*c) , emb_len) $ , hidden))
 
   NB. Fused QKV projection batched across B*c rows
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -482,30 +451,30 @@ gem3_attention_bp =: 4 : 0
   V =. (B, c, n_heads_kv, head_dim) $ , V
 
   NB. Q/K norm per head (B*c*n_heads rows)
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
   Qf =. ((B*c*n_heads) , head_dim) $ , Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Qf)
   Q =. (B, c, n_heads, head_dim) $ , Qf
   Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <Kf)
   K =. (B, c, n_heads_kv, head_dim) $ , Kf
 
-  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c (PER-LAYER cos/sin tables)
-  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
-  cos_all =. pos_bc_flat { gem3_bd_cos_tab block_data   NB. (B*c, half)
-  sin_all =. pos_bc_flat { gem3_bd_sin_tab block_data
+  NB. NEOX RoPE at the (B, c) positions pos[b]+i.c. cos/sin tables + expansions
+  NB. are layer-invariant (identical across layers; depend only on pos) —
+  NB. hoisted once in run_blocks_bp, threaded through y as <cos_all; sin_all;
+  NB. cos_exp; sin_exp; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope   NB. (B*c, half)
+  sin_all =. > 1 { rope
   Qa =. half {. "1 Q   NB. (B, c, n_heads, half)
   Qb =. half }. "1 Q
-  cos_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
-  sin_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_exp =. > 2 { rope
+  sin_exp =. > 3 { rope
   Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
   Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
   Q =. (B, c, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
   Ka =. half {. "1 K   NB. (B, c, n_heads_kv, half)
   Kb =. half }. "1 K
-  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
-  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
   Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
   K =. (B, c, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
@@ -518,23 +487,16 @@ gem3_attention_bp =: 4 : 0
   attn_raw_all =. ''
   b =. 0
   while. b < B do.
-    q_b =. (c, n_heads, head_dim) $ , (b { Q)
-    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
-    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
     pos_b =. b { pos
     base_b =. ((layer * kv_batch_g) + b) * eff_seq
     idxw =. base_b + pos_b + i. c
-    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
-    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { K)) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { V)) idxw} v_cache_g
     kv_pos_g =: kv_pos_g >. pos_b + c
     win =. pos_b + c
-    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
-    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
 
     NB. scores: Qf·Kf^T over the window (c*nh, win*nk)
-    Qf =. ((c * n_heads) , head_dim) $ , q_b
-    Kf =. ((win * n_heads_kv) , head_dim) $ , k_all
-    scores_all =. Qf (+/ .* ) |: Kf   NB. (c*nh, win*nk)
+    scores_f =. ((c * n_heads * n_heads_kv) , win) $ , ((((c * n_heads) , head_dim) $ , (b { Q)) (+/ .* ) |: (((win * n_heads_kv) , head_dim) $ , ((base_b + i. win) { k_cache_g)))
 
     NB. mask: causal + SWA (window swa_l) + lens (padding)
     key_pos =. i. win
@@ -548,33 +510,22 @@ gem3_attention_bp =: 4 : 0
       mask_2d =. mask_2d +. ((i. win) >: b { lens)
     end.
     NB. Fused mask (c,win) -> (c*nh*nk, win) [t,g,j] row order g = h*nk+k
-    mask_3d =. (0 2 1) |: (mask_2d (*/) ((n_heads * n_heads_kv) $ 1))
-    mask_f =. ((c * n_heads * n_heads_kv) , win) $ , mask_3d
-    scores_f =. ((c * n_heads * n_heads_kv) , win) $ , scores_all
-    scores_f =. scores_f - (mask_f * 1e9)
+    scores_f =. scores_f - (((c * n_heads * n_heads_kv) , win) $ , ((0 2 1) |: (mask_2d (*/) ((n_heads * n_heads_kv) $ 1))) * 1e9)
 
     NB. per-row softmax over j
     max_sf =. >./"1 scores_f
     exp_sf =. ^ (scores_f - max_sf)
     softmax_f =. exp_sf % +/"1 exp_sf
-    softmax =. (c, n_heads, n_heads_kv, win) $ , softmax_f
 
     NB. attn_raw[t,h] = sum_{k,j} softmax[t,h,k,j] * V[j,k]
-    softmax_flat =. ((c * n_heads) , (n_heads_kv * win)) $ , softmax
-    v_flat =. ((n_heads_kv * win) , head_dim) $ , (1 0 2 |: v_all)
-    attn_raw_flat =. softmax_flat (+/ .* ) v_flat   NB. (c*nh, hd)
-    attn_raw =. (c, n_heads, head_dim) $ , attn_raw_flat
-    attn_raw_all =. attn_raw_all , <attn_raw
+    attn_raw_all =. attn_raw_all , <((c, n_heads, head_dim) $ , ((((c * n_heads) , (n_heads_kv * win)) $ , softmax_f) (+/ .* ) ((n_heads_kv * win) , head_dim) $ , (1 0 2 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)))))
     b =. b + 1
   end.
 
   NB. Batched output projection (B*c rows) + post-attention norm
-  attn_all =. (B, c, n_heads*head_dim) $ , > attn_raw_all
-  attn_o_w =. gem3_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  attn_out =. |: ((gem3_bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , > attn_raw_all))
   attn_out =. ((B*c) , emb_len) $ , attn_out
-  attn_pn_w =. gem3_bd_attn_pn block_data
-  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_pn_w) , <attn_out)
+  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_pn block_data)) , <attn_out)
   attn_out =. (B, c, emb_len) $ , attn_out
   (<attn_out)
 )
@@ -584,29 +535,23 @@ NB. x = hidden (B, c, emb); y = <block_data; swa; pos; mi; layer>.  Returns <(B,
 gem3_block_forward_bp =: 4 : 0
   hidden =. x   NB. (B, c, emb)
   block_data =. > 0 { y
-  swa =. > 1 { y
-  pos =. > 2 { y
-  mi =. > 3 { y
-  layer =. > 4 { y
+  mi =. > 4 { y
   lens =. ''
   if. 5 < # y do. lens =. > 5 { y end.
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
-  input =. hidden
-  attn_result =. hidden gem3_attention_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<layer) , <lens)
-  attn_out =. > 0 { attn_result   NB. (B, c, emb)
-  sa_out =. attn_out + input
+  attn_result =. hidden gem3_attention_bp y
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + hidden
   ff_norm_w =. gem3_bd_ff_norm block_data
   sa_flat =. ((B*c) , emb_len) $ , sa_out
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_flat)
   fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
   gate_up =. |: (fused_ff_gu_w (+/ .* ) |: ffn_in)   NB. (B*c, 2*n_ff)
   n_ff =. gem3_bd_n_ff block_data
-  gate_out =. (n_ff {. "1 gate_up)
-  up_out =. (n_ff }. "1 gate_up)
   ff_down_w =. gem3_bd_ff_down block_data
-  ffn_raw =. |: (ff_down_w (+/ .* ) |: (gate_out geglu up_out))   NB. (B*c, emb)
+  ffn_raw =. |: (ff_down_w (+/ .* ) |: ((n_ff {. "1 gate_up) geglu (n_ff }. "1 gate_up)))   NB. (B*c, emb)
   ff_pn_w =. gem3_bd_ff_pn block_data
   ffn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_pn_w) , <ffn_raw)
   output_flat =. ffn_out + sa_flat
@@ -616,30 +561,44 @@ gem3_block_forward_bp =: 4 : 0
 
 NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
 gem3_run_blocks_bp =: 4 : 0
-  input =. x   NB. (B, c, emb)
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   lens =. ''
-  if. 2 < # args do. lens =. > 2 { args end.
+  if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
-  b =. 0
-  block_data_list =. llm_block_data llm
-  while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bp ((<block_data) , (<swa) , (<pos) , (<mi) , (<b) , <lens)
-    state =. > 0 { result
-    b =. b + 1
-  end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (identical across
+  NB. layers; depend only on pos) — compute ONCE per chunk, thread through.
+  B =. {. $ state
+  c =. 1 { $ state
+  half =. <. head_dim % 2
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  rope =. (<cos_all) , (<sin_all) , (<cos_exp) , (<sin_exp) , (<cos_expk) , (<sin_expk)
+   b =. 0
+   block_data_list =. llm_block_data llm
+   NB. (<swa), (<pos), (<mi), <lens are layer-invariant — box once, reuse per layer.
+   bfb_pre =. (<swa) , (<pos) , (<mi) , <lens
+   while. b < block_count do.
+     block_data =. > b { block_data_list
+     result =. state gem3_block_forward_bp (<block_data) , (<b) , bfb_pre , <rope
+     state =. > 0 { result
+     b =. b + 1
+   end.
   <state
 )
 
@@ -648,13 +607,12 @@ NB. Mirrors gem3_attention (single-token): fused QKV, per-head Q/K norm, NEOX
 NB. RoPE via PER-LAYER tables, SWA mask, post-attn norm. x = hidden (B, emb);
 NB. y = <block_data; pos; swa; mi; layer>
 gem3_attention_bd =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   pos =. > 1 { y
-  swa =. > 2 { y
   mi =. > 3 { y
   layer =. > 4 { y
-  B =. {. $ hidden
+  rope =. > 5 { y
+  B =. {. $ x
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
   n_heads_kv =. gem3_bd_n_heads_kv block_data
@@ -663,8 +621,7 @@ gem3_attention_bd =: 4 : 0
   kv_len =. n_heads_kv * head_dim
 
   NB. Attention norm per row
-  attn_norm_w =. gem3_bd_attn_norm block_data
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_norm_w) , <hidden)
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
 
   NB. Fused QKV projection (batched single matmul)
   fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -677,27 +634,28 @@ gem3_attention_bd =: 4 : 0
   V =. (B, n_heads_kv, head_dim) $ ,V
 
   NB. Q/K norm per head (flatten heads, norm rows, reshape)
-  q_norm_w =. gem3_bd_q_norm block_data
-  k_norm_w =. gem3_bd_k_norm block_data
   Qf =. ((B * n_heads) , head_dim) $ ,Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< q_norm_w) , <Qf)
+  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Qf)
   Q =. (B, n_heads, head_dim) $ ,Qf
   Kf =. ((B * n_heads_kv) , head_dim) $ ,K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< k_norm_w) , <Kf)
+  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <Kf)
   K =. (B, n_heads_kv, head_dim) $ ,Kf
 
-  NB. RoPE — batched, table-based (NEOX), PER-LAYER cos/sin tables
-  cos_all =. pos { gem3_bd_cos_tab block_data    NB. (B, half)
-  sin_all =. pos { gem3_bd_sin_tab block_data
-  cos_exp =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_exp =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  NB. RoPE — batched, table-based (NEOX). cos/sin tables + expansions are
+  NB. layer-invariant (identical across layers; depend only on pos) — hoisted
+  NB. once in run_blocks_bd, threaded through y as <cos_all; sin_all; cos_exp;
+  NB. sin_exp; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope    NB. (B, half)
+  sin_all =. > 1 { rope
+  cos_exp =. > 2 { rope
+  sin_exp =. > 3 { rope
   Qa =. half {. "1 Q
   Qb =. half }. "1 Q
   Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
   Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
   Q =. (B, n_heads, head_dim) $ ,(Qa_out ,"1 Qb_out)
-  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka =. half {. "1 K
   Kb =. half }. "1 K
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
@@ -707,46 +665,64 @@ gem3_attention_bd =: 4 : 0
   NB. Pre-scale Q by 1/sqrt(head_dim) (Gemma)
   Q =. Q % head_dim ^ 0.5
 
-  NB. Per-sequence: SWA-masked causal scores/softmax/output (gem3_attention shape)
-  attn_out =. ''
-  b =. 0
-  while. b < B do.
-    q_b =. (n_heads, head_dim) $ ,(b { Q)
-    k_b =. (n_heads_kv, head_dim) $ ,(b { K)
-    v_b =. (n_heads_kv, head_dim) $ ,(b { V)
-    pos_b =. b { pos
-    kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
-    kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
-    k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
-    v_all =. > 1 { kv_result
-    win =. pos_b + 1
-    NB. Causal + sliding window mask (swa_l per-layer; dense layers swa_l=0)
+  NB. Batched lockstep decode (all B sequences share one position): ONE
+  NB. list-selector cache write, ONE indexed gather of the B windows, then
+  NB. threaded batched scores/softmax/V (J parallelizes the rank-4 matmuls over
+  NB. B). gemma3 is MQA (n_groups = n_heads/n_heads_kv) with a per-layer SWA
+  NB. causal mask that is B-independent in lockstep (win is shared). Falls back
+  NB. to the per-seq loop when positions differ (variable window lengths).
+  if. (B > 1) *. (pos -: (B $ 0 { pos)) do.
+    win =. (0 { pos) + 1
+    eff_seq =. > 1 { kv_meta
+    base_b =. ((layer * kv_batch_g) + i. B) * eff_seq
+    NB. Batch cache write: one list-selector amend for all B at pos[b]
+    idxw =. base_b + pos
+    k_cache_g =: ((B , n_heads_kv * head_dim) $ , K) idxw} k_cache_g
+    v_cache_g =: ((B , n_heads_kv * head_dim) $ , V) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. (0 { pos) + 1
+    NB. Gather all B windows in one indexed fetch
+    idxr =. base_b +/ i. win
+    NB. Batched MQA scores (each query head attends the shared n_kv heads)
+    n_groups =. n_heads % n_heads_kv
+    scores_b =. ((B , n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) ((0 2 3 1) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)))   NB. (B, n_kv, groups, win)
+    scores_b2 =. (B , n_heads , win) $ , scores_b
+    NB. SWA + causal mask (B-independent in lockstep: win is shared)
     swa_l =. gem3_bd_swa_l block_data
     mask_1d =. (i. win) < (win - swa_l)
     mask_1d =. (swa_l > 0) *. mask_1d
-    mask_3d =. (n_heads, win, n_heads_kv) $ mask_1d
-    k_trans =. 2 0 1 |: k_all   NB. (hd, win, n_kv)
-    scores =. q_b (+/ .* ) k_trans   NB. (n_heads, win, n_kv)
-    scores =. scores - (mask_3d * 1e9)
-    scores_f =. (n_heads, n_heads_kv * win) $ ,scores
-    max_sf =. >./"1 scores_f
-    exp_sf =. ^ (scores_f - max_sf)
-    softmax_f =. exp_sf % +/"1 exp_sf
-    softmax =. (n_heads, n_heads_kv, win) $ ,softmax_f
-    v_flat =. (n_heads_kv * win, head_dim) $ ,(1 0 2 |: v_all)
-    softmax_flat =. (n_heads, n_heads_kv * win) $ ,softmax
-    attn_raw =. softmax_flat (+/ .* ) v_flat   NB. (n_heads, hd)
-    attn_raw_flat =. (n_heads * head_dim) $ ,attn_raw
-    attn_out =. attn_out , <attn_raw_flat
-    b =. b + 1
+    scores_b2 =. scores_b2 - (((B , n_heads , win) $ , (((B * n_heads) $ 1) (*/) mask_1d)) * 1e9)
+    max_sf_b =. >./"1 scores_b2
+    exp_sf_b =. ^ (scores_b2 - max_sf_b)
+    softmax_b =. exp_sf_b % +/"1 exp_sf_b
+    attn_all =. (B , n_heads * head_dim) $ , (((B , n_heads_kv , n_groups , win) $ , softmax_b) (+/ .* "2) ((0 2 1 3) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g))))
+  else.
+    NB. Per-sequence: SWA-masked causal scores/softmax/output (gem3_attention shape)
+    attn_out =. ''
+    b =. 0
+    while. b < B do.
+      pos_b =. b { pos
+      kv_write ((4 { y) , (<pos_b) , (<((n_heads_kv, head_dim) $ ,(b { K))) , (<((n_heads_kv, head_dim) $ ,(b { V))) , (<b))
+      kv_result =. kv_read ((4 { y) , (<pos_b) , (<b))
+      win =. pos_b + 1
+      NB. Causal + sliding window mask (swa_l per-layer; dense layers swa_l=0)
+      swa_l =. gem3_bd_swa_l block_data
+      mask_1d =. (i. win) < (win - swa_l)
+      mask_1d =. (swa_l > 0) *. mask_1d
+      scores =. ((n_heads, head_dim) $ ,(b { Q)) (+/ .* ) (2 0 1 |: (> 0 { kv_result))   NB. (n_heads, win, n_kv)
+      scores =. scores - (((n_heads, win, n_heads_kv) $ mask_1d) * 1e9)
+      scores_f =. (n_heads, n_heads_kv * win) $ ,scores
+      max_sf =. >./"1 scores_f
+      exp_sf =. ^ (scores_f - max_sf)
+      softmax_f =. exp_sf % +/"1 exp_sf
+      attn_out =. attn_out , <((n_heads * head_dim) $ , (softmax_f (+/ .* ) ((n_heads_kv * win, head_dim) $ , (1 0 2 |: (> 1 { kv_result)))))
+      b =. b + 1
+    end.
+    attn_all =. > attn_out
   end.
 
   NB. Output projection + post-attention norm
-  attn_all =. (B , n_heads * head_dim) $ , > attn_out
-  attn_o_w =. gem3_bd_attn_o block_data
-  attn_out =. |: (attn_o_w (+/ .* ) |: attn_all)   NB. (B, emb)
-  attn_pn_w =. gem3_bd_attn_pn block_data
-  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< attn_pn_w) , <attn_out)
+  attn_out =. |: ((gem3_bd_attn_o block_data) (+/ .* ) |: attn_all)   NB. (B, emb)
+  attn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_attn_pn block_data)) , <attn_out)
   (<attn_out)
 )
 
@@ -755,23 +731,17 @@ NB. x = hidden (B, emb); y = <block_data; pos; swa; mi; layer>
 gem3_block_forward_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
-  swa =. > 2 { y
   mi =. > 3 { y
-  layer =. > 4 { y
-  input =. hidden
-  attn_result =. hidden gem3_attention_bd ((<block_data) , (<pos) , (<swa) , (<mi) , (<layer))
+  attn_result =. hidden gem3_attention_bd y
   attn_out =. > 0 { attn_result
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   ff_norm_w =. gem3_bd_ff_norm block_data
   ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
   fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
   gate_up =. |: (fused_ff_gu_w (+/ .* ) |: ffn_in)   NB. (B, 2*n_ff)
   n_ff =. gem3_bd_n_ff block_data
-  gate_out =. (n_ff {. "1 gate_up)
-  up_out =. (n_ff }. "1 gate_up)
   ff_down_w =. gem3_bd_ff_down block_data
-  ffn_raw =. |: (ff_down_w (+/ .* ) |: (gate_out geglu up_out))   NB. GEGLU
+  ffn_raw =. |: (ff_down_w (+/ .* ) |: ((n_ff {. "1 gate_up) geglu (n_ff }. "1 gate_up)))   NB. GEGLU
   ff_pn_w =. gem3_bd_ff_pn block_data
   ffn_out =. rms_norm_rows ((< mi_rms_eps mi) , (< ff_pn_w) , <ffn_raw)
   output =. ffn_out + sa_out
@@ -780,25 +750,37 @@ gem3_block_forward_bd =: 4 : 0
 
 NB. ---- Run all Gemma3 blocks for B sequences (one token each at pos[b]) ----
 gem3_run_blocks_bd =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (identical across
+  NB. layers; depend only on pos) — compute ONCE per step, thread through.
+  B =. {. $ state
+  half =. <. head_dim % 2
+  cos_all =. pos { mi_cos_tab mi    NB. (B, half)
+  sin_all =. pos { mi_sin_tab mi
+  cos_exp =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_exp =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<cos_exp) , (<sin_exp) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. (<pos), (<swa), (<mi) are layer-invariant — box once, reuse per layer.
+  bf_pre =. (<pos) , (<swa) , (<mi)
   while. b < block_count do.
     block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bd ((<block_data) , (<pos) , (<swa) , (<mi) , (<b))
+    result =. state gem3_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -806,16 +788,15 @@ gem3_run_blocks_bd =: 4 : 0
 )
 
 NB. ---- Single Gemma3 block forward ----
+NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_block_forward =: 4 : 0
   hidden =. x
   'block_data pos swa mi layer' =. y
   
-  input =. hidden
-  
-  attn_result =. hidden gem3_attention (<block_data) , (<pos) , (<swa) , (<mi) , (<layer)
+  attn_result =. hidden gem3_attention y
   attn_out =. > 0 { attn_result
   
-  sa_out =. attn_out + input
+  sa_out =. attn_out + hidden
   
   ff_norm_w =. gem3_bd_ff_norm block_data
   ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
@@ -838,10 +819,9 @@ gem3_block_forward =: 4 : 0
 )
 
 NB. ---- Run all Gemma3 blocks (single token; cache lives in kv_cache_g) ----
+NB. x = hidden (emb,); y = <llm; pos>
 gem3_run_blocks =: 4 : 0
-  input =. x
-  args =. y
-  'llm pos' =. args
+  'llm pos' =. y
   mi =. llm_mi llm
   swa =. mi_swa mi
   head_dim =. mi_head_dim mi
@@ -849,16 +829,18 @@ gem3_run_blocks =: 4 : 0
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
 
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
 
    b =. 0
    block_data_list =. llm_block_data llm
+   NB. (<pos), (<swa), (<mi) are layer-invariant — box once, reuse per layer.
+   bf_pre =. (<pos) , (<swa) , (<mi)
    while. b < block_count do.
      block_data =. > b { block_data_list
-    result =. state gem3_block_forward (<block_data) , (<pos) , (<swa) , (<mi) , (<b)
+    result =. state gem3_block_forward (<block_data) , bf_pre , (<b)
     state =. > 0 { result
      b =. b + 1
    end.
@@ -968,15 +950,11 @@ gem3_infer =: 4 : 0
   
     emb_w =. 'token_embd.weight' get_tensor_cached_d llm
      scale =. %: n_embd
-     vsz =. {: $ emb_w
       NB. token_embd is stored transposed (emb, vocab) — column tok is embedding
       
      tok_list =. , > tokens
     
     output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-    block_data_list =. llm_block_data llm
-    swa =. mi_swa mi
-    mi_for_blocks =. mi
     
     NB. Embed all input tokens (llama.cpp: no sqrt(n_embd) scale, no output_norm before blocks)
     n_tokens =. # tok_list
@@ -984,7 +962,11 @@ gem3_infer =: 4 : 0
     if. 1 = n_tokens do.
       tok =. 0 { tok_list
       hidden =. scale * |: (tok {"1 emb_w)
-      pre_s =. 6!:2 'result =. hidden gem3_run_blocks (<llm) , <0'
+      if. gen_timing_g do.
+        pre_s =. 6!:2 'result =. hidden gem3_run_blocks (<llm) , <0'
+      else.
+        result =. hidden gem3_run_blocks (<llm) , <0
+      end.
       hidden =. > 0 { result
     else.
       NB. Batched prompt prefill: run all blocks once over (n_tokens x emb)
@@ -992,7 +974,11 @@ gem3_infer =: 4 : 0
       NB. tokens, so token ids are used directly (no 65536 clamp; that clamp is only
       NB. valid for llama3-style BPE / gpt2 byte-level tokenizers).
       emb_all =. scale * |: (tok_list {"1 emb_w)
-      pre_s =. 6!:2 'result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)'
+      if. gen_timing_g do.
+        pre_s =. 6!:2 'result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)'
+      else.
+        result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)
+      end.
       h_b =. > 0 { result_b
       hidden =. > (n_tokens-1) { h_b   NB. last prompt token's hidden predicts next
     end.
@@ -1003,7 +989,7 @@ gem3_infer =: 4 : 0
   logits =. hidden (+/ .* ) emb_w_final
   
   NB. Sample from logits using sampler module
-  report_prefill (pre_s , n_tokens)
+  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
   flat =. temp , k , p , min_p
   params =. <"0 flat
   pred_tok =. params sampler_sample logits
@@ -1054,6 +1040,7 @@ gem3_generate_batch =: 4 : 0
   p =. > 4 { args
   min_p =. > 5 { args
   B =. # prompts
+  llm_box =. <llm
   prompts_tok =. ''
   prompts_len =. ''
   i =. 0
@@ -1061,7 +1048,7 @@ gem3_generate_batch =: 4 : 0
     text =. > i { prompts
     messages =. <('user') ; text
     prompt =. gem3_chat_prompt messages
-    tokens =. llama3_tokenize (<llm) , <prompt
+    tokens =. llama3_tokenize (llm_box , <prompt)
     tok_list =. , > tokens
     prompts_tok =. prompts_tok , <tok_list
     prompts_len =. prompts_len , <(# tok_list)
@@ -1075,7 +1062,7 @@ gem3_generate_batch =: 4 : 0
   while. i < B do.
     L =. > i { prompts_len
     gen =. (L) }. (> i { output)
-    answers =. answers , <(llama3_detokenize (<llm) , <gen)
+    answers =. answers , <(llama3_detokenize (llm_box , <gen))
     i =. i + 1
   end.
   answers

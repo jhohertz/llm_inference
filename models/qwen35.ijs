@@ -301,18 +301,60 @@ rs_write_b =: 3 : 0
   ''
 )
 
+NB. Batched read/write: read (or write) all B sequences' conv+s recurrent state
+NB. in ONE indexed pass, mirroring rs_read_b/rs_write_b's per-seq index math.
+NB. y = <layer; B> (read) / <layer; conv_states(B,rows,ch); s_states(B,nv,Sv,Sv); B> (write).
+rs_read_b_all =: 3 : 0
+  layer =. > 0 { y
+  B =. > 1 { y
+  ord =. qw35_ssm_layers i. layer
+  cs =. rs_conv_slice rs_meta
+  ss =. rs_s_slice rs_meta
+  cb0 =. (ord * rs_batch_g) * cs
+  sb0 =. (ord * rs_batch_g) * ss
+  idxc =. cb0 + ((i. B) * cs) +/ (i. cs)
+  idxs =. sb0 + ((i. B) * ss) +/ (i. ss)
+  cshape =. B , (> 1 { rs_meta) , (> 2 { rs_meta)
+  sshape =. B , (> 4 { rs_meta) , (> 3 { rs_meta) , (> 3 { rs_meta)
+  (<cshape $ , (idxc { rs_conv_g)) , <sshape $ , (idxs { rs_s_g)
+)
+rs_write_b_all =: 3 : 0
+  layer =. > 0 { y
+  conv =. > 1 { y
+  s =. > 2 { y
+  B =. > 3 { y
+  ord =. qw35_ssm_layers i. layer
+  cs =. rs_conv_slice rs_meta
+  ss =. rs_s_slice rs_meta
+  cb0 =. (ord * rs_batch_g) * cs
+  sb0 =. (ord * rs_batch_g) * ss
+  idxc =. cb0 + ((i. B) * cs) +/ (i. cs)
+  idxs =. sb0 + ((i. B) * ss) +/ (i. ss)
+  rs_conv_g =: (, conv) (, idxc)} rs_conv_g
+  rs_s_g =: (, s) (, idxs)} rs_s_g
+  ''
+)
+
 
 NB. ---- GQA expand ----
 
 NB. ---- Batched attention layer (cache-prefix aware) ----
 NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 qw35_attention_b =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
-  mi =. > 1 { y
-  layer =. > 2 { y
+  layer =. > 1 { y
+  mi =. > 2 { y
   start_pos =. > 3 { y
-  L =. {. $ hidden
+  rope =. > 4 { y
+  NB. rope = <cos_all; sin_all; cos_expq; sin_expq; cos_expk; sin_expk; mask_g2>
+  cos_all =. > 0 { rope
+  sin_all =. > 1 { rope
+  cos_expq =. > 2 { rope
+  sin_expq =. > 3 { rope
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
+  mask_g2 =. > 6 { rope
+  L =. {. $ x
   n_heads =. qw35_bd_a_n_heads block_data
   head_dim =. qw35_bd_a_head_dim block_data
   n_heads_kv =. qw35_bd_a_n_heads_kv block_data
@@ -321,15 +363,16 @@ qw35_attention_b =: 4 : 0
   half =. <. n_rot % 2
 
   NB. Attention norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
-  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (L, 2*head_dim*n_heads)
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) nt)   NB. (L, 2*head_dim*n_heads)
   qg3 =. (L , n_heads , 2 * head_dim) $ , qg
   Q =. head_dim {."1 qg3    NB. (L, n_heads, head_dim)
   gate =. head_dim }."1 qg3  NB. (L, n_heads, head_dim)
-  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (L, n_kv*head_dim)
-  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) nt)   NB. (L, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) nt)
   K =. (L , n_heads_kv , head_dim) $ , kv
   V =. (L , n_heads_kv , head_dim) $ , vv
 
@@ -341,21 +384,16 @@ qw35_attention_b =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (L , n_heads_kv , head_dim) $ , Kf
 
-  NB. Partial NEOX RoPE (n_rot dims, pairs (i, i+half)), table-based
-  cos_all =. (start_pos + i. L) { mi_cos_tab mi    NB. (L, half)
-  sin_all =. (start_pos + i. L) { mi_sin_tab mi
+  NB. Partial NEOX RoPE (n_rot dims, pairs (i, i+half)) — tables + expansions
+  NB. hoisted once per chunk (mirror llama_run_blocks_b).
   Qa =. half {."1 Q
   Qb =. half {."1 (half }."1 Q)
-  cos_expq =. (0 2 1) |: ((L , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_expq =. (0 2 1) |: ((L , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
   Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
   Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
   Qtail =. (2 * half) }."1 Q
   Q =. (L , n_heads , head_dim) $ , ((Qa_out ,"1 Qb_out) ,"1 Qtail)
   Ka =. half {."1 K
   Kb =. half {."1 (half }."1 K)
-  cos_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
   Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
   Ktail =. (2 * half) }."1 K
@@ -379,39 +417,18 @@ qw35_attention_b =: 4 : 0
   NB. GQA without expanding KV over the combined keys: group the query heads
   NB. (n_heads_kv groups of n_groups) and batched-matmul each group's Q against
   NB. its shared K/V — K/V stay (n_heads_kv, ctx, hd), never expanded to n_heads.
-  Qp =. 1 0 2 |: Q        NB. (n_heads, L, hd)
-  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , ((n_heads_kv , n_groups , L , head_dim) $ , Qp)
-  Kp2 =. 1 2 0 |: K        NB. (n_heads_kv, hd, start_pos+L) — one transpose
-  scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
-  NB. causal mask: query t at start_pos+t, keys 0..start_pos+L-1. Keep scores
-  NB. group-major: tile the 2D mask r-major (row r*L+t needs mask row t) and
-  NB. subtract with rank over the kv-head frame — no (n_heads, L, tot) 3D mask
-  NB. and no scores re-shape copy.
-  key_pos =. i. (start_pos + L)
-  q_pos =. start_pos + i. L
-  mask_2d =. q_pos </ key_pos
-  NB. Fast r-major boolean tile via the (*/) broadcast (the cyclic boolean
-  NB. reshape (n_groups,L,ctx)$mask_2d is ~100x slower); scaled at subtract.
-  mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+  scores2 =. ((n_heads_kv , (n_groups * L) , head_dim) $ , (1 0 2 |: Q)) (+/ .* "2) (1 2 0 |: K)   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
+  NB. Causal mask: hoisted once per chunk (mask_g2).
   scores2 =. scores2 -"2 (mask_g2 * 1e9)
 
-  NB. Softmax over j per (g,r,t) row (order-independent)
-  scores_f =. ((n_heads * L) , start_pos + L) $ , scores2
-  max_sf =. >./"1 scores_f
-  exp_sf =. ^ (scores_f - max_sf)
+  NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
+  NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
+  max_sf =. >./"1 scores2
+  exp_sf =. ^ (scores2 - max_sf)
   softmax_f =. exp_sf % +/"1 exp_sf
-  softmax_g2 =. (n_heads_kv , (n_groups * L) , start_pos + L) $ , softmax_f
 
-  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
-  Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
-  attn2 =. softmax_g2 (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
-  attn_raw =. (n_heads, L, head_dim) $ , attn2   NB. [h,t,d]
-  attn_raw =. (L , n_heads , head_dim) $ , (1 0 2 |: attn_raw)
-
-  NB. Gated output: multiply by sigmoid(gate) per head, then wo
-  gate_sig =. sigmoid gate   NB. (L, n_heads, head_dim)
-  attn_gated =. attn_raw * gate_sig
-  attn_flat =. (L , n_heads * head_dim) $ , attn_gated
+  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]; gated, then wo
+  attn_flat =. (L , n_heads * head_dim) $ , (((L, n_heads, head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , (softmax_f (+/ .* "2) (1 0 2 |: V))))) * (sigmoid gate))
   out =. |: ((qw35_bd_a_o block_data) (+/ .*) |: attn_flat)   NB. (L, emb)
   <out
 )
@@ -457,6 +474,33 @@ qw35_ssm_recur =: 3 : 0
   (<s) , <out
 )
 
+NB. Batched-decode recurrence: one vectorized delta-net step across B sequences
+NB. in a single pass (J threads the rank-4 matmuls over the (B, n_v_heads) cell
+NB. axes). Bit-exact vs the per-seq qw35_ssm_recur loop (verified -: on real
+NB. layer data). y = <s_states(B,nv,S_v,S_v); q(B,nv,hd); k; v; beta(B,nv);
+NB. gate(B,nv); scale>.
+qw35_ssm_recur_b =: 3 : 0
+  s =. > 0 { y
+  q =. > 1 { y
+  k =. > 2 { y
+  v =. > 3 { y
+  beta =. > 4 { y
+  gate =. > 5 { y
+  scale =. > 6 { y
+  B =. {. $ s
+  n_v_heads =. 1 { $ s
+  s_v =. 3 { $ s
+  NB. decay ^gate broadcast to (B,nv,S_v,S_v): (*/ ) outer over the two S_v axes
+  s =. s * ((B , n_v_heads , s_v , s_v) $ , ((^ gate) (*/) (s_v $ 1) (*/) (s_v $ 1)))
+  sk =. k (+/ .* "1 2) s
+  delta =. (v - sk) * beta
+  k3 =. (B , n_v_heads , s_v , 1) $ , k
+  d3 =. (B , n_v_heads , 1 , s_v) $ , delta
+  s =. s + (k3 (+/ .* "2) d3)
+  o =. (q (+/ .* "1 2) s) * scale
+  (<s) , <o
+)
+
 NB. ---- Batched SSM (gated delta net) layer forward ----
 NB. x = hidden (L, emb); y = <block_data; mi; layer>
 qw35_ssm_forward_b =: 4 : 0
@@ -471,17 +515,18 @@ qw35_ssm_forward_b =: 4 : 0
 
   NB. Attention norm
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
   value_dim =. head_v_dim * num_v_heads
   conv_dim =. (key_dim * 2) + value_dim
 
   NB. Projections (batched)
-  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (L, conv_dim)
-  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (L, value_dim)
-  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (L, num_v_heads)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) nt)   NB. (L, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) nt)   NB. (L, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) nt)   NB. (L, num_v_heads)
   beta =. sigmoid beta_p
-  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (L, num_v_heads)
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) nt)   NB. (L, num_v_heads)
   alpha =. alpha_p + ((L , num_v_heads) $ qw35_bd_s_dt block_data)
   alpha =. softplus alpha
   gate =. alpha * ((L , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
@@ -538,8 +583,9 @@ qw35_ssm_forward_b =: 4 : 0
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual)
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + out
   <output
@@ -550,15 +596,14 @@ NB. x = hidden (L, emb); y = <block_data; mi; layer; start_pos>
 qw35_block_forward_a_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  mi =. > 1 { y
-  layer =. > 2 { y
-  start_pos =. > 3 { y
-  attn_result =. hidden qw35_attention_b ((<block_data) , (<mi) , (<layer) , (<start_pos))
+  mi =. > 2 { y
+  attn_result =. hidden qw35_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <sa_out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + sa_out
   <output
@@ -573,9 +618,8 @@ NB. ---- Batched run all blocks ----
 NB. x = hidden (L, emb); y = <llm; start_pos> (start_pos=0 -> fresh: rs state zeroed;
 NB. start_pos>0 -> resume: attention cache prefix + rs state persist).
 qw35_run_blocks_b =: 4 : 0
-  args =. y
-  llm =. > 0 { args
-  start_pos =. > 1 { args
+  llm =. > 0 { y
+  start_pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
   n_heads_kv =. mi_n_heads_kv mi
@@ -593,14 +637,36 @@ qw35_run_blocks_b =: 4 : 0
       rs_create ((<18) , (<3) , (<6144) , (<128) , <16)
     end.
   end.
+  NB. RoPE tables are per-model and identical across layers (freq is model
+  NB. level): compute the cos/sin tables + expansions ONCE per chunk and thread
+  NB. through the layer loop (mirror llama_run_blocks_b), instead of recomputing
+  NB. them in every layer.  The causal mask is layer-invariant too.
+  L =. {. $ x
+  n_heads =. mi_n_heads mi
+  n_rot =. qw35_mi_n_rot mi
+  half =. <. n_rot % 2
+  cos_all =. (start_pos + i. L) { mi_cos_tab mi
+  sin_all =. (start_pos + i. L) { mi_sin_tab mi
+  cos_expq =. (0 2 1) |: ((L , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_expq =. (0 2 1) |: ((L , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  n_groups =. n_heads % n_heads_kv
+  key_pos =. i. (start_pos + L)
+  q_pos =. start_pos + i. L
+  mask_2d =. q_pos </ key_pos
+  mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. <mi, <start_pos, <rope are layer-invariant — box once, reuse per layer.
+  bf_pre =. ((<mi) , (<start_pos) , <rope)
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_b ((<block_data) , (<mi) , (<b))
+      result =. state qw35_block_forward_s_b ((<block_data) , (<mi) , <b)
     else.
-      result =. state qw35_block_forward_a_b ((<block_data) , (<mi) , (<b) , (<start_pos))
+      result =. state qw35_block_forward_a_b ((<block_data) , (<b) , bf_pre)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -612,12 +678,12 @@ NB. ---- Batched-DECODE attention layer (B sequences, ONE token each at pos[b]) 
 NB. qwen35 attention = qwen3-style + fused Q+GATE, PARTIAL NEOX RoPE (n_rot),
 NB. gated output (sigmoid(gate)). x = hidden (B, emb); y = <block_data; pos; mi; layer>
 qw35_attention_bd =: 4 : 0
-  hidden =. x
   block_data =. > 0 { y
   pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
-  B =. {. $ hidden
+  rope =. > 4 { y
+  B =. {. $ x
   n_heads =. qw35_bd_a_n_heads block_data
   head_dim =. qw35_bd_a_head_dim block_data
   n_heads_kv =. qw35_bd_a_n_heads_kv block_data
@@ -626,15 +692,16 @@ qw35_attention_bd =: 4 : 0
   half =. <. n_rot % 2
 
   NB. Attention norm per row
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
-  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (B, 2*head_dim*n_heads)
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) nt)   NB. (B, 2*head_dim*n_heads)
   qg3 =. (B , n_heads , 2 * head_dim) $ , qg
   Q =. head_dim {."1 qg3    NB. (B, n_heads, head_dim)
   gate =. head_dim }."1 qg3  NB. (B, n_heads, head_dim)
-  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (B, n_kv*head_dim)
-  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) nt)   NB. (B, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) nt)
   K =. (B , n_heads_kv , head_dim) $ , kv
   V =. (B , n_heads_kv , head_dim) $ , vv
 
@@ -646,19 +713,22 @@ qw35_attention_bd =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (B , n_heads_kv , head_dim) $ , Kf
 
-  NB. Partial NEOX RoPE batched at the B positions (n_rot dims, pairs (i, i+half))
-  cos_all =. pos { mi_cos_tab mi    NB. (B, half)
-  sin_all =. pos { mi_sin_tab mi
-  cos_expq =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_expq =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  NB. Partial NEOX RoPE batched at the B positions (n_rot dims, pairs (i, i+half)).
+  NB. cos/sin tables + expansions are layer-invariant (depend only on pos) —
+  NB. hoisted once in run_blocks_bd, threaded through y as <cos_all; sin_all;
+  NB. cos_expq; sin_expq; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope    NB. (B, half)
+  sin_all =. > 1 { rope
+  cos_expq =. > 2 { rope
+  sin_expq =. > 3 { rope
   Qa =. half {."1 Q
   Qb =. half {."1 (half }."1 Q)
   Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
   Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
   Qtail =. (2 * half) }."1 Q
   Q =. (B , n_heads , head_dim) $ , ((Qa_out ,"1 Qb_out) ,"1 Qtail)
-  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka =. half {."1 K
   Kb =. half {."1 (half }."1 K)
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
@@ -686,53 +756,36 @@ qw35_attention_bd =: 4 : 0
     kv_pos_g =: kv_pos_g >. (0 { pos) + 1
     NB. Gather all B windows in one indexed fetch (rows (base_b[b]+i.win))
     idxr =. base_b +/ i. win
-    k_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)
-    v_rows_b =. (B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g)
     NB. Batched GQA scores, softmax, V, sigmoid-gate (threaded over B)
-    Kp_b =. (0 2 3 1) |: k_rows_b
-    Q_g2_b =. (B , n_heads_kv , n_groups , head_dim) $ , Q
-    scores_b =. Q_g2_b (+/ .* "2) Kp_b   NB. (B, n_kv, groups, win)
-    scores_b2 =. (B , n_heads , win) $ , scores_b   NB. (B, n_heads, win)
-    max_sf_b =. >./"1 scores_b2
-    exp_sf_b =. ^ (scores_b2 - max_sf_b)
+    scores_b =. ((B , n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) ((0 2 3 1) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)))   NB. (B, n_kv, groups, win)
+    NB. Softmax directly on the 4D scores_b (the old scores_b2 flatten +
+    NB. softmax_g2_b re-group were 2 redundant reshape copies per layer)
+    max_sf_b =. >./"1 scores_b
+    exp_sf_b =. ^ (scores_b - max_sf_b)
     softmax_b =. exp_sf_b % +/"1 exp_sf_b
-    softmax_g2_b =. (B , n_heads_kv , n_groups , win) $ , softmax_b
-    Vp_b =. (0 2 1 3) |: v_rows_b   NB. (B, n_kv, win, hd)
-    attn2_b =. softmax_g2_b (+/ .* "2) Vp_b   NB. (B, n_kv, groups, hd)
-    attn_b3 =. (B , n_heads , head_dim) $ , attn2_b
-    attn_gated_b =. attn_b3 * (sigmoid gate)   NB. gate (B, n_heads, hd)
-    attn_all =. (B , n_heads * head_dim) $ , attn_gated_b   NB. (B, n_heads*hd) flat
+    attn_all =. (B , n_heads * head_dim) $ , (((B , n_heads , head_dim) $ , (softmax_b (+/ .* "2) ((0 2 1 3) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g))))) * (sigmoid gate))   NB. (B, n_heads*hd) flat
   else.
     attn_out =. ''
     b =. 0
     while. b < B do.
-      q_b =. (n_heads, head_dim) $ , (b { Q)
-      k_b =. (n_heads_kv, head_dim) $ , (b { K)
-      v_b =. (n_heads_kv, head_dim) $ , (b { V)
-      gate_b =. (n_heads, head_dim) $ , (b { gate)
+      q_b =. b { Q
+      k_b =. b { K
+      v_b =. b { V
+      gate_b =. b { gate
       pos_b =. b { pos
       kv_write ((<layer) , (<pos_b) , (<k_b) , (<v_b) , (<b))
       kv_result =. kv_read ((<layer) , (<pos_b) , (<b))
-      k_all =. > 0 { kv_result
-      v_all =. > 1 { kv_result
       win =. pos_b + 1
-      Q_g2 =. (n_heads_kv , n_groups , head_dim) $ , q_b
-      Kp2 =. 1 2 0 |: k_all
-      scores2 =. Q_g2 (+/ .* "2) Kp2
-      scores =. (n_heads, win) $ , scores2
-      max_sf =. >./"1 scores
-      exp_sf =. ^ (scores - max_sf)
+      scores2 =. ((n_heads_kv , n_groups , head_dim) $ , q_b) (+/ .* "2) (1 2 0 |: (> 0 { kv_result))
+      NB. Softmax directly on the 3D scores2 (the old scores flatten +
+      NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
+      max_sf =. >./"1 scores2
+      exp_sf =. ^ (scores2 - max_sf)
       softmax =. exp_sf % +/"1 exp_sf
-      softmax_g2 =. (n_heads_kv , n_groups , win) $ , softmax
-      Vp =. 1 0 2 |: v_all
-      attn2 =. softmax_g2 (+/ .* "2) Vp
-      attn_raw =. (n_heads, head_dim) $ , attn2
-      attn_gated =. attn_raw * (sigmoid gate_b)
-      attn_raw_flat =. (n_heads * head_dim) $ , attn_gated
-      attn_out =. attn_out , <attn_raw_flat
+      attn_out =. attn_out , <((n_heads * head_dim) $ , (((n_heads, head_dim) $ , (softmax (+/ .* "2) (1 0 2 |: (> 1 { kv_result)))) * (sigmoid gate_b)))
       b =. b + 1
     end.
-    attn_all =. (B , n_heads * head_dim) $ , > attn_out
+    attn_all =. > attn_out
   end.
   out =. |: ((qw35_bd_a_o block_data) (+/ .*) |: attn_all)   NB. (B, emb)
   <out
@@ -742,15 +795,14 @@ NB. ---- Batched-DECODE attention block forward ----
 qw35_block_forward_a_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
-  layer =. > 3 { y
-  attn_result =. hidden qw35_attention_bd ((<block_data) , (<pos) , (<mi) , (<layer))
+  attn_result =. hidden qw35_attention_bd y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <sa_out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + sa_out
   <output
@@ -761,7 +813,6 @@ NB. x = hidden (B, emb); y = <block_data; pos; mi; layer>
 qw35_ssm_forward_bd =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
   layer =. > 3 { y
   B =. {. $ hidden
@@ -771,17 +822,18 @@ qw35_ssm_forward_bd =: 4 : 0
 
   NB. Attention norm per row
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
   value_dim =. head_v_dim * num_v_heads
   conv_dim =. (key_dim * 2) + value_dim
 
   NB. Projections (batched)
-  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (B, conv_dim)
-  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (B, value_dim)
-  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (B, num_v_heads)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) nt)   NB. (B, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) nt)   NB. (B, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) nt)   NB. (B, num_v_heads)
   beta =. sigmoid beta_p
-  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (B, num_v_heads)
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) nt)   NB. (B, num_v_heads)
   alpha =. alpha_p + ((B , num_v_heads) $ qw35_bd_s_dt block_data)
   alpha =. softplus alpha
   gate =. alpha * ((B , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
@@ -793,60 +845,41 @@ qw35_ssm_forward_bd =: 4 : 0
   NB. instead of B per-seq silu calls — cuts the per-call activation overhead)
   z3 =. (B , num_v_heads , head_v_dim) $ , z
   z_silu =. silu z3
-  finals =. ''
-  bi =. 0
-  while. bi < B do.
-    rs_state =. rs_read_b ((<layer) , <bi)
-    conv_state =. > 0 { rs_state   NB. (3, conv_dim)
-    input =. conv_state , (bi { qkv_mixed)   NB. (4, conv_dim)
-    conv_out =. ((i. 1) { input) * ((1 , conv_dim) $ (0 {"1 conv_w))
-    conv_out =. conv_out + ((1 + i. 1) { input) * ((1 , conv_dim) $ (1 {"1 conv_w))
-    conv_out =. conv_out + ((2 + i. 1) { input) * ((1 , conv_dim) $ (2 {"1 conv_w))
-    conv_out =. conv_out + ((3 + i. 1) { input) * ((1 , conv_dim) $ (3 {"1 conv_w))
-    conv_out =. silu conv_out   NB. (1, conv_dim)
-
-    NB. Split Q/K/V channels
-    q_conv =. key_dim {."1 conv_out
-    k_conv =. key_dim {."1 (key_dim }."1 conv_out)
-    v_conv =. (2 * key_dim) }."1 conv_out
-
-    NB. Reshape + L2-norm q and k
-    q3 =. (1 , num_v_heads , head_v_dim) $ , q_conv
-    k3 =. (1 , num_v_heads , head_v_dim) $ , k_conv
-    v3 =. (1 , num_v_heads , head_v_dim) $ , v_conv
-    qf =. ((num_v_heads) , head_v_dim) $ , q3
-    qf =. l2norm_rows ((< mi_rms_eps mi) , <qf)
-    q =. (1 , num_v_heads , head_v_dim) $ , qf
-    kf =. ((num_v_heads) , head_v_dim) $ , k3
-    kf =. l2norm_rows ((< mi_rms_eps mi) , <kf)
-    k =. (1 , num_v_heads , head_v_dim) $ , kf
-
-    NB. Recurrence (1 step)
-    s_state =. > 1 { rs_state
-    rec =. qw35_ssm_recur ((<s_state) , (<q) , (<k) , (<v3) , (<((bi + i. 1) { beta)) , (<((bi + i. 1) { gate)) , <scale)
-    s_new =. > 0 { rec
-    o =. > 1 { rec   NB. (1, num_v_heads, head_v_dim)
-
-    NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z) (silu precomputed)
-    o_flat =. (num_v_heads , head_v_dim) $ , o
-    o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
-    gated =. o_n * (bi { z_silu)
-    final =. (1 , d_inner) $ , gated
-    finals =. finals , <final
-
-    NB. Update conv state (last 3 rows of input) + s state
-    new_conv =. (1 + i. 3) { input
-    rs_write_b ((<layer) , (<new_conv) , (<s_new) , <bi)
-    bi =. bi + 1
-  end.
-
+  NB. Batched conv + recurrence + gated norm across all B sequences in ONE
+  NB. vectorized pass (bit-exact vs the per-seq loop it replaces): J threads the
+  NB. rank-4 matmuls over the (B, n_v_heads) cell axes, so the delta-net
+  NB. recurrence runs once for the whole batch instead of B times.
+  'conv_states_b s_states_b' =. rs_read_b_all (layer ; B)
+  input_b =. (B , 4 , conv_dim) $ , (conv_states_b ,"2 (B , 1 , conv_dim) $ , qkv_mixed)
+  c0 =. |: (0 {"2 |: input_b)
+  c1 =. |: (1 {"2 |: input_b)
+  c2 =. |: (2 {"2 |: input_b)
+  c3 =. |: (3 {"2 |: input_b)
+  conv_out_b =. (B , conv_dim) $ , ((c0 * ((B , conv_dim) $ , 0 {"1 conv_w)) + (c1 * ((B , conv_dim) $ , 1 {"1 conv_w)) + (c2 * ((B , conv_dim) $ , 2 {"1 conv_w)) + (c3 * ((B , conv_dim) $ , 3 {"1 conv_w)))
+  conv_out_b =. silu conv_out_b
+  q3_b =. (B , num_v_heads , head_v_dim) $ , (key_dim {."1 conv_out_b)
+  k3_b =. (B , num_v_heads , head_v_dim) $ , (key_dim {."1 (key_dim }."1 conv_out_b))
+  v3_b =. (B , num_v_heads , head_v_dim) $ , ((2 * key_dim) }."1 conv_out_b)
+  qf_b =. l2norm_rows ((< mi_rms_eps mi) , <((B * num_v_heads) , head_v_dim) $ , q3_b)
+  q_b =. (B , num_v_heads , head_v_dim) $ , qf_b
+  kf_b =. l2norm_rows ((< mi_rms_eps mi) , <((B * num_v_heads) , head_v_dim) $ , k3_b)
+  k_b =. (B , num_v_heads , head_v_dim) $ , kf_b
+  rec_b =. qw35_ssm_recur_b ((<s_states_b) , (<q_b) , (<k_b) , (<v3_b) , (<beta) , (<gate) , <scale)
+  s_new_b =. > 0 { rec_b
+  o_b =. > 1 { rec_b
+  o_n_b =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <((B * num_v_heads) , head_v_dim) $ , o_b)
+  gated_b =. ((B , num_v_heads , head_v_dim) $ , o_n_b) * z_silu
+  final_all =. (B , d_inner) $ , gated_b
+  NB. Update conv state (last 3 rows of input_b) + s state for all B at once
+  new_conv_b =. 1 0 2 |: ((1 + i. 3) { 1 0 2 |: input_b)
+  rs_write_b_all ((<layer) , (<new_conv_b) , (<s_new_b) , <B)
   NB. out_proj + residual + FFN (batched)
-  final_all =. (B , d_inner) $ , > finals
   out =. |: ((qw35_bd_s_out block_data) (+/ .*) |: final_all)   NB. (B, emb)
   out =. out + hidden
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output =. ffn_raw + out
   <output
@@ -856,11 +889,11 @@ NB. ---- Batched-DECODE run all blocks (B sequences, one token each at pos[b]) -
 qw35_block_forward_s_bd =: qw35_ssm_forward_bd
 
 qw35_run_blocks_bd =: 4 : 0
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
@@ -873,14 +906,29 @@ qw35_run_blocks_bd =: 4 : 0
   if. 0 = # rs_meta do.
     rs_create ((<18) , (<3) , (<6144) , (<128) , <16)
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (depend only on
+  NB. pos) — compute ONCE per step, thread through (attention layers only;
+  NB. SSM layers don't use RoPE).
+  n_rot =. qw35_mi_n_rot mi
+  half =. <. n_rot % 2
+  B =. {. $ state
+  cos_all =. pos { mi_cos_tab mi    NB. (B, half)
+  sin_all =. pos { mi_sin_tab mi
+  cos_expq =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_expq =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
+  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
+  bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bd ((<block_data) , (<pos) , (<mi) , (<b))
+      result =. state qw35_block_forward_s_bd ((<block_data) , bf_pre , <b)
     else.
-      result =. state qw35_block_forward_a_bd ((<block_data) , (<pos) , (<mi) , (<b))
+      result =. state qw35_block_forward_a_bd ((<block_data) , bf_pre , (<b) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -891,11 +939,9 @@ qw35_run_blocks_bd =: 4 : 0
 NB. ---- Single-token run all blocks (1D hidden) ----
 NB. x = hidden (emb,); y = <llm; pos>. Wraps to (1, emb) and runs the batched path.
 qw35_run_blocks =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
-  input2 =. (1 , $ input) $ input
+  llm =. > 0 { y
+  pos =. > 1 { y
+  input2 =. (1 , $ x) $ x
   result_b =. input2 qw35_run_blocks_b ((<llm) , <pos)
   state =. > 0 { result_b
   < > 0 { state
@@ -1002,16 +1048,24 @@ qw35_infer =: 4 : 0
   if. 1 = n_tokens do.
     tok =. 0 { tok_list
     hidden =. scale * |: (tok {"1 emb_w)
-    pre_s =. 6!:2 'result =. hidden qw35_run_blocks (<llm) , <0'
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result =. hidden qw35_run_blocks (<llm) , <0'
+    else.
+      result =. hidden qw35_run_blocks (<llm) , <0
+    end.
     hidden =. > 0 { result
   else.
     emb_all =. scale * |: (tok_list {"1 emb_w)
-    pre_s =. 6!:2 'result_b =. emb_all qw35_run_blocks_b ((<llm) , <0)'
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result_b =. emb_all qw35_run_blocks_b ((<llm) , <0)'
+    else.
+      result_b =. emb_all qw35_run_blocks_b ((<llm) , <0)
+    end.
     h_b =. > 0 { result_b
     hidden =. > (n_tokens - 1) { h_b
   end.
   logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  report_prefill (pre_s , n_tokens)
+  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
   pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
   decoded =. gpt2_detokenize (<llm) , <pred_tok
   tokens ; pred_tok ; decoded ; logits
@@ -1057,6 +1111,7 @@ qw35_generate_batch =: 4 : 0
   p =. > 4 { args
   min_p =. > 5 { args
   B =. # prompts
+  llm_box =. <llm
   prompts_tok =. ''
   prompts_len =. ''
   i =. 0
@@ -1064,7 +1119,7 @@ qw35_generate_batch =: 4 : 0
     text =. > i { prompts
     messages =. <('user') ; text
     prompt =. qw35_chat_prompt messages
-    tokens =. gpt2_tokenize (<llm) , <prompt
+    tokens =. gpt2_tokenize (llm_box , <prompt)
     tok_list =. , > tokens
     prompts_tok =. prompts_tok , <tok_list
     prompts_len =. prompts_len , <(# tok_list)
@@ -1078,7 +1133,7 @@ qw35_generate_batch =: 4 : 0
   while. i < B do.
     L =. > i { prompts_len
     gen =. (L) }. (> i { output)
-    answers =. answers , <(gpt2_detokenize (<llm) , <gen)
+    answers =. answers , <(gpt2_detokenize (llm_box , <gen))
     i =. i + 1
   end.
   answers
@@ -1098,6 +1153,7 @@ qw35_attention_bp =: 4 : 0
   layer =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
+  rope =. > 5 { y
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
@@ -1112,14 +1168,15 @@ qw35_attention_bp =: 4 : 0
   NB. Attention norm per row (batched)
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden_flat)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
-  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) |: normed)   NB. (B*c, 2*head_dim*n_heads)
+  qg =. |: ((qw35_bd_a_q block_data) (+/ .*) nt)   NB. (B*c, 2*head_dim*n_heads)
   qg3 =. (B , c , n_heads , 2 * head_dim) $ , qg
   Q =. head_dim {."1 qg3    NB. (B, c, n_heads, head_dim)
   gate =. head_dim }."1 qg3  NB. (B, c, n_heads, head_dim)
-  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) |: normed)   NB. (B*c, n_kv*head_dim)
-  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) |: normed)
+  kv =. |: ((qw35_bd_a_k block_data) (+/ .*) nt)   NB. (B*c, n_kv*head_dim)
+  vv =. |: ((qw35_bd_a_v block_data) (+/ .*) nt)
   K =. (B , c , n_heads_kv , head_dim) $ , kv
   V =. (B , c , n_heads_kv , head_dim) $ , vv
 
@@ -1131,20 +1188,22 @@ qw35_attention_bp =: 4 : 0
   Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (B , c , n_heads_kv , head_dim) $ , Kf
 
-  NB. Partial NEOX RoPE at the (B, c) positions pos[b]+i.c (n_rot dims, pairs (i, i+half))
-  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
-  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
-  sin_all =. pos_bc_flat { mi_sin_tab mi
-  cos_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
-  sin_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  NB. Partial NEOX RoPE at the (B, c) positions pos[b]+i.c (n_rot dims, pairs
+  NB. (i, i+half)). cos/sin tables + expansions are layer-invariant (depend only
+  NB. on pos) — hoisted once in run_blocks_bp, threaded through y as <cos_all;
+  NB. sin_all; cos_expq; sin_expq; cos_expk; sin_expk>.
+  cos_all =. > 0 { rope   NB. (B*c, half)
+  sin_all =. > 1 { rope
+  cos_expq =. > 2 { rope
+  sin_expq =. > 3 { rope
   Qa =. half {."1 Q
   Qb =. half {."1 (half }."1 Q)
   Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
   Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
   Qtail =. (2 * half) }."1 Q
   Q =. (B , c , n_heads , head_dim) $ , ((Qa_out ,"1 Qb_out) ,"1 Qtail)
-  cos_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
-  sin_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  cos_expk =. > 4 { rope
+  sin_expk =. > 5 { rope
   Ka =. half {."1 K
   Kb =. half {."1 (half }."1 K)
   Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
@@ -1159,44 +1218,29 @@ qw35_attention_bp =: 4 : 0
   attn_out =. ''
   b =. 0
   while. b < B do.
-    q_b =. (c, n_heads, head_dim) $ , (b { Q)
-    k_b =. (c, n_heads_kv, head_dim) $ , (b { K)
-    v_b =. (c, n_heads_kv, head_dim) $ , (b { V)
-    gate_b =. (c, n_heads, head_dim) $ , (b { gate)
+    gate_b =. b { gate
     pos_b =. b { pos
     base_b =. ((layer * kv_batch_g) + b) * eff_seq
     idxw =. base_b + pos_b + i. c
-    k_cache_g =: ((c, n_heads_kv*head_dim) $ , k_b) idxw} k_cache_g
-    v_cache_g =: ((c, n_heads_kv*head_dim) $ , v_b) idxw} v_cache_g
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { K)) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { V)) idxw} v_cache_g
     kv_pos_g =: kv_pos_g >. pos_b + c
     win =. pos_b + c
-    k_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)
-    v_all =. (win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)
     mask_2d =. (pos_b + i. c) </ i. win
     if. 0 < # lens do.
       mask_2d =. mask_2d +. ((i. win) >: b { lens)
     end.
-    mask_g2 =. ((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
-    Qp =. 1 0 2 |: q_b
-    Q_g2 =. (n_heads_kv, (n_groups*c), head_dim) $ , ((n_heads_kv, n_groups, c, head_dim) $ , Qp)
-    Kp2 =. 1 2 0 |: k_all
-    scores2 =. Q_g2 (+/ .* "2) Kp2
-    scores2 =. scores2 -"2 (mask_g2 * 1e9)
-    scores_f =. ((n_heads*c), win) $ , scores2
-    max_sf =. >./"1 scores_f
-    exp_sf =. ^ (scores_f - max_sf)
+    scores2 =. ((n_heads_kv, (n_groups*c), head_dim) $ , (1 0 2 |: (b { Q))) (+/ .* "2) (1 2 0 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)))
+    scores2 =. scores2 -"2 (((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1))) * 1e9)
+    NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
+    NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
+    max_sf =. >./"1 scores2
+    exp_sf =. ^ (scores2 - max_sf)
     softmax_f =. exp_sf % +/"1 exp_sf
-    softmax_g2 =. (n_heads_kv, (n_groups*c), win) $ , softmax_f
-    Vp =. 1 0 2 |: v_all
-    attn2 =. softmax_g2 (+/ .* "2) Vp
-    attn_raw =. (n_heads, c, head_dim) $ , attn2
-    attn_raw =. (c, n_heads, head_dim) $ , (1 0 2 |: attn_raw)
-    attn_gated =. attn_raw * (sigmoid gate_b)
-    attn_raw_flat =. (c, n_heads*head_dim) $ , attn_gated
-    attn_out =. attn_out , <attn_raw_flat
+    attn_out =. attn_out , <((c, n_heads*head_dim) $ , (((c, n_heads, head_dim) $ , (1 0 2 |: ((n_heads, c, head_dim) $ , (softmax_f (+/ .* "2) (1 0 2 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g))))))) * (sigmoid gate_b)))
     b =. b + 1
   end.
-  attn_all =. (B, c, n_heads*head_dim) $ , > attn_out
+  attn_all =. > attn_out
   out =. |: ((qw35_bd_a_o block_data) (+/ .*) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
   out =. (B, c, emb_len) $ , out
   (<out)
@@ -1225,17 +1269,18 @@ qw35_ssm_forward_bp =: 4 : 0
   NB. Attention norm per row (batched)
   hidden_flat =. ((B*c) , emb_len) $ , hidden
   normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden_flat)
+  nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
   value_dim =. head_v_dim * num_v_heads
   conv_dim =. (key_dim * 2) + value_dim
 
   NB. Projections (batched across B*c rows)
-  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) |: normed)   NB. (B*c, conv_dim)
-  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) |: normed)   NB. (B*c, value_dim)
-  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) |: normed)   NB. (B*c, num_v_heads)
+  qkv_mixed =. |: ((qw35_bd_s_wqkv block_data) (+/ .*) nt)   NB. (B*c, conv_dim)
+  z =. |: ((qw35_bd_s_gate block_data) (+/ .*) nt)   NB. (B*c, value_dim)
+  beta_p =. |: ((qw35_bd_s_beta block_data) (+/ .*) nt)   NB. (B*c, num_v_heads)
   beta =. sigmoid beta_p
-  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) |: normed)   NB. (B*c, num_v_heads)
+  alpha_p =. |: ((qw35_bd_s_alpha block_data) (+/ .*) nt)   NB. (B*c, num_v_heads)
   alpha =. alpha_p + (((B*c) , num_v_heads) $ qw35_bd_s_dt block_data)
   alpha =. softplus alpha
   gate =. alpha * (((B*c) , num_v_heads) $ qw35_bd_s_a block_data)   NB. decay base
@@ -1311,8 +1356,9 @@ qw35_ssm_forward_bp =: 4 : 0
   out =. |: ((qw35_bd_s_out block_data) (+/ .*) |: final_flat)   NB. (B*c, emb)
   out =. out + hidden_flat
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output_flat =. ffn_raw + out
   output =. (B , c , emb_len) $ , output_flat
@@ -1323,21 +1369,20 @@ NB. ---- Batched-PREFILL block forwards (qwen35) ----
 qw35_block_forward_a_bp =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
-  pos =. > 1 { y
   mi =. > 2 { y
-  layer =. > 3 { y
   lens =. ''
   if. 4 < # y do. lens =. > 4 { y end.
   B =. {. $ hidden
   c =. 1 { $ hidden
   emb_len =. 2 { $ hidden
   input =. hidden
-  attn_result =. hidden qw35_attention_bp ((<block_data) , (<pos) , (<mi) , (<layer) , <lens)
+  attn_result =. hidden qw35_attention_bp y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + input
   post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <(((B*c) , emb_len) $ , sa_out))
-  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) |: post)
-  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) |: post)
+  pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
+  gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
+  up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
   ffn_raw =. |: ((qw35_bd_ff_down block_data) (+/ .*) |: (gate_f swiglu up_f))
   output_flat =. ffn_raw + (((B*c) , emb_len) $ , sa_out)
   output =. (B , c , emb_len) $ , output_flat
@@ -1348,18 +1393,17 @@ qw35_block_forward_s_bp =: qw35_ssm_forward_bp
 
 NB. ---- Run all blocks for B sequences (one CHUNK each at pos[b]) ----
 qw35_run_blocks_bp =: 4 : 0
-  input =. x
-  args =. y
-  llm =. > 0 { args
-  pos =. > 1 { args
+  llm =. > 0 { y
+  pos =. > 1 { y
   lens =. ''
-  if. 2 < # args do. lens =. > 2 { args end.
+  if. 2 < # y do. lens =. > 2 { y end.
   mi =. llm_mi llm
   head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
-  state =. input
+  state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
@@ -1367,14 +1411,29 @@ qw35_run_blocks_bp =: 4 : 0
   if. 0 = # rs_meta do.
     rs_create ((<18) , (<3) , (<6144) , (<128) , <16)
   end.
+  NB. RoPE cos/sin tables + expansions are layer-invariant (depend only on
+  NB. pos) — compute ONCE per chunk, thread through (attention layers only;
+  NB. SSM layers don't use RoPE).
+  n_rot =. qw35_mi_n_rot mi
+  half =. <. n_rot % 2
+  B =. {. $ state
+  c =. 1 { $ state
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  cos_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
+  sin_expq =. (B , c , n_heads , half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
+  cos_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
+  sin_expk =. (B , c , n_heads_kv , half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens))
     else.
-      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1

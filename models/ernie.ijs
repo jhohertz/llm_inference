@@ -167,16 +167,24 @@ ernie_infer =: 4 : 0
   if. 1 = n_tokens do.
     tok =. 0 { tok_list
     hidden =. scale * |: (tok {"1 emb_w)
-    pre_s =. 6!:2 'result =. hidden ernie_run_blocks (<llm) , <0'
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result =. hidden ernie_run_blocks (<llm) , <0'
+    else.
+      result =. hidden ernie_run_blocks (<llm) , <0
+    end.
     hidden =. > 0 { result
   else.
     emb_all =. scale * |: (tok_list {"1 emb_w)
-    pre_s =. 6!:2 'result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)'
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)'
+    else.
+      result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)
+    end.
     h_b =. > 0 { result_b
     hidden =. > (n_tokens - 1) { h_b
   end.
   logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  report_prefill (pre_s , n_tokens)
+  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
   pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
   decoded =. ernie_detokenize (<llm) , <pred_tok
   tokens ; pred_tok ; decoded ; logits
@@ -225,6 +233,7 @@ ernie_generate_batch =: 4 : 0
   p =. > 4 { args
   min_p =. > 5 { args
   B =. # prompts
+  llm_box =. <llm
   prompts_tok =. ''
   prompts_len =. ''
   i =. 0
@@ -232,7 +241,7 @@ ernie_generate_batch =: 4 : 0
     text =. > i { prompts
     messages =. <('user') ; text
     prompt =. ernie_chat_prompt messages
-    tokens =. ernie_tokenize (<llm) , <prompt
+    tokens =. ernie_tokenize (llm_box , <prompt)
     tok_list =. , > tokens
     prompts_tok =. prompts_tok , <tok_list
     prompts_len =. prompts_len , <(# tok_list)
@@ -246,7 +255,7 @@ ernie_generate_batch =: 4 : 0
   while. i < B do.
     L =. > i { prompts_len
     gen =. (L) }. (> i { output)
-    answers =. answers , <(ernie_detokenize (<llm) , <gen)
+    answers =. answers , <(ernie_detokenize (llm_box , <gen))
     i =. i + 1
   end.
   answers

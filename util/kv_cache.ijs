@@ -56,6 +56,10 @@ kv_create =: 3 : 0
   head_dim =. > 3 { y
   eff_seq =. max_seq
   if. 0 < kv_max_seq_g do. eff_seq =. max_seq <. kv_max_seq_g end.
+  NB. Bound eff_seq so the KV cache (n_layers*kv_batch_g*eff_seq, n_kv*hd)
+  NB. fits J's array-size limit (2^31 elements) — huge-ctx models (qwen35
+  NB. ctx=262144) exceed it at full ctx (the full-ctx K/V is ~3.2B elements).
+  eff_seq =. eff_seq <. (<. (2^31) % (n_layers * kv_batch_g * (n_heads_kv * head_dim)))
   if. -. '' -: kv_meta do.
     if. (n_layers = > 0 { kv_meta) *. (eff_seq = > 1 { kv_meta) *. (n_heads_kv = > 2 { kv_meta) *. (head_dim = > 3 { kv_meta) *. (kv_batch_alloc_g = kv_batch_g) do.
       kv_pos_g =: 0
@@ -75,15 +79,12 @@ NB. y = <layer; pos; k_new; v_new; seq?>   seq default 0
 NB. k_new/v_new shape: (n_heads_kv, head_dim). In-place row amend (scalar
 NB. selector on the refcount-1 flat global) — O(cell), no array copy.
 kv_write =: 3 : 0
-  layer =. > 0 { y
   pos =. > 1 { y
-  k_new =. > 2 { y
-  v_new =. > 3 { y
   seq =. kv_seq_g
   if. 4 < # y do. seq =. > 4 { y end.
-  base =. ((layer * kv_batch_g) + seq) * (> 1 { kv_meta)
-  k_cache_g =: (, k_new) ((base + pos))} k_cache_g
-  v_cache_g =: (, v_new) ((base + pos))} v_cache_g
+  base =. (((> 0 { y) * kv_batch_g) + seq) * (> 1 { kv_meta)
+  k_cache_g =: (, > 2 { y) ((base + pos))} k_cache_g
+  v_cache_g =: (, > 3 { y) ((base + pos))} v_cache_g
   kv_pos_g =: kv_pos_g >. pos + 1
   ''
 )
@@ -174,17 +175,14 @@ NB. ---- Write one K/V row at pos for a layer (session seq) ----
 NB.  x = sess; y = <layer; pos; k_new; v_new>.  Returns the updated session.
 kv_write_s =: 4 : 0
   sess =. x
-  layer =. > 0 { y
   pos =. > 1 { y
-  k_new =. > 2 { y
-  v_new =. > 3 { y
   seq =. > 9 { sess
   kvb =. > 11 { sess
   meta =. > 13 { sess
   eff =. > 1 { meta
-  base =. ((layer * kvb) + seq) * eff
-  k_cache_g =: (, k_new) ((base + pos)) } k_cache_g
-  v_cache_g =: (, v_new) ((base + pos)) } v_cache_g
+  base =. (((> 0 { y) * kvb) + seq) * eff
+  k_cache_g =: (, > 2 { y) ((base + pos)) } k_cache_g
+  v_cache_g =: (, > 3 { y) ((base + pos)) } v_cache_g
   sess =. (<(> 10 { sess) >. pos + 1) (10) } sess
   sess
 )

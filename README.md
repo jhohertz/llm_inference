@@ -294,7 +294,7 @@ Supported architectures and catalog ids:
 | SmolLM2 | `llama` | `smollm2-135m`, `smollm2-360m`, `smollm2-1.7b` |
 | Llama-3.2-1B | `llama` | `llama-3.2-1b` |
 | Granite-4.0/4.1/4.2 | `granite` | `granite-4.0-350m`, `granite-4.1-3b`, `granite-4.2-3b` |
-| ERNIE-4.5-0.3B | `ernie4_5` | `ernie-4.5-0.3b` |
+| ERNIE-4.5-0.3B | `ernie` | `ernie-4.5-0.3b` |
 | Qwen2.5-Coder | `qwen2` | `qwen2.5-coder-0.5b/1.5b/3b` |
 | Qwen3 | `qwen3` | `qwen3-0.6b`, `qwen3-1.7b` |
 | Qwen3.5 | `qwen35` | `qwen3.5-0.8b`, `qwen3.5-2b`, `qwen3.8-2b` |
