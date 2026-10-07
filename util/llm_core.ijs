@@ -28,6 +28,16 @@ NB. be distinguished from a noun by `-:`/`3!:0`, so a noun flag gates it.
 gen_cb_on_g =: 0
 gen_cb_g =: ]
 
+NB. ---- Optional generation timing (tok/s report) ----
+NB. gen_loop_core/gen_loop_batch measure each prefill chunk + decode step with
+NB. 6!:2 and call report_timing. Gated by gen_timing_g (default OFF) — the
+NB. per-step 6!:2 string-eval is overhead when timing isn't needed (library
+NB. use); turn on for the CLI/chat tok/s report or timing tests. NOTE: the
+NB. timed string-eval must run INLINE (not via a helper verb) — the string
+NB. references the caller's locals (hidden, result_b, emb_seg, llm_box), which
+NB. are not visible inside a helper verb's scope.
+gen_timing_g =: 0
+
 NB. ---- llm noun layout (shared across architectures) ----
 NB. llm = <path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
 NB.       block_data; kv_data; arch>
@@ -404,8 +414,12 @@ gen_loop_core =: 4 : 0
       c =. chunk_sz <. L - i
       seg =. (i + i. c) { tok_list
       emb_seg =. scale * |: (seg {"1 emb_w)
-      t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <i)'
-      pre_s =. pre_s + t
+      if. gen_timing_g do.
+        t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <i)'
+        pre_s =. pre_s + t
+      else.
+        result_b =. emb_seg rb_b (llm_box , <i)
+      end.
       h_b =. > 0 { result_b
       hidden =. > (c - 1) { h_b
       i =. i + c
@@ -420,7 +434,12 @@ gen_loop_core =: 4 : 0
     cur_pos =. start_pos
     emb_all =. |: (tok_list {"1 emb_w)
     if. scale ~: 1 do. emb_all =. emb_all * scale end.
-    pre_s =. 6!:2 'result_b =. emb_all rb_b (llm_box , <start_pos)'
+    if. gen_timing_g do.
+      t =. 6!:2 'result_b =. emb_all rb_b (llm_box , <start_pos)'
+      pre_s =. pre_s + t
+    else.
+      result_b =. emb_all rb_b (llm_box , <start_pos)
+    end.
     h_b =. > 0 { result_b
     hidden =. > (L - 1) { h_b
     cur_pos =. cur_pos + L
@@ -445,7 +464,12 @@ gen_loop_core =: 4 : 0
       last_tok =. > {: output
       hidden =. |: (last_tok {"1 emb_w)
       if. scale ~: 1 do. hidden =. hidden * scale end.
-      gen_s =. gen_s + 6!:2 'result =. hidden rb (llm_box , <cur_pos)'
+      if. gen_timing_g do.
+        t =. 6!:2 'result =. hidden rb (llm_box , <cur_pos)'
+        gen_s =. gen_s + t
+      else.
+        result =. hidden rb (llm_box , <cur_pos)
+      end.
       hidden =. > 0 { result
       logits =. output_head (oh_pre , <hidden)
       if. logit_div ~: 1 do. logits =. logits % logit_div end.
@@ -456,7 +480,7 @@ gen_loop_core =: 4 : 0
     if. (stop_list i. pred) < # stop_list do. break. end.    output =. output , <pred
     gen_step =. gen_step + 1
   end.
-  (pre_s , gen_s) report_timing (L , gen_step)
+  if. gen_timing_g do. (pre_s , gen_s) report_timing (L , gen_step) end.
   if. 0 < # sess_cur_g do.
     sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
     sess_cur_g =: (<kv_meta) (13) } sess_cur_g
@@ -622,8 +646,12 @@ gen_loop_batch =: 4 : 0
         lens_cur =. (p + (c <. ((i { lens_b) - p))) i} lens_cur
         i =. i + 1
       end.
-      t =. 6!:2 'result_b =. emb_seg rb_bp (llm_box , (<(B $ p)) , <lens_cur)'
-      pre_s =. pre_s + t
+      if. gen_timing_g do.
+        t =. 6!:2 'result_b =. emb_seg rb_bp (llm_box , (<(B $ p)) , <lens_cur)'
+        pre_s =. pre_s + t
+      else.
+        result_b =. emb_seg rb_bp (llm_box , (<(B $ p)) , <lens_cur)
+      end.
       h_b =. > 0 { result_b   NB. (B, c, emb)
       i =. 0
       while. i < B do.
@@ -663,8 +691,12 @@ gen_loop_batch =: 4 : 0
         seg =. (j + i. c) { tok_list
       emb_seg =. |: (seg {"1 emb_w)
       if. scale ~: 1 do. emb_seg =. emb_seg * scale end.
-        t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <j)'
-        pre_s =. pre_s + t
+        if. gen_timing_g do.
+          t =. 6!:2 'result_b =. emb_seg rb_b (llm_box , <j)'
+          pre_s =. pre_s + t
+        else.
+          result_b =. emb_seg rb_b (llm_box , <j)
+        end.
         h_b =. > 0 { result_b
         hidden =. > (c - 1) { h_b
         j =. j + c
@@ -706,7 +738,12 @@ gen_loop_batch =: 4 : 0
     else.
       hidden =. |: (last_toks {"1 emb_w)   NB. (B, emb)
       if. scale ~: 1 do. hidden =. hidden * scale end.
-      gen_s =. gen_s + 6!:2 'result =. hidden rb_bd (llm_box , <cur_pos)'
+      if. gen_timing_g do.
+        t =. 6!:2 'result =. hidden rb_bd (llm_box , <cur_pos)'
+        gen_s =. gen_s + t
+      else.
+        result =. hidden rb_bd (llm_box , <cur_pos)
+      end.
       hidden =. > 0 { result
     end.
     hidden_n =. rms_norm_rows (rnn_pre , <hidden)
@@ -731,7 +768,7 @@ gen_loop_batch =: 4 : 0
     end.
     gen_step =. gen_step + 1
   end.
-  (pre_s , gen_s) report_timing (pre_toks , gen_step)
+  if. gen_timing_g do. (pre_s , gen_s) report_timing (pre_toks , gen_step) end.
   if. 0 < # sess_cur_g do.
     sess_cur_g =: (<kv_pos_g) (10) } sess_cur_g
     sess_cur_g =: (<kv_meta) (13) } sess_cur_g
