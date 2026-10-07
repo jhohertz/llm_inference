@@ -310,8 +310,7 @@ llama_run_blocks =: 4 : 0
   NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
   bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward ((<block_data) , bf_pre , <b)
+    result =. state llama_block_forward ((b { block_data_list) , bf_pre , <b)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -361,8 +360,7 @@ llama_run_blocks_b =: 4 : 0
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward_b ((<block_data) , (<b) , bfb_pre)
+    result =. state llama_block_forward_b ((b { block_data_list) , (<b) , bfb_pre)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -629,8 +627,7 @@ llama_run_blocks_bd =: 4 : 0
   NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
   bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
+    result =. state llama_block_forward_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -700,8 +697,7 @@ llama_run_blocks_bp =: 4 : 0
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward_bp ((<block_data) , (<b) , bfb_pre , <rope)
+    result =. state llama_block_forward_bp ((b { block_data_list) , (<b) , bfb_pre , <rope)
     state =. > 0 { result
     b =. b + 1
   end.

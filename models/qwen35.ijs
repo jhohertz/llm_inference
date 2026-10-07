@@ -664,9 +664,9 @@ qw35_run_blocks_b =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_b ((<block_data) , (<mi) , <b)
+      result =. state qw35_block_forward_s_b ((b { block_data_list) , (<mi) , <b)
     else.
-      result =. state qw35_block_forward_a_b ((<block_data) , (<b) , bf_pre)
+      result =. state qw35_block_forward_a_b ((b { block_data_list) , (<b) , bf_pre)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -926,9 +926,9 @@ qw35_run_blocks_bd =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bd ((<block_data) , bf_pre , <b)
+      result =. state qw35_block_forward_s_bd ((b { block_data_list) , bf_pre , <b)
     else.
-      result =. state qw35_block_forward_a_bd ((<block_data) , bf_pre , (<b) , <rope)
+      result =. state qw35_block_forward_a_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -1431,9 +1431,9 @@ qw35_run_blocks_bp =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens))
+      result =. state qw35_block_forward_s_bp ((b { block_data_list) , (<pos) , (<mi) , (<b) , (<lens))
     else.
-      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
+      result =. state qw35_block_forward_a_bp ((b { block_data_list) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
