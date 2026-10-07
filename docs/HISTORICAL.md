@@ -1418,3 +1418,24 @@ single-token per-layer `mi` dict-lookup hoisting (`mi_rms_eps`/`mi_attn_scale`/
 `mi_resid_scale`/`mi_cos_tab`/`mi_sin_tab` in `*_attention`/`*_block_forward` —
 the `_bd`/`_bp` RoPE-table part was eliminated by the hoist above), the
 `kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops.
+
+## Optional generation timing gate (2026-10)
+
+`gen_loop_core`/`gen_loop_batch` measured every prefill chunk + decode step with
+`6!:2` (string-eval) and called `report_timing` — ALWAYS ON. The per-step
+`6!:2` string-eval is overhead when timing isn't wanted (library use), so the
+measurement + report is now gated behind `gen_timing_g =: 0` (default OFF);
+set `gen_timing_g =: 1` for the CLI/chat tok/s report or timing tests. The
+arch `*_infer` verbs keep their single-call `6!:2` timing (one forward pass,
+negligible overhead — not in the generation hot path). Commit `49e7a58`.
+
+- **J gotcha (why it's INLINE, not a helper verb)**: the timed string
+  (`'result =. hidden rb (llm_box , <cur_pos)'`, etc.) references the CALLER's
+  locals (`hidden`, `result_b`, `emb_seg`, `emb_all`, `llm_box`). A helper verb
+  (`timed_run` running `0!:0 y`) executes in ITS OWN scope — those locals are
+  not visible there, so `0!:0 'hidden rb ...'` treats `hidden` as an undefined
+  noun followed by the `rb` verb → `"unexecutable fragment (noun verb)"`. The
+  `if. gen_timing_g do. 6!:2 '...' else. (direct run) end.` must be INLINE at
+  each site so both the timed and direct paths execute in the loop verb's scope.
+  (The `6!:2`/`0!:0` string-evals persist their `=.` locals in the caller's
+  scope, so the timed path is correct when the flag is on.)
