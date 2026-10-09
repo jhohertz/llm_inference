@@ -70,35 +70,27 @@ load_gguf_to_llm =: 3 : 0
   case. 'gemma3' do.
     require 'llm/inference/models/gemma3'
     llm =. gem3_load (y ; raw)
-    infer =: gem3_infer
   case. 'llama' do.
     require 'llm/inference/models/llama'
     llm =. llama_load (y ; raw)
-    infer =: llama_infer
   case. 'qwen2' do.
     require 'llm/inference/models/qwen2'
     llm =. qw2_load (y ; raw)
-    infer =: qw2_infer
   case. 'qwen3' do.
     require 'llm/inference/models/qwen3'
     llm =. qw3_load (y ; raw)
-    infer =: qw3_infer
   case. 'qwen35' do.
     require 'llm/inference/models/qwen35'
     llm =. qw35_load (y ; raw)
-    infer =: qw35_infer
   case. 'granite' do.
     require 'llm/inference/models/granite'
     llm =. granite_load (y ; raw)
-    infer =: granite_infer
   case. 'ernie4_5' do.
     require 'llm/inference/models/ernie'
     llm =. ernie_load (y ; raw)
-    infer =: ernie_infer
   case. 'lfm2' do.
     require 'llm/inference/models/lfm2'
     llm =. lf2_load (y ; raw)
-    infer =: lf2_infer
   case. do.
     echo 'load_gguf_to_llm: unknown architecture: ', arch
     raw =. ''
@@ -122,10 +114,8 @@ load_gguf_to_llm =: 3 : 0
 )
 
 NB. ---- Dyadic infer/generate: canonical boxed form ----
-NB. infer is playsound-style: load_gguf_to_llm re-maps it to the loaded arch's
-NB. verb. generate/generate_simple are the GENERIC verbs (util/chat.ijs) — they
-NB. read the arch from the llm dict, so no per-arch re-map is needed.
-infer =: gem3_infer
+NB. infer/generate/infer_simple/generate_simple are the GENERIC verbs
+NB. (util/chat.ijs) — they read the arch from the llm dict, so load_gguf_to_llm
+NB. only loads the arch module (for its forward verbs), no per-arch re-map.
 NB. ---- Simple wrappers: default greedy/top-p params ----
 NB. llm infer_simple text            |  llm generate_simple (text ; n)
-infer_simple =: 4 : 'x infer (y ; <0 0 0.95 0.0)'

@@ -507,6 +507,121 @@ generate_batch =: 4 : 0
 NB. ---- Simple wrappers (greedy defaults) ----
 NB. llm generate_simple (text ; max_steps)
 generate_simple =: 4 : 'x generate (0{y) , (1{y) , <0 0 0.95 0.0'
+
+NB. ---- Generic single-shot infer (DRY — replaces the 8 arch *_infer) ----
+NB. Reads the arch from the llm dict and dispatches the forward via llm_arch
+NB. (embed scale, run_blocks/run_blocks_b, logit scale, output_norm, recurrent
+NB. reset — mirroring gen_loop_core). Tokenize/detokenize via chat_tokenize/
+NB. chat_detokenize; final layer via output_head; sample via sample_from. The
+NB. per-arch names (gem3_infer etc.) are aliases so tests/direct callers keep
+NB. working (each reads the arch from the dict).
+infer =: 4 : 0
+  llm =. x
+  args =. infer_args y
+  text =. > 0 { args
+  temp =. > 1 { args
+  k =. > 2 { args
+  p =. > 3 { args
+  min_p =. > 4 { args
+  arch =. llm_arch llm
+  mi =. llm_mi llm
+  emb_len =. mi_emb_len mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  n_heads_kv =. mi_n_heads_kv mi
+  head_dim =. mi_head_dim mi
+  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
+  output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
+  logit_div =. 1
+  rec_reset =. ]
+  rec_arg =. ''
+  scale =. 1
+  select. arch
+  case. 'gemma3' do.
+    scale =. %: emb_len
+    rb =. gem3_run_blocks
+    rb_b =. gem3_run_blocks_b
+  case. 'granite' do.
+    scale =. granite_mi_embed_scale mi
+    logit_div =. granite_mi_logit_scale mi
+    rb =. granite_run_blocks
+    rb_b =. granite_run_blocks_b
+  case. 'lfm2' do.
+    output_norm_w =. 'token_embd_norm.weight' get_tensor_cached_d llm
+    rec_reset =. lf2_conv_reset
+    rec_arg =. (<lf2_n_conv_g) , (<2) , (<emb_len)
+    rb =. lf2_run_blocks
+    rb_b =. lf2_run_blocks_b
+  case. 'qwen35' do.
+    rec_reset =. rs_reset
+    rec_arg =. (<18) , (<3) , (<6144) , (<128) , <16
+    rb =. qw35_run_blocks
+    rb_b =. qw35_run_blocks_b
+  case. 'llama' do.
+    rb =. llama_run_blocks
+    rb_b =. llama_run_blocks_b
+  case. 'qwen2' do.
+    rb =. qw2_run_blocks
+    rb_b =. qw2_run_blocks_b
+  case. 'qwen3' do.
+    rb =. qw3_run_blocks
+    rb_b =. qw3_run_blocks_b
+  case. 'ernie4_5' do.
+    rb =. ernie_run_blocks
+    rb_b =. ernie_run_blocks_b
+  end.
+
+  tokens =. arch chat_tokenize (<llm) , <text
+  tok_list =. , > tokens
+  n_tokens =. # tok_list
+  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  rec_reset rec_arg
+  if. 1 = n_tokens do.
+    tok =. 0 { tok_list
+    hidden =. scale * |: (tok {"1 emb_w)
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result =. hidden rb (<llm) , <0'
+    else.
+      result =. hidden rb (<llm) , <0
+    end.
+    hidden =. > 0 { result
+  else.
+    emb_all =. scale * |: (tok_list {"1 emb_w)
+    if. gen_timing_g do.
+      pre_s =. 6!:2 'result_b =. emb_all rb_b ((<llm) , <0)'
+    else.
+      result_b =. emb_all rb_b ((<llm) , <0)
+    end.
+    h_b =. > 0 { result_b
+    hidden =. > (n_tokens - 1) { h_b
+  end.
+  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
+  logits =. logits % logit_div
+  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
+  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
+  decoded =. arch chat_detokenize (<llm) , <pred_tok
+  tokens ; pred_tok ; decoded ; logits
+)
+NB. ---- Simple wrappers (greedy defaults) ----
+NB. llm infer_simple text
+infer_simple =: 4 : 'x infer (y ; <0 0 0.95 0.0)'
+gem3_infer =: infer
+gem3_infer_simple =: infer_simple
+qw2_infer =: infer
+qw2_infer_simple =: infer_simple
+qw3_infer =: infer
+qw3_infer_simple =: infer_simple
+qw35_infer =: infer
+qw35_infer_simple =: infer_simple
+llama_infer =: infer
+llama_infer_simple =: infer_simple
+granite_infer =: infer
+granite_infer_simple =: infer_simple
+ernie_infer =: infer
+ernie_infer_simple =: infer_simple
+lf2_infer =: infer
+lf2_infer_simple =: infer_simple
+
 gem3_generate =: generate
 gem3_generate_batch =: generate_batch
 gem3_generate_simple =: generate_simple

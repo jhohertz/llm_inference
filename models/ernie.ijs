@@ -126,58 +126,7 @@ ernie_run_blocks_b =: llama_run_blocks_b
 ernie_run_blocks_bd =: llama_run_blocks_bd
 ernie_run_blocks_bp =: llama_run_blocks_bp
 
-NB. ---- Single-token inference ----
-NB. Usage: llm ernie_infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm ernie_infer_simple text
-ernie_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. ernie_tokenize (<llm) , <text
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  scale =. 1
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-  output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-  tok_list =. , > tokens
-  n_tokens =. # tok_list
-  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-  if. 1 = n_tokens do.
-    tok =. 0 { tok_list
-    hidden =. scale * |: (tok {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result =. hidden ernie_run_blocks (<llm) , <0'
-    else.
-      result =. hidden ernie_run_blocks (<llm) , <0
-    end.
-    hidden =. > 0 { result
-  else.
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)'
-    else.
-      result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)
-    end.
-    h_b =. > 0 { result_b
-    hidden =. > (n_tokens - 1) { h_b
-  end.
-  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  decoded =. ernie_detokenize (<llm) , <pred_tok
-  tokens ; pred_tok ; decoded ; logits
-)
-
-ernie_infer_simple =: ernie_infer (] ; (<0 0 0.95 0.0)"_)
 
 NB. ---- ERNIE chat template ----
 NB. cls_token '<|begin_of_sentence|>'; user 'User: <content>\n'; assistant

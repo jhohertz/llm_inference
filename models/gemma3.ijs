@@ -908,79 +908,7 @@ gem3_load =: 3 : 0
   llm =. llm , <kv_data
 )
 
-NB. ---- Single-token inference for Gemma3 ----
-NB. Usage: llm infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm infer_simple text
-NB. ----------------------------------------------------------------
-gem3_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. llama3_tokenize (<llm) , <text
-  
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  n_embd =. emb_len
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  
-    emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-     scale =. %: n_embd
-      NB. token_embd is stored transposed (emb, vocab) — column tok is embedding
-      
-     tok_list =. , > tokens
-    
-    output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-    
-    NB. Embed all input tokens (llama.cpp: no sqrt(n_embd) scale, no output_norm before blocks)
-    n_tokens =. # tok_list
-    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-    if. 1 = n_tokens do.
-      tok =. 0 { tok_list
-      hidden =. scale * |: (tok {"1 emb_w)
-      if. gen_timing_g do.
-        pre_s =. 6!:2 'result =. hidden gem3_run_blocks (<llm) , <0'
-      else.
-        result =. hidden gem3_run_blocks (<llm) , <0
-      end.
-      hidden =. > 0 { result
-    else.
-      NB. Batched prompt prefill: run all blocks once over (n_tokens x emb)
-      NB. gemma3 tokenizer is SentencePiece with a 262144 real-token vocab — NO byte
-      NB. tokens, so token ids are used directly (no 65536 clamp; that clamp is only
-      NB. valid for llama3-style BPE / gpt2 byte-level tokenizers).
-      emb_all =. scale * |: (tok_list {"1 emb_w)
-      if. gen_timing_g do.
-        pre_s =. 6!:2 'result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)'
-      else.
-        result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)
-      end.
-      h_b =. > 0 { result_b
-      hidden =. > (n_tokens-1) { h_b   NB. last prompt token's hidden predicts next
-    end.
-  
-   NB. Final norm + lm_head
-   hidden =. rms_norm ((< mi_rms_eps mi) , (<output_norm_w) , <hidden)
-  emb_w_final =. 'token_embd.weight' get_tensor_cached_d llm
-  logits =. hidden (+/ .* ) emb_w_final
-  
-  NB. Sample from logits using sampler module
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  
-  decoded =. llama3_detokenize (<llm) , <pred_tok
-  
-  tokens ; pred_tok ; decoded ; logits
-)
-
-gem3_infer_simple =: gem3_infer (] ; (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each message = <role ; content>
