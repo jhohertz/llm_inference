@@ -19,19 +19,6 @@ require 'llm/inference/tokenizers/tokenizer_gpt2'
 require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 
-NB. ---- KV helpers ----
-qw35_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-qw35_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract qwen35 model info from KV pairs ----
 NB. Returns the shared 12-item mi prefix (vocab patched by qw35_load from the
 NB. token_embd dims; qwen35.rope.dimension_sections is not needed for text).
@@ -41,21 +28,21 @@ NB.      key_len; n_rot; ssm_d_inner; ssm_d_state; ssm_dt_rank; ssm_n_group>
 NB.      (18 items after load adds rope tables)
 qw35_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'qwen35.block_count' qw35_kv_uint data
-  nextn =. 'qwen35.nextn_predict_layers' qw35_kv_uint data
+  block_count =. 'qwen35.block_count' kv_uint data
+  nextn =. 'qwen35.nextn_predict_layers' kv_uint data
   if. _1 ~: nextn do.
     NB. MTP flavour: block_count includes the nextn head (blk.24) — the trunk
     NB. is block_count - nextn. Non-MTP has no nextn KV (kv_uint -> _1).
     block_count =. block_count - nextn
   end.
-  context_length =. 'qwen35.context_length' qw35_kv_uint data
-  emb_len =. 'qwen35.embedding_length' qw35_kv_uint data
-  n_heads =. 'qwen35.attention.head_count' qw35_kv_uint data
-  n_heads_kv =. 'qwen35.attention.head_count_kv' qw35_kv_uint data
-  rope_freq =. 'qwen35.rope.freq_base' qw35_kv_float data
-  rms_eps =. 'qwen35.attention.layer_norm_rms_epsilon' qw35_kv_float data
-  n_ff =. 'qwen35.feed_forward_length' qw35_kv_uint data
-  key_len =. 'qwen35.attention.key_length' qw35_kv_uint data
+  context_length =. 'qwen35.context_length' kv_uint data
+  emb_len =. 'qwen35.embedding_length' kv_uint data
+  n_heads =. 'qwen35.attention.head_count' kv_uint data
+  n_heads_kv =. 'qwen35.attention.head_count_kv' kv_uint data
+  rope_freq =. 'qwen35.rope.freq_base' kv_float data
+  rms_eps =. 'qwen35.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'qwen35.feed_forward_length' kv_uint data
+  key_len =. 'qwen35.attention.key_length' kv_uint data
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , 0 , rms_eps , n_ff
 )
@@ -406,13 +393,13 @@ qw35_attention_b =: 4 : 0
   K_batch =. K
   V_batch =. V
   if. start_pos > 0 do.
-    k_pre =. > 0 { (kv_read ((<layer) , <(start_pos - 1)))
-    v_pre =. > 1 { (kv_read ((<layer) , <(start_pos - 1)))
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
     K =. k_pre , K
     V =. v_pre , V
   end.
-  kv_write_rows ((<0) , (<layer) , (<start_pos) , <K_batch)
-  kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
+  kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
+  kv_write_rows ((<1) , (1 { y) , (3 { y) , <V_batch)
 
   NB. GQA without expanding KV over the combined keys: group the query heads
   NB. (n_heads_kv groups of n_groups) and batched-matmul each group's Q against
@@ -969,12 +956,12 @@ qw35_load =: 3 : 0
   te_dims =. > ((0 * 6) + 1) { ti
   vocab =. {: te_dims
   NB. qwen35-specific config fields: key_len, n_rot, ssm_*
-  key_len =. 'qwen35.attention.key_length' qw35_kv_uint kvs_ctx
-  n_rot =. 'qwen35.rope.dimension_count' qw35_kv_uint kvs_ctx
-  ssm_d_inner =. 'qwen35.ssm.inner_size' qw35_kv_uint kvs_ctx
-  ssm_d_state =. 'qwen35.ssm.state_size' qw35_kv_uint kvs_ctx
-  ssm_dt_rank =. 'qwen35.ssm.time_step_rank' qw35_kv_uint kvs_ctx
-  ssm_n_group =. 'qwen35.ssm.group_count' qw35_kv_uint kvs_ctx
+  key_len =. 'qwen35.attention.key_length' kv_uint kvs_ctx
+  n_rot =. 'qwen35.rope.dimension_count' kv_uint kvs_ctx
+  ssm_d_inner =. 'qwen35.ssm.inner_size' kv_uint kvs_ctx
+  ssm_d_state =. 'qwen35.ssm.state_size' kv_uint kvs_ctx
+  ssm_dt_rank =. 'qwen35.ssm.time_step_rank' kv_uint kvs_ctx
+  ssm_n_group =. 'qwen35.ssm.group_count' kv_uint kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (<n_rot) , (< mi_rope_freq mi))
   NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
@@ -1077,67 +1064,6 @@ NB. prompt with angle-bracket tags: thinking LF LF response LF LF (default) or
 NB. thinking LF (enable_thinking=true). Rendered via chat_tmpl_render.
 
 
-
-NB. ---- Generate (chat-template single turn) ----
-qw35_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  messages =. <('user') ; text
-  prompt =. qw35_chat_prompt messages
-  tokens =. gpt2_tokenize (<llm) , <prompt
-  stop =. qw35_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  gpt2_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm qw35_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-qw35_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. qw35_chat_prompt messages
-    tokens =. gpt2_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. qw35_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(gpt2_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
 
 NB. ---- Batched-PREFILL attention (qwen35): B chunks, one per seq at pos[b] ----
 NB. Mirrors qw35_attention_b but for prefill: hidden = (B, c, emb).  Q+GATE (fused),
@@ -1449,4 +1375,3 @@ qw35_stop_tokens =: 3 : 0
 
 NB. ---- Simple wrappers ----
 qw35_infer_simple =: qw35_infer (] ; (<0 0 0.95 0.0)"_)
-qw35_generate_simple =: qw35_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)

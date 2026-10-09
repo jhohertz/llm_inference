@@ -23,33 +23,20 @@ llama_tokenizer_pre_g =: ''
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
-NB. ---- KV helpers ----
-llama_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-llama_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract llama model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim; rope_freq; vocab_size; rms_eps; n_ff>
 llama_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'llama.block_count' llama_kv_uint data
-  context_length =. 'llama.context_length' llama_kv_uint data
-  emb_len =. 'llama.embedding_length' llama_kv_uint data
-  n_heads =. 'llama.attention.head_count' llama_kv_uint data
-  n_heads_kv =. 'llama.attention.head_count_kv' llama_kv_uint data
-  rope_freq =. 'llama.rope.freq_base' llama_kv_float data
-  vocab_size =. 'llama.vocab_size' llama_kv_uint data
-  rms_eps =. 'llama.attention.layer_norm_rms_epsilon' llama_kv_float data
-  n_ff =. 'llama.feed_forward_length' llama_kv_uint data
-  key_len =. 'llama.attention.key_length' llama_kv_uint data
+  block_count =. 'llama.block_count' kv_uint data
+  context_length =. 'llama.context_length' kv_uint data
+  emb_len =. 'llama.embedding_length' kv_uint data
+  n_heads =. 'llama.attention.head_count' kv_uint data
+  n_heads_kv =. 'llama.attention.head_count_kv' kv_uint data
+  rope_freq =. 'llama.rope.freq_base' kv_float data
+  vocab_size =. 'llama.vocab_size' kv_uint data
+  rms_eps =. 'llama.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'llama.feed_forward_length' kv_uint data
+  key_len =. 'llama.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -841,79 +828,7 @@ llama_infer =: 4 : 0
   tokens ; pred_tok ; decoded ; logits
 )
 
-NB. ---- Multi-token generation ----
-NB. Usage: llm llama_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm llama_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, run_blocks/run_blocks_b) are dispatched by
-NB. llm_arch. Fresh mode: kv_create + batched prefill; resume mode (chat
-NB. sessions): incremental prefill of the new segment. Stop token not appended.
-llama_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. llama_chat_prompt messages
-  tokens =. llama_tokenize (<llm) , <prompt
-  stop =. llama_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  llama_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm llama_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-llama_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. llama_chat_prompt messages
-    tokens =. llama_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. llama_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(llama_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm llama_infer_simple text            | llm llama_generate_simple (text ; n)
 llama_infer_simple =: llama_infer (] ; (<0 0 0.95 0.0)"_)
-llama_generate_simple =: llama_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.

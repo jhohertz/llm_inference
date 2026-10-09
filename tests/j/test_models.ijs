@@ -19,6 +19,13 @@ test_models =: 3 : 0
   assert_test (0 = cat_idx 'gemma-3-270m-it') ; 'cat_idx gemma-3-270m-it = 0'
   assert_test (#catalog = cat_idx 'bogus-model') ; 'cat_idx unknown = #catalog'
   assert_test (24 = #catalog) ; 'catalog has 24 models'
+  NB. --- named dict access (catalog_d: id -> spec dict) ---
+  assert_test (cat_has 'gemma-3-270m-it') ; 'cat_has known id'
+  assert_test (-. cat_has 'bogus-model') ; 'cat_has unknown id'
+  assert_test ('gemma3' -: cat_arch 'gemma-3-270m-it') ; 'cat_arch named lookup'
+  assert_test ('unsloth/gemma-3-270m-it-GGUF' -: cat_repo 'gemma-3-270m-it') ; 'cat_repo named lookup'
+  assert_test ('gemma-3-270m-it-F16.gguf' -: cat_main 'gemma-3-270m-it') ; 'cat_main named lookup'
+  assert_test (0 = # cat_extras 'gemma-3-270m-it') ; 'cat_extras empty'
 
   NB. --- target path convergence: id / HF path / URL -> same cache path ---
   exp =. jpath '~user/models/unsloth/gemma-3-270m-it-GGUF/gemma-3-270m-it-F16.gguf'
@@ -37,7 +44,11 @@ test_models =: 3 : 0
   assert_test ((dl_url 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-BF16.gguf') -: 'https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-BF16.gguf') ; 'dl_url URL passthrough'
 
   NB. --- not-yet-supported: exactly one, granite-4.0-h-350m (dropped — 1M ctx + MoE) ---
-  planned_idx =. I. ('' -: cat_arch)"0 i. #catalog
+  planned_idx =. i. 0
+  for_i. i. #catalog do.
+    id =. > i { cat_ids
+    if. '' -: cat_arch id do. planned_idx =. planned_idx , i end.
+  end.
   assert_test (1 = # planned_idx) ; 'catalog has exactly 1 not-yet-supported model'
   assert_test ('granite-4.0-h-350m' -: > 0 { planned_idx { cat_ids) ; 'not-yet-supported model is granite-4.0-h-350m (dropped)'
 

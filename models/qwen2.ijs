@@ -14,33 +14,20 @@ require 'llm/inference/util/chat_template'
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
-NB. ---- KV helpers ----
-qw2_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-qw2_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract qwen2 model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim; rope_freq; vocab_size; rms_eps; n_ff>
 qw2_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'qwen2.block_count' qw2_kv_uint data
-  context_length =. 'qwen2.context_length' qw2_kv_uint data
-  emb_len =. 'qwen2.embedding_length' qw2_kv_uint data
-  n_heads =. 'qwen2.attention.head_count' qw2_kv_uint data
-  n_heads_kv =. 'qwen2.attention.head_count_kv' qw2_kv_uint data
-  rope_freq =. 'qwen2.rope.freq_base' qw2_kv_float data
-  vocab_size =. 'qwen2.vocab_size' qw2_kv_uint data
-  rms_eps =. 'qwen2.attention.layer_norm_rms_epsilon' qw2_kv_float data
-  n_ff =. 'qwen2.feed_forward_length' qw2_kv_uint data
-  key_len =. 'qwen2.attention.key_length' qw2_kv_uint data
+  block_count =. 'qwen2.block_count' kv_uint data
+  context_length =. 'qwen2.context_length' kv_uint data
+  emb_len =. 'qwen2.embedding_length' kv_uint data
+  n_heads =. 'qwen2.attention.head_count' kv_uint data
+  n_heads_kv =. 'qwen2.attention.head_count_kv' kv_uint data
+  rope_freq =. 'qwen2.rope.freq_base' kv_float data
+  vocab_size =. 'qwen2.vocab_size' kv_uint data
+  rms_eps =. 'qwen2.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'qwen2.feed_forward_length' kv_uint data
+  key_len =. 'qwen2.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -813,87 +800,7 @@ qw2_infer =: 4 : 0
   tokens ; pred_tok ; decoded ; logits
 )
 
-NB. ---- Multi-token generation ----
-NB. Usage: llm qw2_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm qw2_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, run_blocks/run_blocks_b) are dispatched by
-NB. llm_arch. Fresh mode: kv_create + batched prefill; resume mode (chat
-NB. sessions): incremental prefill of the new segment. Stop token not appended.
-qw2_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. qw2_chat_prompt messages
-  tokens =. gpt2_tokenize (<llm) , <prompt
-  stop =. qw2_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  gpt2_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm qw2_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-NB. prompts = boxed list of B texts → boxed list of B answer texts.
-NB. The generation weight matmuls are amortized across B (the M=1 matvec
-NB. floor is memory-bound on weight reads); each sequence keeps its own KV
-NB. cache window + position. Stop per sequence.
-qw2_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-
-  NB. Tokenize + chat-frame each prompt
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. qw2_chat_prompt messages
-    tokens =. gpt2_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. qw2_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-
-  NB. Strip prompt tokens and detokenize per sequence
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(gpt2_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm qw2_infer_simple text            | llm qw2_generate_simple (text ; n)
 qw2_infer_simple =: qw2_infer (] ; (<0 0 0.95 0.0)"_)
-qw2_generate_simple =: qw2_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.

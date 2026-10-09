@@ -71,42 +71,34 @@ load_gguf_to_llm =: 3 : 0
     require 'llm/inference/models/gemma3'
     llm =. gem3_load (y ; raw)
     infer =: gem3_infer
-    generate =: gem3_generate
   case. 'llama' do.
     require 'llm/inference/models/llama'
     llm =. llama_load (y ; raw)
     infer =: llama_infer
-    generate =: llama_generate
   case. 'qwen2' do.
     require 'llm/inference/models/qwen2'
     llm =. qw2_load (y ; raw)
     infer =: qw2_infer
-    generate =: qw2_generate
   case. 'qwen3' do.
     require 'llm/inference/models/qwen3'
     llm =. qw3_load (y ; raw)
     infer =: qw3_infer
-    generate =: qw3_generate
   case. 'qwen35' do.
     require 'llm/inference/models/qwen35'
     llm =. qw35_load (y ; raw)
     infer =: qw35_infer
-    generate =: qw35_generate
   case. 'granite' do.
     require 'llm/inference/models/granite'
     llm =. granite_load (y ; raw)
     infer =: granite_infer
-    generate =: granite_generate
   case. 'ernie4_5' do.
     require 'llm/inference/models/ernie'
     llm =. ernie_load (y ; raw)
     infer =: ernie_infer
-    generate =: ernie_generate
   case. 'lfm2' do.
     require 'llm/inference/models/lfm2'
     llm =. lf2_load (y ; raw)
     infer =: lf2_infer
-    generate =: lf2_generate
   case. do.
     echo 'load_gguf_to_llm: unknown architecture: ', arch
     raw =. ''
@@ -117,16 +109,23 @@ load_gguf_to_llm =: 3 : 0
   NB. holds a mapped-raw ref, so unmap frees it.
   raw =. ''
   unmap_gguf ''
+  NB. Convert the arch-built 10-element boxed list + arch to a NAMED DICT
+  NB. (named-member access via the llm_* accessors; flexible — adding a member
+  NB. never shifts indices). Boxed values, multi-put (the single-key put path
+  NB. is broken in this J9.8 build).
   llm =. llm , <arch
+  p =. 3 2 $ ('keytype' ; 'boxed' ; 'valuetype' ; 'boxed' ; 'initcapacity' ; 12)
+  d =. dict_new 'hash concurrent' ,&< p
+  keys =. 'path' ; 'ti' ; 'default_params' ; 'tokenizer' ; 'mi' ; 'kv_cache' ; 'tds' ; 'all_tensors' ; 'block_data' ; 'kv_data' ; 'arch'
+  (llm) put__d keys
+  llm =. d
 )
 
 NB. ---- Dyadic infer/generate: canonical boxed form ----
-NB. These are playsound-style: load_gguf_to_llm re-maps them to the loaded
-NB. arch's verbs. Initial aliases = default arch (gemma3).
+NB. infer is playsound-style: load_gguf_to_llm re-maps it to the loaded arch's
+NB. verb. generate/generate_simple are the GENERIC verbs (util/chat.ijs) — they
+NB. read the arch from the llm dict, so no per-arch re-map is needed.
 infer =: gem3_infer
-generate =: gem3_generate
-
 NB. ---- Simple wrappers: default greedy/top-p params ----
 NB. llm infer_simple text            |  llm generate_simple (text ; n)
 infer_simple =: 4 : 'x infer (y ; <0 0 0.95 0.0)'
-generate_simple =: 4 : 'x generate (0{y) , (1{y) , <0 0 0.95 0.0'

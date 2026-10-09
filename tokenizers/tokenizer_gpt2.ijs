@@ -8,6 +8,7 @@ require 'regex'
 require 'data/dict'   NB. jsymbol (symbol datatype replaced the s: foreign in J9.8)
 require 'llm/inference/gguf/gguf'
 require 'llm/inference/tokenizers/tokenizer_llama3'   NB. llama3_pre_tokenize (llama-bpe pre)
+require 'llm/inference/util/llm_core'   NB. dict_probe (dual-mode dict/index access)
 
 NB. ---- GPT-2 byte-level BPE regex (smollm main pattern, PCRE \p{L}/\p{N}/\s) ----
 ap =: 39 { a.   NB. apostrophe char (avoids single-quote literal escaping fragility)
@@ -111,7 +112,12 @@ input_text =: >@(1&{)
 input_data =: >@(1&{)
 
 NB. ---- LLM field accessor ----
-llm_tokenizer =: >@(3&{)
+NB. llm is now a named dict — query the tokenizer member by name.
+llm_tokenizer =: 3 : 0
+  'found v' =. 'tokenizer' dict_probe y
+  if. found do. v return. end.
+  > 3 { v
+)
 
 NB. ---- Split mapped string into single-char strings (utf-8 aware) ----
 gpt2_chars =: 3 : 0

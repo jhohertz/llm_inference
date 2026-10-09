@@ -442,6 +442,96 @@ chat_generate_simple =: 4 : 0
   llm chat_generate (messages ; max_steps ; <params)
 )
 
+NB. ---- Generic single-shot generate (DRY — replaces the 8 arch *_generate) ----
+NB. Frames ONE user message, tokenizes via chat_tokenize, stops on chat_stop_tokens,
+NB. runs the UNIFIED gen_loop_core/gen_loop_batch, detokenizes via chat_detokenize.
+NB. The per-arch names (gem3_generate etc.) are aliases so tests/direct callers
+NB. keep working; each reads the arch from the llm dict (no per-arch verb needed).
+generate =: 4 : 0
+  llm =. x
+  args =. gen_args y
+  text =. > 0 { args
+  max_steps =. > 1 { args
+  temp =. > 2 { args
+  k =. > 3 { args
+  p =. > 4 { args
+  min_p =. > 5 { args
+  arch =. llm_arch llm
+  messages =. <('user') ; text
+  prompt =. chat_prompt messages
+  tokens =. arch chat_tokenize (<llm) , <prompt
+  stop =. chat_stop_tokens llm
+  L =. # , > tokens
+  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  gen =. L }. output
+  arch chat_detokenize (<llm) , <gen
+)
+generate_batch =: 4 : 0
+  llm =. x
+  args =. gen_args y
+  prompts =. > 0 { args
+  max_steps =. > 1 { args
+  temp =. > 2 { args
+  k =. > 3 { args
+  p =. > 4 { args
+  min_p =. > 5 { args
+  B =. # prompts
+  llm_box =. <llm
+  arch =. llm_arch llm
+  prompts_tok =. ''
+  prompts_len =. ''
+  i =. 0
+  while. i < B do.
+    text =. > i { prompts
+    messages =. <('user') ; text
+    prompt =. chat_prompt messages
+    tokens =. arch chat_tokenize (llm_box , <prompt)
+    tok_list =. , > tokens
+    prompts_tok =. prompts_tok , <tok_list
+    prompts_len =. prompts_len , <(# tok_list)
+    i =. i + 1
+  end.
+  stop =. chat_stop_tokens llm
+  kv_batch_g =: B
+  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
+  answers =. ''
+  i =. 0
+  while. i < B do.
+    L =. > i { prompts_len
+    gen =. (L) }. (> i { output)
+    answers =. answers , <(arch chat_detokenize (llm_box , <gen))
+    i =. i + 1
+  end.
+  answers
+)
+NB. ---- Simple wrappers (greedy defaults) ----
+NB. llm generate_simple (text ; max_steps)
+generate_simple =: 4 : 'x generate (0{y) , (1{y) , <0 0 0.95 0.0'
+gem3_generate =: generate
+gem3_generate_batch =: generate_batch
+gem3_generate_simple =: generate_simple
+qw2_generate =: generate
+qw2_generate_batch =: generate_batch
+qw2_generate_simple =: generate_simple
+qw3_generate =: generate
+qw3_generate_batch =: generate_batch
+qw3_generate_simple =: generate_simple
+qw35_generate =: generate
+qw35_generate_batch =: generate_batch
+qw35_generate_simple =: generate_simple
+llama_generate =: generate
+llama_generate_batch =: generate_batch
+llama_generate_simple =: generate_simple
+granite_generate =: generate
+granite_generate_batch =: generate_batch
+granite_generate_simple =: generate_simple
+ernie_generate =: generate
+ernie_generate_batch =: generate_batch
+ernie_generate_simple =: generate_simple
+lf2_generate =: generate
+lf2_generate_batch =: generate_batch
+lf2_generate_simple =: generate_simple
+
 NB. ---- Tool-call extraction (Phase 6 item 3) ----
 NB. chat_extract_tool_calls content -> boxed list of OpenAI-shaped tool_call
 NB. minja Values: {type:'function'; function:<name; arguments-JSON-string>; id}.

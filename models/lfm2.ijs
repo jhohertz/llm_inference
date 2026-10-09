@@ -23,19 +23,6 @@ require 'llm/inference/tokenizers/tokenizer_gpt2'
 require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 
-NB. ---- KV helpers ----
-lf2_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-lf2_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract LFM2 model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim;
 NB.     rope_freq; vocab_size; rms_eps; n_ff>
@@ -43,17 +30,17 @@ NB. head_count_kv is an ARRAY KV (0 for shortconv layers, 8 for attention) —
 NB. kv_uint returns _1; take the max for n_heads_kv.
 lf2_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'lfm2.block_count' lf2_kv_uint data
-  context_length =. 'lfm2.context_length' lf2_kv_uint data
-  emb_len =. 'lfm2.embedding_length' lf2_kv_uint data
-  n_heads =. 'lfm2.attention.head_count' lf2_kv_uint data
+  block_count =. 'lfm2.block_count' kv_uint data
+  context_length =. 'lfm2.context_length' kv_uint data
+  emb_len =. 'lfm2.embedding_length' kv_uint data
+  n_heads =. 'lfm2.attention.head_count' kv_uint data
   hc_kv =. 'lfm2.attention.head_count_kv' kv_array data
   n_heads_kv =. >./ hc_kv
-  rope_freq =. 'lfm2.rope.freq_base' lf2_kv_float data
-  vocab_size =. 'lfm2.vocab_size' lf2_kv_uint data
-  rms_eps =. 'lfm2.attention.layer_norm_rms_epsilon' lf2_kv_float data
-  n_ff =. 'lfm2.feed_forward_length' lf2_kv_uint data
-  key_len =. 'lfm2.attention.key_length' lf2_kv_uint data
+  rope_freq =. 'lfm2.rope.freq_base' kv_float data
+  vocab_size =. 'lfm2.vocab_size' kv_uint data
+  rms_eps =. 'lfm2.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'lfm2.feed_forward_length' kv_uint data
+  key_len =. 'lfm2.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -310,15 +297,16 @@ lf2_attention_b =: 4 : 0
   K_batch =. K
   V_batch =. V
   if. start_pos > 0 do.
-    k_pre =. > 0 { (kv_read ((<layer) , <(start_pos - 1)))
-    v_pre =. > 1 { (kv_read ((<layer) , <(start_pos - 1)))
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
     K =. k_pre , K
     V =. v_pre , V
   end.
 
-  NB. Bulk write the new batch's L K/V into cache at layer, starting at start_pos
-  kv_write_rows ((<0) , (<layer) , (<start_pos) , <K_batch)
-  kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
+  NB. Bulk write the new batch's L K/V into cache at layer, starting at start_pos.
+  NB. layer/start_pos are already boxed in y (indices 1/3) — pass them, no re-box.
+  kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
+  kv_write_rows ((<1) , (1 { y) , (3 { y) , <V_batch)
 
   NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
   NB. n_groups) and batched-matmul each group's Q against its shared K/V row —
@@ -1069,80 +1057,7 @@ lf2_infer =: 4 : 0
   tokens ; pred_tok ; decoded ; logits
 )
 
-NB. ---- Multi-token generation ----
-NB. Usage: llm lf2_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm lf2_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, logit scale, run_blocks/run_blocks_b) are
-NB. dispatched by llm_arch. Fresh mode: kv_create + batched prefill; resume
-NB. mode (chat sessions): incremental prefill of the new segment. Stop token
-NB. not appended.
-lf2_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. lf2_chat_prompt messages
-  tokens =. lf2_tokenize (<llm) , <prompt
-  stop =. lf2_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  lf2_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm lf2_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-lf2_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. lf2_chat_prompt messages
-    tokens =. lf2_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. lf2_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(lf2_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm lf2_infer_simple text            | llm lf2_generate_simple (text ; n)
 lf2_infer_simple =: lf2_infer (] ; (<0 0 0.95 0.0)"_)
-lf2_generate_simple =: lf2_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- LFM2 chat template ----
 NB. qwen-style: {{bos_token}} + <|im_start|>role\n content <|im_end|>\n per

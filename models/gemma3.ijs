@@ -46,33 +46,20 @@ gem3_bd_fused_qkv   =: >@(17&{)
 gem3_bd_cos_tab     =: >@(18&{)
 gem3_bd_sin_tab     =: >@(19&{)
 gem3_bd_swa_l       =: >@(20&{)
-NB. KV helpers: key kv_uint/kv_float data
-gem3_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-gem3_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract Gemma3 model info from KV pairs ----
 gem3_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'gemma3.block_count' gem3_kv_uint data
-  context_length =. 'gemma3.context_length' gem3_kv_uint data
-  emb_len =. 'gemma3.embedding_length' gem3_kv_uint data
-  n_heads =. 'gemma3.attention.head_count' gem3_kv_uint data
-  n_heads_kv =. 'gemma3.attention.head_count_kv' gem3_kv_uint data
-  rope_freq =. 'gemma3.rope.freq_base' gem3_kv_float data
-  vocab_size =. 'llama.vocab_size' gem3_kv_uint data
-  rms_eps =. 'gemma3.attention.layer_norm_rms_epsilon' gem3_kv_float data
-  swa =. 'gemma3.attention.sliding_window' gem3_kv_uint data
-  n_ff =. 'gemma3.feed_forward_length' gem3_kv_uint data
-   key_len =. 'gemma3.attention.key_length' gem3_kv_uint data
+  block_count =. 'gemma3.block_count' kv_uint data
+  context_length =. 'gemma3.context_length' kv_uint data
+  emb_len =. 'gemma3.embedding_length' kv_uint data
+  n_heads =. 'gemma3.attention.head_count' kv_uint data
+  n_heads_kv =. 'gemma3.attention.head_count_kv' kv_uint data
+  rope_freq =. 'gemma3.rope.freq_base' kv_float data
+  vocab_size =. 'llama.vocab_size' kv_uint data
+  rms_eps =. 'gemma3.attention.layer_norm_rms_epsilon' kv_float data
+  swa =. 'gemma3.attention.sliding_window' kv_uint data
+  n_ff =. 'gemma3.feed_forward_length' kv_uint data
+   key_len =. 'gemma3.attention.key_length' kv_uint data
    head_dim =. key_len % n_heads_kv
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
 )
@@ -875,7 +862,7 @@ gem3_load =: 3 : 0
   NB. Gemma3-specific sliding window
   NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
-  swa =. 'gemma3.attention.sliding_window' gem3_kv_uint kvs_ctx
+  swa =. 'gemma3.attention.sliding_window' kv_uint kvs_ctx
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; swa) put__mi 'cos_tab' ; 'sin_tab' ; 'swa'
   
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
@@ -986,88 +973,14 @@ gem3_infer =: 4 : 0
   
   NB. Sample from logits using sampler module
   if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  flat =. temp , k , p , min_p
-  params =. <"0 flat
-  pred_tok =. params sampler_sample logits
+  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
   
   decoded =. llama3_detokenize (<llm) , <pred_tok
   
   tokens ; pred_tok ; decoded ; logits
 )
 
-NB. ---- Multi-token generation for Gemma3 ----
-NB. Usage: llm generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, run_blocks/run_blocks_b) are dispatched by
-NB. llm_arch. Fresh mode: kv_create + batched prefill; resume mode (chat
-NB. sessions): incremental prefill of the new segment. Stop token not appended.
-gem3_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. gem3_chat_prompt messages
-  tokens =. llama3_tokenize (<llm) , <prompt
-  stop =. gem3_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  llama3_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm gem3_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-gem3_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. gem3_chat_prompt messages
-    tokens =. llama3_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. gem3_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(llama3_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm gem3_infer_simple text            | llm gem3_generate_simple (text ; n)
 gem3_infer_simple =: gem3_infer (] ; (<0 0 0.95 0.0)"_)
-gem3_generate_simple =: gem3_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each message = <role ; content>

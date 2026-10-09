@@ -227,12 +227,14 @@ These were once "known limitations" and are now resolved or documented:
    smollm2 9/10/11, qwen2 12/13/14), breaking the first's attention on a second
    load. **DONE** — per-arch accessor prefixes (`gem3_bd_*`/`qw2_bd_*`/`llama_bd_*`)
    + `tests/j/test_multiach.ijs` regression (gemma3 then qwen2 module load).
-   Note: locales/OOP are the deeper architecture direction (each model as an
-   object locale holding its arch/block_data/tokenizer, `llmobj.ijs` already
-   seeds the OOP path); the rename was chosen as the contained fix to keep the
-   public `inference`-locale contract unchanged. Enables side-by-side
-   multi-model testing (Phase 2 verification) and chat-template tests across
-   arches.
+   Note: locales/OOP were the deeper architecture direction (each model as an
+   object locale holding its arch/block_data/tokenizer); `llmobj.ijs` seeded the
+   OOP path but was RETIRED (2026-10) once the llm noun became a named dict (11
+   named members via the `llm_*` accessors) — the dict gives the same
+   named-member access without a separate OOP wrapper. The rename was chosen as
+   the contained fix to keep the public `inference`-locale contract unchanged.
+   Enables side-by-side multi-model testing (Phase 2 verification) and
+   chat-template tests across arches.
 3. **Test infra**: **DONE** — re-enabled `test_gguf.ijs` (parser suite
    135/135, 9 models); add chat-template oracle tests for the three models.
 
@@ -1273,10 +1275,10 @@ gate green throughout.
 
 Deferred (recorded in PLAN.md "Deferred Optimization Opportunities"): per-layer
 `mi` dict-lookup hoisting (measured ~0.38μs/lookup, ≈0.1-0.5% of a decode step —
-genuinely marginal, and invasive/conflicting with the pass-through), the
-`kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops
-(kernels already tacit; loops stay explicit — the `u^:v^:_`/`u^:n` idioms are
-rank-0 slow here).
+genuinely marginal, and invasive/conflicting with the pass-through), and tacit
+conversion of the hot loops (kernels already tacit; loops stay explicit — the
+`u^:v^:_`/`u^:n` idioms are rank-0 slow here). (The `kv_write (<layer), (<pos)`
+re-box was completed in the 2026-10 dict-ification pass — see below.)
 
 ## Redundant computation elimination — generation hot paths (2026-10)
 
@@ -1439,3 +1441,28 @@ negligible overhead — not in the generation hot path). Commit `49e7a58`.
   each site so both the timed and direct paths execute in the loop verb's scope.
   (The `6!:2`/`0!:0` string-evals persist their `=.` locals in the caller's
   scope, so the timed path is correct when the flag is on.)
+
+## Dict-ification & accessor robustness — llm noun, catalog, tokenizers (2026-10)
+
+The `llm` noun became a named dict (11 named members, queried via the `llm_*`
+accessors); `kv_data`/`mi` are jdicts. Follow-up pass on the shared
+dict/index access pattern + catalog + the remaining `kv_write` re-box:
+
+- **`catalog_d` (util/models.ijs)** — the model catalog is now a `catalog_d`
+  jdict (id → spec dict `{arch; repo; main; extras}`) with named accessors
+  `cat_has`/`cat_spec`/`cat_arch`/`cat_repo`/`cat_main`/`cat_extras`;
+  `model_target`/`dl_url`/`model_list`/`model_roles`/`model_file` updated
+  (`model_file`/`model_roles` do real role lookups in `extras` — mmproj/mtp/
+  dflash; all empty today, wired for future). Verified `test_models` 23/23.
+- **`dict_probe` (util/llm_core.ijs)** — the dual-mode dict/index access pattern
+  (`llm_get` + the tokenizer accessors `tokenizer_llama3`/`tokenizer_gpt2`/
+  `spm_llm_tokenizer`) is DRY'd into one `dict_probe` helper: `x dict_probe y`
+  → `<found; value|container>` (robust dict detection via `has__d` in a
+  try/catch — a bare `1 = # y` misdetects a 1-element box as a dict). Fixed the
+  `x ; boxed_list` SPREAD + `'found v' =.` unboxing bugs on the way.
+- **`kv_write` re-box completion (lfm2/qwen35 `_b` attention)** — the
+  single-token `*_attention` re-box was already index-based (`(3{y),(1{y)`
+  llama/qwen2/qwen3, `(4{y),(1{y)` gemma3); the remaining `kv_read`/
+  `kv_write_rows` in `lfm2_attention_b`/`qw35_attention_b` re-boxed `(<layer)`,
+  `(<start_pos)` after unpacking from `y` — now reuse `(1{y),(3{y)`. Verified
+  bit-exact (`test_lfm2` 22/22, `test_qwen35` 39/39, `test_batched` 11/11).

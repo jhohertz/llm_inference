@@ -5,6 +5,7 @@ NB. ================================================================
 NB. ---- ASCII helpers ----
 coclass 'inference'
 require 'data/dict'   NB. jsymbol (symbol datatype replaced the s: foreign in J9.8)
+require 'llm/inference/util/llm_core'   NB. dict_probe (dual-mode dict/index access)
 is_letter =: 3 : 0
   b =. y
   ((b <: 90) *. b > 64) +. (b <: 122) *. b > 96
@@ -217,8 +218,13 @@ input_llm   =: >@(0&{)  NB. unbox llm from input
 input_text  =: >@(1&{)  NB. unbox text/tokens from input (for tokenize)
 input_data  =: >@(1&{)  NB. unbox tokens from input (for detokenize)
 
-NB. ---- LLM field accessors (shared with gemma3.ijs) ----
-llm_tokenizer =: >@(3&{)  NB. extract tokenizer from llm noun
+NB. ---- LLM field accessor ----
+NB. llm is now a named dict — query the tokenizer member by name.
+llm_tokenizer =: 3 : 0
+  'found v' =. 'tokenizer' dict_probe y
+  if. found do. v return. end.
+  > 3 { v
+)
 
 NB. ---- Tokenize text using llama3 pre-tokenizer + symbol lookup ----
 NB. y = <llm; text> — receives llm (tokenizer at index 3) and text

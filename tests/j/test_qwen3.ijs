@@ -82,15 +82,15 @@ test_qwen3 =: 3 : 0
   echo '  Workspace after load: ' , fmt_bytes mem_after_load
   echo ''
 
-  NB. --- llm structure: 9 core + block_data + kv_data + arch = 11 ---
+  NB. --- llm structure: named dict with 11 members ---
   tc =. tc + 1
-  if. 11 = # llm do.
+  if. 11 = llm_count llm do.
     pc =. pc + 1
-    echo 'PASS: llm has 11 elements'
+    echo 'PASS: llm dict has 11 members'
   else.
     fc =. fc + 1
-    fl =. fl , 'llm has 11 elements', LF
-    echo 'FAIL: llm has 11 elements'; echo '  got: '; echo # llm
+    fl =. fl , 'llm dict has 11 members', LF
+    echo 'FAIL: llm dict has 11 members'; echo '  got: '; echo llm_count llm
   end.
 
   mi =. llm_mi llm

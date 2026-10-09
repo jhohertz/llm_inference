@@ -15,11 +15,17 @@ module that consumes the parser and implements the forward pass.
 The generic entry `load_gguf_to_llm` reads the model's `general.architecture`
 KV once (`detect_arch`) and playsound-style maps `infer`/`generate` onto the
 loaded arch's verbs (`gem3_*` / `llama_*` / `qw2_*`) — the check is made at load
-time, not at each call. The llm noun carries its arch at index 10 (`llm_arch`);
-it is 11 elements: `<path; ti; default_params; tokenizer; mi; kv_cache; tds;
-all_tensors; block_data; kv_data; arch>` — `mi` is a jdict of named hparams
-(queried via the `mi_*`/`granite_mi_*` accessors), and `kv_data` is a jdict of
-all decoded GGUF KVs (queried via `kv_get`/`dict_get`).
+time, not at each call. The llm noun is a named dict with 11 members (`path; ti;
+default_params; tokenizer; mi; kv_cache; tds; all_tensors; block_data; kv_data;
+arch`), queried by name via the named accessors (`llm_path`/`llm_arch`/`llm_mi`/...
+— adding a member never shifts indices); the accessors are dual-mode (index-based
+on the boxed list while an arch is loading, `get__d` on the dict after load),
+via the shared `dict_probe` helper (`x dict_probe y` → `<found; value|container>`;
+robust dict detection — `has__d` in try/catch, a bare `1 = # y` misdetects a
+1-element box as a dict).
+`mi` is a jdict of named hparams (queried via the `mi_*`/`granite_mi_*`
+accessors), and `kv_data` is a jdict of all decoded GGUF KVs (queried via
+`kv_get`/`dict_get`).
 
 ```
 inference.ijs (entry point)   — all code lives in the 'inference' locale
@@ -27,13 +33,12 @@ inference.ijs (entry point)   — all code lives in the 'inference' locale
 ├── gguf/quant.ijs      — Quant decoders + block tables (packed-quant handling is part of gguf)
 ├── util/kv_cache.ijs   — Persistent KV cache: k_cache_g/v_cache_g globals + session-aware verbs (kv_create_s/kv_write_s/kv_write_rows_s/kv_read_s/kv_reset_s, sess_kv_bind)
 ├── util/session.ijs    — boxed `session` noun (17 indexed fields) + accessors + session_new/session_reset/sess_put/sess_set
-├── util/llm_core.ijs   — llm accessors, get_tensor_cached_d, embed_tokens, output_head, sample_from, gen_loop_core/gen_loop_batch
+├── util/llm_core.ijs   — llm accessors (dual-mode via dict_probe), get_tensor_cached_d, embed_tokens, output_head, sample_from, gen_loop_core/gen_loop_batch
 ├── util/chat.ijs       — chat-template inference (chat_tmpl_render), chat_completion/chat_core_stream/chat_tool_loop, streaming (chat_stream_piece)
 ├── util/chat_template.ijs — chat-template layer (ct_apply, detect_caps, strftime_now) — depends on util/minja.ijs
 ├── util/minja.ijs      — minja Jinja engine port (coclass 'minja')
-├── util/models.ijs     — model catalog + spec resolution + downloader (model_path/model_download/model_list)
+├── util/models.ijs     — model catalog (catalog_d id→spec dict + cat_* accessors) + spec resolution + downloader (model_path/model_download/model_file role lookup)
 ├── util/sampler.ijs    — temperature / top-k / top-p / min-p sampling
-├── util/llmobj.ijs     — OOP wrapper: conew 'llmobj', infer__obj/generate__obj/destroy__obj
 ├── kernels/jfloat.ijs  — matmul, linear, RMSNorm, GELU, SiLU, SwiGLU, RoPE, softcap; `Broadcastly` adverb (NumPy-style broadcasting via verb rank)
 ├── tokenizers/tokenizer_llama3.ijs / tokenizers/tokenizer_gpt2.ijs — BPE tokenizers
 ├── tokenizers/tokenizer_spm.ijs   — SentencePiece tokenizer (llama.cpp llm_tokenizer_spm bigram-merge)

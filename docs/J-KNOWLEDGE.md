@@ -451,6 +451,12 @@ Corollaries we hit in this repo:
   boxed). Parenthesize the scalar — `boxed_list , (<b) , <rope` (hit in the
   `*_run_blocks_bd` RoPE threading; see HISTORICAL.md "Redundant computation
   elimination").
+- `x ; y` where `y` is a boxed list SPREADS (`0 ; ('x';'y';'z')` = 4 items) —
+  nest with `x ; <y` (hit in the dict-ification pass; see HISTORICAL.md
+  "Dict-ification & accessor robustness").
+- `dict_probe` returns `1 ; <v` — the `;`-with-boxed-list spread forces the 2nd
+  element `<`-boxed; callers unpack with `'found v' =.` (multiple-assignment
+  UNBOXES), so `v` arrives ALREADY-OPEN (no `> v`).
 
 ---
 

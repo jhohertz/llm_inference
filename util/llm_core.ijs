@@ -39,18 +39,67 @@ NB. are not visible inside a helper verb's scope.
 gen_timing_g =: 0
 
 NB. ---- llm noun layout (shared across architectures) ----
-NB. llm = <path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
-NB.       block_data; kv_data; arch>
-llm_path          =: >@(0&{)
-llm_ti            =: >@(1&{)
-llm_default_params =: >@(2&{)   NB. chat sampling defaults <temp;k;p;min_p>
-llm_mi            =: >@(4&{)
-llm_kv_cache      =: >@(5&{)   NB. llm[5]=<k;v>
-llm_tds           =: >@(6&{)
-llm_all_tensors   =: >@(7&{)
-llm_block_data    =: >@(8&{)
-llm_kv_data       =: >@(9&{)   NB. decoded-KV dict (query via kv_get)
-llm_arch          =: >@(10&{)  NB. arch string ('gemma3'|'llama'|'qwen2')
+NB. llm is a NAMED DICT (jdict) of the loaded model's parts, keyed as:
+NB.   path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
+NB.   block_data; kv_data; arch
+NB. The llm_* accessors query by NAME (not index) — flexible: adding a member
+NB. never shifts the others. (The old 11-element boxed list is gone; the
+NB. loader builds this dict. The per-layer kernels stay on box-of-lists.)
+
+NB. ---- Robust dual-mode probe: dict lookup, else unwrap-and-index ----
+NB. x = key name; y = container (dict locale ref | boxed list | 1-element box).
+NB. Returns <1; value> if y is a dict holding x, else <0; container> where
+NB. container is the (1-element-box-unwrapped) non-dict for index-based access.
+NB. Shared by llm_get and the tokenizer accessors. Dict detection is robust
+NB. (has__d in try/catch) — a bare # / 3!:0 probe misdetects a 1-element box
+NB. as a dict (a box has # = 1, same as a locale ref).
+dict_probe =: 4 : 0
+  d =. y
+  got =. 0
+  r =. ''
+  try.
+    if. has__d (<x) do.
+      r =. > get__d (<x)
+      got =. 1
+    end.
+  catch. end.
+  if. got do. 1 ; <r return. end.
+  if. 1 = # y do.
+    y =. 0 {:: y
+    d =. y
+    try.
+      if. has__d (<x) do.
+        r =. > get__d (<x)
+        got =. 1
+      end.
+    catch. end.
+    if. got do. 1 ; <r return. end.
+  end.
+  0 ; <y
+)
+
+llm_get =: 4 : 0
+  'found v' =. x dict_probe y
+  if. found do. v return. end.
+  idx =. ('path';'ti';'default_params';'tokenizer';'mi';'kv_cache';'tds';'all_tensors';'block_data';'kv_data';'arch') i. <x
+  > idx { v
+)
+llm_path          =: 'path'&llm_get
+llm_ti            =: 'ti'&llm_get
+llm_default_params =: 'default_params'&llm_get   NB. chat sampling defaults <temp;k;p;min_p>
+llm_mi            =: 'mi'&llm_get
+llm_kv_cache      =: 'kv_cache'&llm_get   NB. <k;v>
+llm_tds           =: 'tds'&llm_get
+llm_all_tensors   =: 'all_tensors'&llm_get
+llm_block_data    =: 'block_data'&llm_get
+llm_kv_data       =: 'kv_data'&llm_get   NB. decoded-KV dict (query via kv_get)
+llm_arch          =: 'arch'&llm_get   NB. arch string ('gemma3'|'llama'|'qwen2')
+
+NB. ---- Count members of the llm dict (tests assert 11) ----
+llm_count =: 3 : 0
+  d =. y
+  count__d ''
+)
 
 NB. ---- Query a decoded KV by name from a kv_data dict ----
 NB. x = key name; y = kv_data dict.  Returns the decoded value (opened), or a:

@@ -22,7 +22,11 @@ NB. ---- Input accessors (spm-prefixed) ----
 spm_input_llm  =: >@(0&{)
 spm_input_text =: >@(1&{)
 spm_input_data =: >@(1&{)
-spm_llm_tokenizer =: >@(3&{)
+spm_llm_tokenizer =: 3 : 0
+  'found v' =. 'tokenizer' dict_probe y
+  if. found do. v return. end.
+  > 3 { v
+)
 
 NB. ---- Build tokenizer from GGUF KV pairs ----
 NB. y = kv_result = <kvs_flat; raw_bytes; count; kv_end_offset>

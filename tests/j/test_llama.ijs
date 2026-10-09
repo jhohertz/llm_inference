@@ -57,13 +57,13 @@ test_smollm2 =: 3 : 0
 
   NB. --- llm structure: 9 core + block_data + kv_data + arch = 11 ---
   tc =. tc + 1
-  if. 11 = # llm do.
+  if. 11 = llm_count llm do.
     pc =. pc + 1
     echo 'PASS: llm has 11 elements'
   else.
     fc =. fc + 1
     fl =. fl , 'llm has 11 elements', LF
-    echo 'FAIL: llm has 11 elements'; echo '  got: '; echo # llm
+    echo 'FAIL: llm has 11 elements'; echo '  got: '; echo llm_count llm
   end.
 
   mi =. llm_mi llm
