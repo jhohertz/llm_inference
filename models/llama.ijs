@@ -17,10 +17,6 @@ require 'llm/inference/util/chat_template'
 
 NB. Chat-template dispatch marker. '' = SmolLM2 template; llama_load sets it
 NB. to the tokenizer's pre ('llama-bpe' -> Llama-3.2 template). The default
-NB. keeps llama_chat_prompt usable when a tokenizer is built standalone
-NB. (test_chat builds minimal llms without llama_load).
-llama_tokenizer_pre_g =: ''
-
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
 NB. ---- Extract llama model info from KV pairs ----
@@ -720,9 +716,6 @@ llama_load =: 3 : 0
   ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
   NB. Chat-template dispatch marker: llama_chat_prompt takes messages only
-  NB. (chat.ijs contract), so the llama module remembers which tokenizer
-  NB. pre the current model uses ('llama-bpe' -> llama3 template, else SmolLM2).
-  llama_tokenizer_pre_g =: tokenizer_pre_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.

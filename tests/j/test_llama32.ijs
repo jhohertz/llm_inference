@@ -29,7 +29,7 @@ test_llama32 =: 3 : 0
 
   NB. --- architecture ---
   assert_test ('llama' -: llm_arch llm) ; 'arch = llama'
-  assert_test ('llama-bpe' -: llama_tokenizer_pre_g) ; 'tokenizer pre = llama-bpe (llama3 template)'
+  assert_test ('llama-bpe' -: tokenizer_pre_g (llm_tokenizer llm)) ; 'tokenizer pre = llama-bpe (llama3 template)'
   mi =. llm_mi llm
   assert_test (16 -: mi_block_count mi) ; 'block_count = 16'
   assert_test (131072 -: mi_context_len mi) ; 'context_length = 131072'
