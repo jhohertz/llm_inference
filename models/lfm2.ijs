@@ -201,6 +201,26 @@ lf2_conv_write_b =: 3 : 0
   ''
 )
 
+NB. ---- Bind the lfm2 conv mirror globals from the dict's config (model switch) ----
+NB. Resets the conv runtime mirror (lf2_conv_meta/cache_g/batch_g) on model load so
+NB. no stale conv state leaks across models. The conv config (lf2_conv_layers /
+NB. lf2_n_conv_g + dims) is per-model (set at load) and stays in the mirror for the
+NB. monadic conv verbs; this verb also caches it in the dict (lf2_conv). y = llm.
+llm_lf2_bind =: 3 : 0
+  llm =. y
+  if. 0 < # lf2_conv_layers do.
+    d =. llm
+    emb =. mi_emb_len (llm_mi llm)
+    cfg =. <(lf2_conv_layers ; lf2_n_conv_g ; 2 ; emb)
+    ct =. llm_ct_tmpl llm
+    (cfg ; ct) put__d 'lf2_conv' ; 'ct_tmpl'
+  end.
+  lf2_conv_meta =: ''
+  lf2_conv_cache_g =: ''
+  lf2_conv_batch_g =: 1
+  ''
+)
+
 NB. Batched read/write: all B sequences' conv state in ONE indexed pass (mirror
 NB. lf2_conv_read_b/lf2_conv_write_b's per-seq index math). y = <layer; B>
 NB. (read) / <layer; conv_states(B,d_conv,emb); B> (write).
@@ -945,8 +965,9 @@ lf2_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -974,7 +995,7 @@ lf2_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -982,6 +1003,8 @@ lf2_load =: 3 : 0
   block_data =. lf2_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Tokenize/detokenize (gpt2 BPE + llama3 pre, BOS prepended) ----
@@ -990,18 +1013,8 @@ NB. add_bos=true) — gpt2_tokenize dispatches 'lfm2' to llama3_pre_tokenize.
 NB. BOS token 1 (<|startoftext|>) is prepended here; the chat template's
 NB. {{bos_token}} is rendered as '' (lf2_chat_prompt) so the stream matches
 NB. llama.cpp (bos once).
-lf2_tokenize =: 3 : 0
-  llm_data =. input_llm y
-  text =. input_text y
-  tokenizer =. llm_tokenizer llm_data
-  tokens =. gpt2_tokenize (<llm_data) , <text
-  bos =. tokenizer_bos_g tokenizer
-  if. bos > 0 do. tokens =. (<bos) , tokens end.
-  tokens
-)
-lf2_detokenize =: 3 : 0
-  gpt2_detokenize y
-)
+lf2_tokenize =: llm_tokenize
+lf2_detokenize =: llm_detokenize
 
 
 
@@ -1012,8 +1025,5 @@ NB. block. {{bos_token}} is rendered as '' — lf2_tokenize prepends BOS so the
 NB. token stream matches llama.cpp (bos once).
 
 
-NB. Stop tokens: EOS = <|im_end|> (7).
-lf2_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Stop tokens: EOS = <|im_end|> (7). Computed once in lf2_load (dict member stop_tokens).
+lf2_stop_tokens =: llm_stop_tokens

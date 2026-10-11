@@ -713,8 +713,9 @@ llama_load =: 3 : 0
   head_dim =. mi_head_dim mi
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   NB. Chat-template dispatch marker: llama_chat_prompt takes messages only
   all_tensors =. ''
   tensor_idx =. 0
@@ -739,7 +740,7 @@ llama_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -747,6 +748,8 @@ llama_load =: 3 : 0
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Generic tokenize/detokenize (llama arch) ----
@@ -755,20 +758,8 @@ NB. (pre 'llama-bpe'): llama3 regex pre + gpt2 BPE merges, and llama.cpp
 NB. adds BOS (add_bos=true), so the bos token is prepended here. The chat
 NB. template renders no <|begin_of_text|> marker — this supplies it, so the
 NB. token stream matches llama.cpp's _input_ids exactly (bos once).
-llama_tokenize =: 3 : 0
-  llm_data =. input_llm y
-  text =. input_text y
-  tokenizer =. llm_tokenizer llm_data
-  tokens =. gpt2_tokenize (<llm_data) , <text
-  if. 'llama-bpe' -: tokenizer_pre_g tokenizer do.
-    bos =. tokenizer_bos_g tokenizer
-    if. bos > 0 do. tokens =. (<bos) , tokens end.
-  end.
-  tokens
-)
-llama_detokenize =: 3 : 0
-  gpt2_detokenize y
-)
+llama_tokenize =: llm_tokenize
+llama_detokenize =: llm_detokenize
 
 
 
@@ -779,7 +770,5 @@ NB. chat_tmpl_render for both SmolLM2 and Llama-3.2 (the llama arch).
 
 
 NB. Stop token: EOS (SmolLM2 <|im_end|>=2; Llama-3.2 <|eot_id|>=128009).
-llama_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Computed once in llama_load (dict member stop_tokens).
+llama_stop_tokens =: llm_stop_tokens

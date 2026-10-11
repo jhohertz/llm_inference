@@ -58,7 +58,7 @@ test_llama32 =: 3 : 0
 
   NB. --- chat prompt tokens vs llama.cpp _input_ids (fixed date) ---
   messages =. <('user') ; 'The capital of France is'
-  prompt =. llama_chat_prompt messages
+  prompt =. llm llama_chat_prompt messages
   toks =. llama_tokenize (<llm) , <prompt
   got_toks =. , > toks
   exp_toks =. 128000 128006 9125 128007 271 38766 1303 33025 2696 25 6790 220 2366 18 198 15724 2696 25 220 1627 10263 220 2366 19 271 128009 128006 882 128007 271 791 6864 315 9822 374 128009 128006 78191 128007 271

@@ -81,21 +81,73 @@ dict_probe =: 4 : 0
 llm_get =: 4 : 0
   'found v' =. x dict_probe y
   if. found do. v return. end.
-  idx =. ('path';'ti';'default_params';'tokenizer';'mi';'kv_cache';'tds';'all_tensors';'block_data';'kv_data';'arch') i. <x
+  idx =. ('path';'ti';'default_params';'tokenizer';'mi';'kv_cache';'tds';'all_tensors';'block_data';'kv_data';'stop_tokens';'ct_tmpl';'arch';'ct_caps';'ct_tool_ex';'lf2_conv') i. <x
   > idx { v
 )
 llm_path          =: 'path'&llm_get
 llm_ti            =: 'ti'&llm_get
 llm_default_params =: 'default_params'&llm_get   NB. chat sampling defaults <temp;k;p;min_p>
 llm_mi            =: 'mi'&llm_get
-llm_kv_cache      =: 'kv_cache'&llm_get   NB. <k;v>
+llm_kv_cache      =: 'kv_cache'&llm_get   NB. per-model cache config (authoritative; mirror globals are the hot path)
 llm_tds           =: 'tds'&llm_get
 llm_all_tensors   =: 'all_tensors'&llm_get
 llm_block_data    =: 'block_data'&llm_get
 llm_kv_data       =: 'kv_data'&llm_get   NB. decoded-KV dict (query via kv_get)
 llm_arch          =: 'arch'&llm_get   NB. arch string ('gemma3'|'llama'|'qwen2')
+llm_ct_tmpl       =: 'ct_tmpl'&llm_get   NB. chat-template string ('' = none)
+llm_ct_caps       =: 'ct_caps'&llm_get   NB. chat-template caps mkobj ('' = not computed yet)
+llm_ct_tool_ex    =: 'ct_tool_ex'&llm_get   NB. chat-template tool example ('' = none)
+llm_lf2_conv      =: 'lf2_conv'&llm_get   NB. lfm2 conv config ('' = not an lfm2 model)
+llm_stop_tokens   =: 'stop_tokens'&llm_get   NB. stop-token id list (boxed/scalar)
 
-NB. ---- Count members of the llm dict (tests assert 11) ----
+NB. ---- Generic tokenize/detokenize (DRY Tier 1 item 3) ----
+NB. Dispatch on the arch (from the llm dict); the per-arch *-tokenize/
+NB. *-detokenize names are aliases to these. y = <llm; text> (tokenize) or
+NB. <llm; tokens> (detokenize). The llama/lfm2 cases inline the bos-prepend
+NB. (llama-bpe pre / bos>0) so the aliases don't recurse.
+llm_tokenize =: 3 : 0
+  llm_data =. input_llm y
+  text =. input_text y
+  arch =. llm_arch llm_data
+  select. arch
+  case. 'gemma3' do. llama3_tokenize y
+  case. 'qwen2'  do. gpt2_tokenize y
+  case. 'qwen3'  do. gpt2_tokenize y
+  case. 'qwen35' do. gpt2_tokenize y
+  case. 'granite' do. gpt2_tokenize y
+  case. 'ernie4_5' do. spm_tokenize y
+  case. 'llama' do.
+    tokenizer =. llm_tokenizer llm_data
+    tokens =. gpt2_tokenize (<llm_data) , <text
+    if. 'llama-bpe' -: tokenizer_pre_g tokenizer do.
+      bos =. tokenizer_bos_g tokenizer
+      if. bos > 0 do. tokens =. (<bos) , tokens end.
+    end.
+    tokens
+  case. 'lfm2' do.
+    tokenizer =. llm_tokenizer llm_data
+    tokens =. gpt2_tokenize (<llm_data) , <text
+    bos =. tokenizer_bos_g tokenizer
+    if. bos > 0 do. tokens =. (<bos) , tokens end.
+    tokens
+  end.
+)
+llm_detokenize =: 3 : 0
+  llm_data =. input_llm y
+  arch =. llm_arch llm_data
+  select. arch
+  case. 'gemma3' do. llama3_detokenize y
+  case. 'qwen2'  do. gpt2_detokenize y
+  case. 'qwen3'  do. gpt2_detokenize y
+  case. 'qwen35' do. gpt2_detokenize y
+  case. 'granite' do. gpt2_detokenize y
+  case. 'llama'  do. gpt2_detokenize y
+  case. 'lfm2'   do. gpt2_detokenize y
+  case. 'ernie4_5' do. spm_detokenize y
+  end.
+)
+
+NB. ---- Count members of the llm dict (tests assert 13) ----
 llm_count =: 3 : 0
   d =. y
   count__d ''

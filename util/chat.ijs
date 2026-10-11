@@ -17,24 +17,23 @@ require 'llm/inference/util/chat_template'
 require 'convert/pjson'   NB. tool-call JSON extraction (dec/enc)
 
 NB. ---- Real GGUF chat-template + template variables ----
-NB. ct_tmpl_g: the real jinja template pulled from the GGUF by the arch
-NB. loader ('' = none -> bespoke fallback). Reset per load in inference.ijs.
+NB. ct_tmpl: the real jinja template pulled from the GGUF by the arch loader
+NB. ('' = none -> bespoke fallback); stored in the llm dict (member ct_tmpl).
 NB. ct_vars/ct_tools now live in the session (fields 2/4); chat_tmpl_render
 NB. reads them from sess_cur_g. ct_now_g is the pinned-date determinism knob
 NB. (0 = live time; tests pin e.g. 1721952000 = 26 Jul 2024).
-ct_tmpl_g =: ''
 ct_now_g =: 0
 
 NB. ---- Shared chat prompt ----
-NB. chat_prompt: monadic verb; y = messages (boxed list of <role ; content>).
-NB. The arch is implicit — each arch loader sets ct_tmpl_g (the real GGUF jinja
-NB. template) from the model file, and chat_tmpl_render reads it. All 8 arch
-NB. renderers are byte-identical, so one shared verb serves them; the per-arch
-NB. names (gem3_chat_prompt etc.) are aliases so tests/direct callers keep
-NB. working. (Called as `chat_prompt messages` — monadic; the arch is implicit.)
-chat_prompt =: 3 : 0
+NB. chat_prompt: dyadic verb; x = llm, y = messages (boxed list of <role ; content>).
+NB. The arch is read from the llm dict (member ct_tmpl = the real GGUF jinja
+NB. template). All 8 arch renderers are byte-identical, so one shared verb
+NB. serves them; the per-arch names (gem3_chat_prompt etc.) are aliases so
+NB. tests/direct callers keep working. (Called as `llm chat_prompt messages`.)
+chat_prompt =: 4 : 0
+  llm =. x
   messages =. y
-  chat_tmpl_render messages
+  llm chat_tmpl_render messages
 )
 gem3_chat_prompt =: chat_prompt
 qw2_chat_prompt =: chat_prompt
@@ -44,29 +43,14 @@ llama_chat_prompt =: chat_prompt
 granite_chat_prompt =: chat_prompt
 ernie_chat_prompt =: chat_prompt
 lf2_chat_prompt =: chat_prompt
+NB. chat_tokenize/chat_detokenize: thin wrappers over the generic llm_tokenize/
+NB. llm_detokenize (which dispatch on the arch from the llm dict). The dyadic
+NB. x (arch) is vestigial — the generic reads the arch from llm.
 chat_tokenize =: 4 : 0
-  select. x
-  case. 'gemma3' do. llama3_tokenize y
-  case. 'qwen2'  do. gpt2_tokenize y
-  case. 'qwen3'  do. gpt2_tokenize y
-  case. 'qwen35' do. gpt2_tokenize y
-  case. 'llama'  do. llama_tokenize y
-  case. 'granite' do. granite_tokenize y
-  case. 'ernie4_5' do. ernie_tokenize y
-  case. 'lfm2' do. lf2_tokenize y
-  end.
+  llm_tokenize y
 )
 chat_detokenize =: 4 : 0
-  select. x
-  case. 'gemma3' do. llama3_detokenize y
-  case. 'qwen2'  do. gpt2_detokenize y
-  case. 'qwen3'  do. gpt2_detokenize y
-  case. 'qwen35' do. gpt2_detokenize y
-  case. 'llama'  do. llama_detokenize y
-  case. 'granite' do. granite_detokenize y
-  case. 'ernie4_5' do. ernie_detokenize y
-  case. 'lfm2' do. lf2_detokenize y
-  end.
+  llm_detokenize y
 )
 chat_gen_loop =: 4 : 0
   max_steps =. > 1 { y
@@ -277,20 +261,7 @@ chat_stream_cb =: 3 : 0
   if. 0 < # delta do. chat_cb_g delta end.
   pred
 )
-chat_stop_tokens =: 3 : 0
-  llm =. y
-  arch =. llm_arch llm
-  select. arch
-  case. 'gemma3' do. gem3_stop_tokens llm
-  case. 'qwen2'  do. qw2_stop_tokens llm
-  case. 'qwen3'  do. qw3_stop_tokens llm
-  case. 'qwen35' do. qw35_stop_tokens llm
-  case. 'llama'  do. llama_stop_tokens llm
-  case. 'granite' do. granite_stop_tokens llm
-  case. 'ernie4_5' do. ernie_stop_tokens llm
-  case. 'lfm2' do. lf2_stop_tokens llm
-  end.
-)
+chat_stop_tokens =: llm_stop_tokens
 
 NB. ---- Chat arg parsing ----
 NB. y = <messages ; max_steps ; <params> ; <tmpl_vars?> ; <tools?>  (<params> = <temp;k;p;min_p>, possibly double-boxed)
@@ -338,10 +309,10 @@ chat_vars_obj =: 3 : 0
 )
 
 NB. ---- Real GGUF chat-template render (shared across arches) ----
-NB. y = messages: boxed list of <role ; content>. Renders the real jinja
-NB. template stored in ct_tmpl_g (set by the arch loader from the GGUF) via the
-NB. minja/chat_template port, with session ct_vars/ct_tools (fields 2/4) as the
-NB. extra template variables / tools input.
+NB. x = llm, y = messages: boxed list of <role ; content>. Renders the real
+NB. jinja template (llm_ct_tmpl — the llm dict member ct_tmpl, set by the arch
+NB. loader from the GGUF) via the minja/chat_template port, with session
+NB. ct_vars/ct_tools (fields 2/4) as the extra template variables / tools input.
 NB. Returns the rendered prompt string ('' if no template).
 days_from_civil =: 3 : 0
   'y m d' =. y
@@ -355,9 +326,11 @@ days_from_civil =: 3 : 0
   (era * 146097) + doe - 719468
 )
 
-chat_tmpl_render =: 3 : 0
+chat_tmpl_render =: 4 : 0
+  llm =. x
   messages =. y
-  if. 0 = # ct_tmpl_g do.
+  tmpl =. llm_ct_tmpl llm
+  if. 0 = # tmpl do.
     throw. 'chat-template: model has no tokenizer.chat_template'
   end.
   vals =. ''
@@ -387,9 +360,33 @@ chat_tmpl_render =: 3 : 0
   if. 0 = now do. now =. (days_from_civil (3 {. (6!:0 ''))) * 86400 end.
   if. '' -: tools do. tools =. mknull_minja_ '' else. tools =. ct_parse_json_chatpl_ tools end.
   inputs =. ((<msgs) , (<tools) , (<1) , (<extra) , (<now) , (<'') , (<''))
-  src =. ct_tmpl_g
-  caps =. ct_new_chatpl_ (src ; '' ; '')
-  ct_apply_chatpl_ ((<src) , (<inputs) , (<caps) , (<ct_tool_ex_g_chatpl_) , (<(mk_options_chatpl_ '')))
+  src =. tmpl
+  'found caps' =. 'ct_caps' dict_probe llm
+  if. found do.
+    d =. llm
+    caps =. > get__d <'ct_caps'
+    if. '' -: caps do.
+      NB. First render: compute caps + tool_ex once (ct_new sets the chat_template
+      NB. globals + runs detect_caps), then cache both in the dict — no per-render
+      NB. recompute; the caps are per-model (per-template) so they stay valid.
+      caps =. ct_new_chatpl_ (src ; '' ; '')
+      tool_ex =. ct_tool_ex_g_chatpl_
+      (caps ; tool_ex) put__d 'ct_caps' ; 'ct_tool_ex'
+    else.
+      NB. Cached: rebind the chat_template globals from the dict, skip detect_caps.
+      ct_source_g_chatpl_ =: src
+      ct_bos_g_chatpl_ =: ''
+      ct_eos_g_chatpl_ =: ''
+      ct_caps_g_chatpl_ =: caps
+      tool_ex =. > get__d <'ct_tool_ex'
+      ct_tool_ex_g_chatpl_ =: tool_ex
+    end.
+  else.
+    NB. Not a dict (minimal boxed-list llm in tests): ct_new fallback (no caching).
+    caps =. ct_new_chatpl_ (src ; '' ; '')
+    tool_ex =. ct_tool_ex_g_chatpl_
+  end.
+  ct_apply_chatpl_ ((<src) , (<inputs) , (<caps) , (<tool_ex) , (<(mk_options_chatpl_ '')))
 )
 
 NB. ---- Chat generation ----
@@ -420,7 +417,7 @@ chat_generate =: 4 : 0
   sess_cur_g =: sess
 
   arch =. llm_arch llm
-  prompt =. chat_prompt messages
+  prompt =. llm chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
   L =. # , > tokens
@@ -458,7 +455,7 @@ generate =: 4 : 0
   min_p =. > 5 { args
   arch =. llm_arch llm
   messages =. <('user') ; text
-  prompt =. chat_prompt messages
+  prompt =. llm chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
   L =. # , > tokens
@@ -484,7 +481,7 @@ generate_batch =: 4 : 0
   while. i < B do.
     text =. > i { prompts
     messages =. <('user') ; text
-    prompt =. chat_prompt messages
+    prompt =. llm chat_prompt messages
     tokens =. arch chat_tokenize (llm_box , <prompt)
     tok_list =. , > tokens
     prompts_tok =. prompts_tok , <tok_list
@@ -830,7 +827,7 @@ chat_completion_s =: 4 : 0
 
   arch =. llm_arch llm
   sess_cur_g =: sess
-  prompt =. chat_prompt messages
+  prompt =. llm chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   stop =. chat_stop_tokens llm
   L =. # , > tokens
@@ -972,7 +969,7 @@ chat_completion_batch =: 4 : 0
       NB. cell value to be boxed to match the cell — see session.ijs).
       sess =. (< > 1 { r) (4) } sess
       sess_cur_g =: sess
-      prompt =. chat_prompt > 0 { r
+      prompt =. llm chat_prompt > 0 { r
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prompts_tok =. prompts_tok , <tok_list
@@ -1197,7 +1194,7 @@ chat_fresh_s =: 4 : 0
   arch =. llm_arch llm
   stop =. chat_stop_tokens llm
   sess_cur_g =: sess
-  prompt =. chat_prompt messages
+  prompt =. llm chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
   output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
@@ -1252,7 +1249,7 @@ chat_core_s =: 4 : 0
       prev_toks =. > 2 { cs
       prev_len =. > 3 { cs
       messages =. prev_messages , <('user') ; msg
-      prompt =. chat_prompt messages
+      prompt =. llm chat_prompt messages
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prev_flat =. , > prev_toks
@@ -1394,7 +1391,7 @@ chat_fresh_stream_s =: 4 : 0
   flat =. > 3 { y
   stop =. > 4 { y
   arch =. llm_arch llm
-  prompt =. chat_prompt messages
+  prompt =. llm chat_prompt messages
   tokens =. arch chat_tokenize (<llm) , <prompt
   L =. # , > tokens
   out =. llm chat_gen_stream_s ((<sess) , (<tokens) , (<'') , (<max_steps) , (<flat) , (<stop))
@@ -1452,7 +1449,7 @@ chat_core_stream_s =: 4 : 0
       prev_toks =. > 2 { cs
       prev_len =. > 3 { cs
       messages =. prev_messages , <('user') ; msg
-      prompt =. chat_prompt messages
+      prompt =. llm chat_prompt messages
       tokens =. arch chat_tokenize (<llm) , <prompt
       tok_list =. , > tokens
       prev_flat =. , > prev_toks

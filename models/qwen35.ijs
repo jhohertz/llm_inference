@@ -968,8 +968,9 @@ qw35_load =: 3 : 0
   NB. vocab_size overwrites the build_mi_dict placeholder (qwen35 has no KV).
   (vocab ; (> 0 { rope_tables) ; (> 1 { rope_tables) ; key_len ; n_rot ; ssm_d_inner ; ssm_d_state ; ssm_dt_rank ; ssm_n_group) put__mi 'vocab_size' ; 'cos_tab' ; 'sin_tab' ; 'key_len' ; 'n_rot' ; 'ssm_d_inner' ; 'ssm_d_state' ; 'ssm_dt_rank' ; 'ssm_n_group'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -996,7 +997,7 @@ qw35_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -1004,6 +1005,8 @@ qw35_load =: 3 : 0
   block_data =. qw35_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Infer (raw single forward, no chat template) ----NB. ---- Chat template prompt (qwen3.5: thinking/response generation prompt) ----
@@ -1315,11 +1318,7 @@ qw35_run_blocks_bp =: 4 : 0
   <state
 )
 
-NB. ---- Stop tokens ----
-qw35_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. ---- Stop tokens (computed once in qw35_load, dict member stop_tokens) ----
+qw35_stop_tokens =: llm_stop_tokens
 
-NB. ---- Simple wrappers ----
-qw35_infer_simple =: qw35_infer (] ; (<0 0 0.95 0.0)"_)
+NB. ---- Simple wrappers (aliased to the generic infer_simple in util/chat.ijs) ----

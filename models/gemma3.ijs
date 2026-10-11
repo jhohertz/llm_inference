@@ -866,9 +866,10 @@ gem3_load =: 3 : 0
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; swa) put__mi 'cos_tab' ; 'sin_tab' ; 'swa'
   
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   
   tokenizer =. build_llama3_tokenizer kv_result
+  stop_tokens =. (tokenizer_eos tokenizer) , 1
   
   all_tensors =. ''
   tensor_idx =. 0
@@ -898,7 +899,7 @@ gem3_load =: 3 : 0
   ze =. <1.0 64 0.95 0.001   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -906,6 +907,8 @@ gem3_load =: 3 : 0
   block_data =. gem3_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 
@@ -918,7 +921,5 @@ NB. generation prompt '<start_of_turn>model' appended. BOS is added by the
 NB. llama3 tokenizer (llama.cpp also prepends bos for gemma chat).
 
 NB. Stop tokens: <end_of_turn> (EOS) and <eos> (token 1) — per gemma params file.
-gem3_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  (tokenizer_eos tk) , 1
-)
+NB. Computed once in gem3_load (dict member stop_tokens).
+gem3_stop_tokens =: llm_stop_tokens

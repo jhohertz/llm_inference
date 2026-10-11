@@ -15,10 +15,11 @@ module that consumes the parser and implements the forward pass.
 The generic entry `load_gguf_to_llm` reads the model's `general.architecture`
 KV once (`detect_arch`) and playsound-style maps `infer`/`generate` onto the
 loaded arch's verbs (`gem3_*` / `llama_*` / `qw2_*`) — the check is made at load
-time, not at each call. The llm noun is a named dict with 11 members (`path; ti;
+time, not at each call. The llm noun is a named dict with 13 members (`path; ti;
 default_params; tokenizer; mi; kv_cache; tds; all_tensors; block_data; kv_data;
-arch`), queried by name via the named accessors (`llm_path`/`llm_arch`/`llm_mi`/...
-— adding a member never shifts indices); the accessors are dual-mode (index-based
+stop_tokens; ct_tmpl; arch`), queried by name via the named accessors
+(`llm_path`/`llm_arch`/`llm_mi`/... — adding a member never shifts indices);
+the accessors are dual-mode (index-based
 on the boxed list while an arch is loading, `get__d` on the dict after load),
 via the shared `dict_probe` helper (`x dict_probe y` → `<found; value|container>`;
 robust dict detection — `has__d` in try/catch, a bare `1 = # y` misdetects a
@@ -670,10 +671,11 @@ there are no bespoke per-arch prompt verbs anymore.
 
 - **Load**: each arch loader extracts the template once —
   `'tokenizer.chat_template' kv_string (0 1 { kv_result)` (gguf/gguf.ijs:455;
-  vt=8 string) into the `ct_tmpl_g` global (`''` if absent). `load_gguf_to_llm`
-  resets `ct_tmpl_g` per load. `ct_tmpl_g` (shared loaded template) and
-  `ct_now_g` (pinned-date knob) are initialized in util/chat.ijs; the
-  per-call `ct_vars`/`ct_tools` live in the session noun.
+  vt=8 string) into the llm dict member `ct_tmpl` (`''` if absent; appended by
+  the loader, index 10; `load_gguf_to_llm` appends `arch` at index 11).
+  `chat_tmpl_render` reads `llm_ct_tmpl`; `ct_now_g` (pinned-date knob) is the
+  only template global; the per-call `ct_vars`/`ct_tools` live in the session
+  noun.
 - **Render**: `chat_prompt` (util/chat.ijs dispatch) calls each arch's
   `*_chat_prompt`, which is a thin wrapper over `chat_tmpl_render`
   (util/chat.ijs): convert the `<role ; content>` message boxes (or pre-built

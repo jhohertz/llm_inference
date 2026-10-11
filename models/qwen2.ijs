@@ -714,8 +714,9 @@ qw2_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -739,7 +740,7 @@ qw2_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -747,6 +748,8 @@ qw2_load =: 3 : 0
   block_data =. qw2_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 
@@ -758,8 +761,5 @@ NB. (tokenizer.chat_template) via the minja/chat_template port when present
 NB. (chat_tmpl_render in chat.ijs); falls back to the bespoke qwen2 prompt
 NB. when the GGUF has none. No BOS (llama.cpp qwen2 chat omits bos).
 
-NB. Stop token: <|im_end|> (EOS).
-qw2_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Stop token: <|im_end|> (EOS). Computed once in qw2_load (dict member stop_tokens).
+qw2_stop_tokens =: llm_stop_tokens

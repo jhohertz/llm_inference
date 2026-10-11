@@ -178,8 +178,9 @@ granite_load =: 3 : 0
   logit_scale =. 'granite.logit_scale' dict_get kv_data
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; attn_scale ; resid_scale ; embed_scale ; logit_scale) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale' ; 'embed_scale' ; 'logit_scale'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -203,7 +204,7 @@ granite_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -211,18 +212,16 @@ granite_load =: 3 : 0
   block_data =. granite_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Generic tokenize/detokenize (granite arch) ----
 NB. gpt2 byte-level BPE with dbrx pre (same regex as llama3). Granite has
 NB. add_bos_token=false and bos=eos=100257 (<|end_of_text|>), so NO bos is
 NB. prepended — raw infer and chat both start with the prompt text.
-granite_tokenize =: 3 : 0
-  gpt2_tokenize y
-)
-granite_detokenize =: 3 : 0
-  gpt2_detokenize y
-)
+granite_tokenize =: llm_tokenize
+granite_detokenize =: llm_detokenize
 
 
 
@@ -236,7 +235,5 @@ NB. (no trailing newline). No BOS (add_bos_token=false) and no trimming.
 
 
 NB. Stop token: EOS (granite <|end_of_text|> = 100257).
-granite_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Computed once in granite_load (dict member stop_tokens).
+granite_stop_tokens =: llm_stop_tokens

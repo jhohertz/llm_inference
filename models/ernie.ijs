@@ -76,8 +76,9 @@ ernie_load =: 3 : 0
   vocab_size =. 1 { dims
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1 ; vocab_size) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale' ; 'vocab_size'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_spm_tokenizer kv_result
+  stop_tokens =. (spm_eos tokenizer) , 100272
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -101,7 +102,7 @@ ernie_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -109,16 +110,14 @@ ernie_load =: 3 : 0
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Tokenize/detokenize (SPM) ----
 NB. No BOS (add_bos_token=false): raw infer and chat both start with the text.
-ernie_tokenize =: 3 : 0
-  spm_tokenize y
-)
-ernie_detokenize =: 3 : 0
-  spm_detokenize y
-)
+ernie_tokenize =: llm_tokenize
+ernie_detokenize =: llm_detokenize
 
 NB. ---- Forward verbs: ERNIE reuses the generic llama arch ----
 ernie_run_blocks =: llama_run_blocks
@@ -135,7 +134,5 @@ NB. generation prompt 'Assistant: '. No BOS (add_bos_token=false) and no trim.
 
 
 NB. Stop tokens: EOS (</s> = 2) and the chat sep token <|end_of_sentence|> (100272).
-ernie_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  (spm_eos tk) , 100272
-)
+NB. Computed once in ernie_load (dict member stop_tokens).
+ernie_stop_tokens =: llm_stop_tokens

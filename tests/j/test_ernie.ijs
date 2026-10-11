@@ -71,7 +71,7 @@ test_ernie =: 3 : 0
 
   NB. --- chat prompt tokens vs llama.cpp _input_ids (prompt-only prefix) ---
   messages =. <('user') ; 'The capital of France is'
-  prompt =. ernie_chat_prompt messages
+  prompt =. llm ernie_chat_prompt messages
   toks =. ernie_tokenize (<llm) , <prompt
   got_toks =. , > toks
   exp_toks =. 100273 8933 93963 526 9689 315 10298 357 23 92267 93963 93919

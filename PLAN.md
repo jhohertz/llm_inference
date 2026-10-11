@@ -93,17 +93,19 @@ points" (and the tests that pin them) keep working.
 
 1. **`*_chat_prompt` (8)** — already pure aliases (`gem3_chat_prompt =:
    chat_prompt`, etc., util/chat.ijs:39-46). Collapse to one `chat_prompt`
-   (alias all 8 names to it).
+   (alias all 8 names to it). **DONE**.
 2. **`*_stop_tokens` (8)** — pure data (which eos + extras: gemma3 `eos,1`;
    qwen2/granite/llama/ernie `eos_g`; qwen3/qwen35 `eos_g,<|im_end|>`). Move to
    a computed-once dict member (e.g. `stop_tokens`) set in each `*_load`; alias
-   the 8 `*_stop_tokens` names to a `llm_stop_tokens` accessor.
+   the 8 `*_stop_tokens` names to a `llm_stop_tokens` accessor. **DONE** (dict
+   member `stop_tokens`, `llm_stop_tokens` accessor, 8 aliases).
 3. **`*_tokenize`/`*_detokenize` (16)** — mostly 1-line aliases over the shared
    tokenizers (`granite_tokenize =: gpt2_tokenize`, `ernie_tokenize =:
    spm_tokenize`, `llama_detokenize =: gpt2_detokenize`); only `llama_tokenize`
    has the llama-bpe bos-dispatch. Fold into generic `llm_tokenize`/`llm_detokenize`
-   that dispatch on the tokenizer's `pre` (tokenizer_llama3.ijs already
-   dispatches the pre-tokenizer for llama32); alias the 8 pairs.
+   that dispatch on the arch (from the llm dict), inlining the bos logic; alias
+   the per-arch pairs. **DONE** (`llm_tokenize`/`llm_detokenize` in llm_core,
+   aliased by the 4 arches that had per-arch verbs).
 4. **`*_kv_uint`/`*_kv_float` (16)** — thin wrappers over the gguf `kv_uint`/
    `kv_float`; the `kv_value` vt dispatch already handles them. Fold into
    `kv_value` (or keep one generic `kv_uint`/`kv_float`); alias the 8 pairs.
@@ -141,11 +143,21 @@ test_lfm2/test_batched) + CLI/chat/TUI/server all keep working via the aliases.
 Per-model state that is currently a shared global (set per `*_load`), move into
 dict members so each loaded model keeps its own (no clobber, multi-model-ready):
 
-- `ct_tmpl_g` (chat template), `ct_caps_g` (chat-template caps), `ct_eos_g` —
-  set per `*_load` → dict members (`ct_tmpl`/`ct_caps`/`ct_eos`).
+- `ct_tmpl_g` (chat template), `ct_caps_g` (chat-template caps), `ct_tool_ex_g`,
+  `ct_eos_g` — set per `*_load` → dict members. **DONE**: `ct_tmpl` (dict member
+  read via `llm_ct_tmpl`); `ct_caps` + `ct_tool_ex` (dict members, lazily computed
+  once per model via `ct_new`/`detect_caps` and cached in `chat_tmpl_render` —
+  no per-render recompute; read via `llm_ct_caps`/`llm_ct_tool_ex`). `ct_eos_g`
+  is always `''` in the render flow (single caller passes `''`), so it needs no
+  cache member.
 - `llama_tokenizer_pre_g` — per-model tokenizer pre → fold into the `tokenizer`
   member (already carries `pre` via `tokenizer_pre_g`).
 - `lf2_conv_cache_g`/`lf2_n_conv_g` — per-model lfm2 conv state → dict members.
+  **DONE**: the per-model conv config (`lf2_conv_layers`/`lf2_n_conv_g` + dims) is
+  cached in the dict member `lf2_conv` (read via `llm_lf2_conv`) by `llm_lf2_bind`
+  (called on model load); the conv runtime mirror (`lf2_conv_meta`/`lf2_conv_cache_g`/
+  `lf2_conv_batch_g`) is reset on load by `llm_lf2_bind` — no stale conv state
+  across models. The monadic conv verbs stay monadic (read the mirror).
 - **KV cache state** (`kv_pos_g`/`kv_max_seq_g`/`kv_batch_g`/`kv_seq_g`/
   `kv_batch_alloc_g` + `k_cache_g`/`v_cache_g`) → the dict's `kv_cache` member.
   **Medium risk**: the kv verbs are monadic (no llm arg) — need dyadic `llm`

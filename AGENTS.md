@@ -51,7 +51,7 @@ also `cocurrent <'inference'` and use simple names. Tests run in the
 | `tokenizers/tokenizer_llama3.ijs` / `tokenizers/tokenizer_gpt2.ijs` | BPE tokenizers (llama3-style; gpt2 byte-level) |
 | `tokenizers/tokenizer_spm.ijs` | **SentencePiece tokenizer** (llama.cpp `llm_tokenizer_spm` bigram-merge): max-heap over token scores, `▁`-escape, add_space_prefix prepend, `<0xXX>` byte fallback; used by ERNIE (model='llama' → SPM) |
 | `util/sampler.ijs` | Temperature / top-k / top-p / min-p sampling |
-| `util/chat.ijs` | **Chat-template inference**: real GGUF-jinja rendering (`chat_tmpl_render`, `ct_tmpl_g`/`ct_now_g`), `chat_generate`, OpenAI-shaped `chat_completion` + streaming (`chat_stream_start`/`stop`/`chat_stream_cb`), persistent console chat (`chat`/`chat_p` via one global `session` noun), stateful streaming `chat_core_stream`, tool-use loop `chat_tool_loop`, prompt-token stripping, `chat_msg` helper. The serial chat verbs are thin wrappers over the `_s` session-aware versions; the `session` noun is canonical (chat state, ct_vars/ct_tools, st_buf, kv meta) and the legacy globals (`chat_session_g`, `ct_vars_g`/`ct_tools_g`, `st_buf_g`/`st_arch_g`) are eliminated — only `ct_tmpl_g` (shared template) + `ct_now_g` (pinned-date knob) remain |
+| `util/chat.ijs` | **Chat-template inference**: real GGUF-jinja rendering (`chat_tmpl_render` — dyadic `llm chat_tmpl_render messages`, reads `llm_ct_tmpl`; `ct_now_g` pinned-date knob), `chat_generate`, OpenAI-shaped `chat_completion` + streaming (`chat_stream_start`/`stop`/`chat_stream_cb`), persistent console chat (`chat`/`chat_p` via one global `session` noun), stateful streaming `chat_core_stream`, tool-use loop `chat_tool_loop`, prompt-token stripping, `chat_msg` helper. The serial chat verbs are thin wrappers over the `_s` session-aware versions; the `session` noun is canonical (chat state, ct_vars/ct_tools, st_buf, kv meta) and the legacy globals (`chat_session_g`, `ct_vars_g`/`ct_tools_g`, `st_buf_g`/`st_arch_g`) are eliminated — only `ct_now_g` (pinned-date knob) remains; the template lives in the llm dict (`ct_tmpl`, `llm_ct_tmpl`) |
 | `util/models.ijs` | **Model catalog + spec resolution + downloader**: `catalog_d` (id → spec dict `{arch;repo;main;extras}`) + `cat_has`/`cat_spec`/`cat_arch`/`cat_repo`/`cat_main`/`cat_extras`, `model_path`/`model_download`/`model_target`/`model_list`/`model_roles`/`model_file` (`model_file`/`model_roles` do real role lookups in `extras`); registers `~models` as `~user/models` (per-user, NOT the install dir); downloads via `web/gethttp` |
 | `util/minja.ijs` | **minja port (Phase 5, DONE)**: Python-like Value model + Context, `coclass 'minja'` (self-contained, lift-out-able). Port of `reference/minja/include/minja/minja.hpp`. Full test-syntax.cpp parity; oracle = minja test-syntax.cpp, cross-check = Python jinja2 via `scripts/minja_goldens.py` |
 | `util/chat_template.ijs` | **chat-template port (Phase 5G, DONE, wired into chat.ijs)**: HuggingFace messages/tools→prompt layer, `coclass 'chat_template'`, depends on `util/minja.ijs`. Port of `reference/minja/include/minja/chat-template.hpp`. `chat_tmpl_render` (util/chat.ijs) drives `ct_apply`; engine complete (capability detection, polyfills, strftime_now) |
@@ -206,8 +206,9 @@ newline instead of `<end_of_turn>` (106) — a "natural stop" is then missed
   test_qwen35.ijs Section 6. Gotcha: `max_rounds` must come BEFORE `<params>`
   (a pre-boxed `;` operand that isn't trailing nests).
 - **Real GGUF-jinja rendering**: each arch loader extracts its own
-  `tokenizer.chat_template` (a vt=8 string KV) into `ct_tmpl_g` once per load;
-  `chat_tmpl_render` (util/chat.ijs) converts `<role ; content>` message boxes
+  `tokenizer.chat_template` (a vt=8 string KV) into the llm dict member `ct_tmpl`
+  once per load; `chat_tmpl_render` (util/chat.ijs, dyadic `llm chat_tmpl_render
+  messages`) reads `llm_ct_tmpl` and converts `<role ; content>` message boxes
   to a minja Value array and drives `ct_apply` (util/chat_template.ijs) with
   add_generation_prompt=1, tools=null, now=current epoch (or the `ct_now_g`
   override for pinned test oracles), and extra template vars (`ct_vars_g` —
@@ -338,10 +339,12 @@ onto that arch's verbs — playsound-style, so the inference path has no per-cal
 dispatch. Generic `infer`/`generate`/`infer_simple`/`generate_simple` follow the
 **last-loaded** model (one current arch per session); per-arch verbs (`gem3_*`,
 `llama_*`, `qw2_*`) are the precise entry points. The llm noun is now a
-**named dict** with 11 members (`path; ti; default_params; tokenizer; mi;
-kv_cache; tds; all_tensors; block_data; kv_data; arch`), queried by NAME via
-the named accessors (`llm_path`/`llm_arch`/`llm_mi`/... — adding a member never
-shifts indices). The accessors are **dual-mode**: index-based on the boxed list
+**named dict** with 16 members (`path; ti; default_params; tokenizer; mi;
+kv_cache; tds; all_tensors; block_data; kv_data; stop_tokens; ct_tmpl; arch;
+ct_caps; ct_tool_ex; lf2_conv`),
+queried by NAME via the named accessors (`llm_path`/`llm_arch`/`llm_mi`/... —
+adding a member never shifts indices). The accessors are **dual-mode**:
+index-based on the boxed list
 while an arch is loading, `get__d` on the dict after load. The dict detection is
 **robust** via the shared `dict_probe` helper (`x dict_probe y` → `<found;
 value|container>` — probes `has__d` in a try/catch; a non-dict boxed list or

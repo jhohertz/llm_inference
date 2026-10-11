@@ -705,8 +705,9 @@ qw3_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -730,7 +731,7 @@ qw3_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -738,6 +739,8 @@ qw3_load =: 3 : 0
   block_data =. qw3_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 
@@ -749,8 +752,5 @@ NB. '<|im_start|>role\ncontent<|im_end|>\n', then the generation prompt
 NB. '<|im_start|>assistant\n'. The qwen3 template adds NO default system
 NB. message (unlike qwen2). No BOS (gpt2 tokenize adds none).
 
-NB. Stop token: <|im_end|> (EOS).
-qw3_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Stop token: <|im_end|> (EOS). Computed once in qw3_load (dict member stop_tokens).
+qw3_stop_tokens =: llm_stop_tokens
