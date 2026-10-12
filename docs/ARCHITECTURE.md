@@ -276,8 +276,12 @@ replaces a `while.` scan/build loop (the general idiom lives in J-KNOWLEDGE.md).
   build loops; each prebuild is `(<llm) build_block each i. block_count`.
 - **Boxed-arg unpacking → multiple assignment.** `'a b c' =. y` replaces
   `> N { y` per-item unbox in `rms_norm` (`'eps weight input' =. y`), the
-  per-arch `*_block_forward`/`*_attention` (`'block_data pos [swa] mi layer' =. y`),
+  per-arch `*_block_forward`/`*_attention` (`'block_data pos [swa] mi rms_eps [cos_tab sin_tab ...] layer' =. y`),
   and `*_run_blocks` (`'llm pos' =. args`) — fewer box ops in the per-block hot path.
+  The per-arch `y` signature also carries the **layer-invariant `mi_*` scalars/tables
+  hoisted once per token** (`rms_eps`/`cos_tab`/`sin_tab`/`attn_scale`/`resid_scale`
+  as applicable), threaded from `*_run_blocks` via `bf_pre` — see HISTORICAL.md
+  "Redundant computation elimination — generation hot paths (2026-10)".
 
 ## Tokenizer
 

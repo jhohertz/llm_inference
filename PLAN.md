@@ -39,27 +39,10 @@ Found during the 2026-10 boxing/copy-elimination pass (see HISTORICAL.md
 "Boxing/copy elimination — generation hot paths (2026-10)"). Measured/assessed,
 left for a later pass — each is real but marginal/invasive relative to the
 matmul-dominated decode. The RoPE table+expansion hoist for the batched paths
-(`*_run_blocks_bd`/`_bp` → `*_block_forward` → `*_attention`, all 8 arches) is
-now DONE — see HISTORICAL.md "Redundant computation elimination — generation
+(`*_run_blocks_bd`/`_bp` → `*_block_forward` → `*_attention`, all 8 arches) AND
+the per-layer `mi` dict-lookup hoist for the single-token path (all 8 arches)
+are now DONE — see HISTORICAL.md "Redundant computation elimination — generation
 hot paths (2026-10)".
-
-- **Per-layer `mi` dict-lookup hoisting** (single-token path): the
-  `mi_rms_eps mi` / `mi_attn_scale mi` / `mi_resid_scale mi` /
-  `mi_cos_tab mi` / `mi_sin_tab mi` accessors are hash-looked-up EVERY layer
-  inside `*_attention`/`*_block_forward` (~5-7 lookups × n_layers × tokens;
-  ≈1-2% of a decode step). **Measured 2026-10**: `mi_rms_eps mi` ≈ 0.38μs (vs
-  ~68μs for a 256×768 matmul); only ~2-4 of these lookups fire per layer, so
-  the whole hoist saves ~30-50μs per decode step against a step that runs
-  milliseconds of matmuls — **≈0.1-0.5%, genuinely marginal**. Fix = compute
-  once in `*_run_blocks` and thread the scalars/tables through the `y`
-  signatures — invasive (changes `*_attention`/`*_block_forward` arg order
-  again, all 8 arches + granite/ernie aliases) AND conflicts with the
-  pass-`y`-through landed in the same pass (adding boxes to `y` shifts the
-  unpack indices). Recommendation: keep deferred; revisit only if a profile
-  shows the lookups as a hotspot. (The `_bd`/`_bp` RoPE-table part — the
-  `mi_cos_tab`/`mi_sin_tab` fetches + expansion broadcasts — was eliminated by
-  the RoPE hoist above; only the single-token `*_attention`/`*_block_forward`
-  path still does the per-layer `mi_*` lookups.)
 - **~~`kv_write` re-box in single-token `*_attention`~~** — RESOLVED (2026-10,
   dict-ification pass): the single-token `*_attention` was already index-based
   (`(3{y),(1{y)` llama/qwen2/qwen3, `(4{y),(1{y)` gemma3); the remaining

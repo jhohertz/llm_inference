@@ -1313,6 +1313,22 @@ and lint load-probe green.
   - **J gotcha**: `bf_pre , <b , <rope` mis-parses as a numeric/boxed domain
     error (the `, <b` after a boxed-list variable); parenthesize as `(<b)`.
     Recorded in docs/J-KNOWLEDGE.md §Boxing/Packing Rules.
+- **Per-layer `mi` dict-lookup hoisting (single-token path, all 8 arches)** —
+  the `mi_rms_eps mi` / `mi_attn_scale mi` / `mi_resid_scale mi` /
+  `mi_cos_tab mi` / `mi_sin_tab mi` accessors are hash-looked-up EVERY layer in
+  `*_attention`/`*_block_forward` (~5-7 lookups × n_layers × tokens). Each arch's
+  `*_run_blocks` now computes the layer-invariant scalars/tables ONCE per token
+  and threads them through the `y` signature (boxed once in `bf_pre`), replacing
+  the per-layer hash-lookups. Arch-specific: llama/granite/ernie hoist
+  `rms_eps`+`cos_tab`+`sin_tab`+`attn_scale`+`resid_scale`; gemma3/qwen2/qwen3
+  hoist `rms_eps`+`cos_tab`+`sin_tab`; qwen35/lfm2 hoist `rms_eps` (their rope
+  tables were already hoisted in `*_run_blocks_b`). The `*_bd`/`_bp` batched-multi
+  path is untouched. Commit `6f0c51f`. J gotcha: the `y`-signature unpack indices
+  shift when adding boxes to `bf_pre` — `kv_write`/`kv_write_rows`/`kv_read`
+  layer/start_pos indices must be updated (layer moved to index 5/6/8, start_pos
+  to 4); an `o_n` edit accidentally matched the `_bp` path (not `_b`) — the `_bp`
+  path keeps its own `mi_rms_eps mi`. Verified bit-exact (all 8 arch suites +
+  test_batched 11/11, run_all_tests.sh ALL TESTS + LINT PASSED).
 - **`sampler_softmax` dead `allsame` guard** — the `allsame =. *./ shifted =
   max_x` check + branch was provably dead: when all logits equal `max_x`,
   `shifted` is all 0 so `2 ^ shifted` = all 1.0 = the `1 #~ # y` branch. Removed
