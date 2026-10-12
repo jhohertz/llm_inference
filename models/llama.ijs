@@ -87,14 +87,14 @@ NB. ---- Expand KV axis (n_kv) -> n_heads (each KV head repeated n_groups times)
 NB. ---- Single-token attention (llama: GQA, interleaved RoPE, no SWA) ----
 NB. x = hidden; y = <block_data; pos; mi; layer>
 llama_attention =: 4 : 0
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab attn_scale resid_scale layer' =. y
   n_heads =. llama_bd_n_heads block_data
   head_dim =. llama_bd_head_dim block_data
   n_heads_kv =. llama_bd_n_heads_kv block_data
   n_groups =. n_heads % n_heads_kv
 
-  NB. Attention norm
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< (llama_bd_attn_norm block_data)) , <x)
+  NB. Attention norm (rms_eps hoisted from run_blocks — no per-layer mi lookup)
+  hidden =. rms_norm ((< rms_eps) , (< (llama_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q, K, V projections
   qv =. (llama_bd_attn_q block_data) linear_r hidden
@@ -104,20 +104,20 @@ llama_attention =: 4 : 0
   K =. (n_heads_kv, head_dim) $ kv
   V =. (n_heads_kv, head_dim) $ vv
 
-  NB. Interleaved RoPE (table-based)
-  cos_t =. pos { mi_cos_tab mi
-  sin_t =. pos { mi_sin_tab mi
+  NB. Interleaved RoPE (table-based; tables hoisted from run_blocks)
+  cos_t =. pos { cos_tab
+  sin_t =. pos { sin_tab
   rope_t =. (<cos_t) , (<sin_t)
   Q =. Q rope_apply2_t rope_t
   K =. K rope_apply2_t rope_t
 
-  NB. Llama scales Q by 1/sqrt(head_dim) before attention
-  Q =. Q * mi_attn_scale mi
+  NB. Llama scales Q by 1/sqrt(head_dim) before attention (hoisted)
+  Q =. Q * attn_scale
 
   NB. Write K,V (n_kv, hd) to cache, read all up to pos
-  NB. layer/pos are already boxed in y (indices 3/1) — pass them, no re-box.
-  kv_write ((3 { y) , (1 { y) , (<K) , (<V))
-  kv_result =. kv_read ((3 { y) , (1 { y))
+  NB. layer/pos are already boxed in y (indices 8/1 after the hoist) — pass them, no re-box.
+  kv_write ((8 { y) , (1 { y) , (<K) , (<V))
+  kv_result =. kv_read ((8 { y) , (1 { y))
   k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
   v_all =. > 1 { kv_result
   win =. pos + 1
@@ -241,13 +241,13 @@ NB. ---- Single block forward (llama) ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 llama_block_forward =: 4 : 0
   hidden =. x
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab attn_scale resid_scale layer' =. y
   attn_result =. hidden llama_attention y
   attn_out =. > 0 { attn_result
-  rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
+  rs =. resid_scale   NB. hoisted from run_blocks (1 for non-granite — skip the no-op copy)
   if. rs ~: 1 do. attn_out =. attn_out * rs end.
   sa_out =. attn_out + hidden
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< (llama_bd_ff_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm ((< rms_eps) , (< (llama_bd_ff_norm block_data)) , <sa_out)
   gate =. (llama_bd_ff_gate block_data) linear_r ffn_in
   up =. (llama_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (llama_bd_ff_down block_data) linear_r (gate swiglu up)
@@ -284,14 +284,22 @@ llama_run_blocks =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
+  NB. Hoist the layer-invariant mi scalars/tables once (they are hash-looked-up
+  NB. EVERY layer in llama_attention/llama_block_forward — ~6 lookups × n_layers ×
+  NB. tokens; computing them once per token avoids the per-layer hash lookups).
+  rms_eps =. mi_rms_eps mi
+  cos_tab =. mi_cos_tab mi
+  sin_tab =. mi_sin_tab mi
+  attn_scale =. mi_attn_scale mi
+  resid_scale =. mi_resid_scale mi
   state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<pos) , (<mi))
+  NB. (<pos), (<mi), + the hoisted mi values are layer-invariant — box once, reuse.
+  bf_pre =. ((<pos) , (<mi) , (<rms_eps) , (<cos_tab) , (<sin_tab) , (<attn_scale) , (<resid_scale))
   while. b < block_count do.
     result =. state llama_block_forward ((b { block_data_list) , bf_pre , <b)
     state =. > 0 { result

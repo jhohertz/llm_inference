@@ -254,8 +254,9 @@ lf2_attention_b =: 4 : 0
   block_data =. > 0 { y
   layer =. > 1 { y
   mi =. > 2 { y
-  start_pos =. > 3 { y
-  rope =. > 4 { y
+  rms_eps =. > 3 { y
+  start_pos =. > 4 { y
+  rope =. > 5 { y
   NB. rope = <cos_all; sin_all; cos_expq; sin_expq; cos_expk; sin_expk; mask_g2>
   cos_all =. > 0 { rope
   sin_all =. > 1 { rope
@@ -272,7 +273,7 @@ lf2_attention_b =: 4 : 0
   half =. <. head_dim % 2
 
   NB. Attention norm per row
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <x)
+  hidden =. rms_norm_rows ((< rms_eps) , (< (lf2_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
   NB. of the (L,emb) hidden were materializing 3 copies)
@@ -290,10 +291,10 @@ lf2_attention_b =: 4 : 0
 
   NB. Per-head RMSNorm on Q and K BEFORE RoPE (shared weight, size=head_dim)
   Qf =. ((L * n_heads) , head_dim) $ , Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_q_norm block_data) , <Qf)
+  Qf =. rms_norm_rows ((< rms_eps) , (< lf2_bd_q_norm block_data) , <Qf)
   Q =. (L, n_heads, head_dim) $ , Qf
   Kf =. ((L * n_heads_kv) , head_dim) $ , K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_k_norm block_data) , <Kf)
+  Kf =. rms_norm_rows ((< rms_eps) , (< lf2_bd_k_norm block_data) , <Kf)
   K =. (L, n_heads_kv, head_dim) $ , Kf
 
   NB. NEOX RoPE batched (table-based): pairs (i, i+half) per row — tables +
@@ -325,8 +326,8 @@ lf2_attention_b =: 4 : 0
 
   NB. Bulk write the new batch's L K/V into cache at layer, starting at start_pos.
   NB. layer/start_pos are already boxed in y (indices 1/3) — pass them, no re-box.
-  kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
-  kv_write_rows ((<1) , (1 { y) , (3 { y) , <V_batch)
+  kv_write_rows ((<0) , (1 { y) , (4 { y) , <K_batch)
+  kv_write_rows ((<1) , (1 { y) , (4 { y) , <V_batch)
 
   NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
   NB. n_groups) and batched-matmul each group's Q against its shared K/V row —
@@ -355,10 +356,11 @@ lf2_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 2 { y
+  rms_eps =. > 3 { y
   attn_result =. hidden lf2_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm_rows ((< rms_eps) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
   ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in) swiglu ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in))
   output =. ffn_raw + sa_out
   (<output)
@@ -370,12 +372,13 @@ lf2_conv_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
-  layer =. > 2 { y
+  rms_eps =. > 2 { y
+  layer =. > 3 { y
   L =. {. $ hidden
   emb =. {: $ hidden
 
   NB. Operator norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <hidden)
+  normed =. rms_norm_rows ((< rms_eps) , (< (lf2_bd_attn_norm block_data)) , <hidden)
 
   NB. in_proj -> split b,c,x chunks (each emb)
   bcx =. |: ((lf2_bd_in_proj block_data) (+/ .* ) |: normed)   NB. (L, 3*emb)
@@ -406,7 +409,7 @@ lf2_conv_forward_b =: 4 : 0
   lf2_conv_write ((<layer) , <new_conv)
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual) — conv-layout accessors
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_cv_ffn_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm_rows ((< rms_eps) , (< (lf2_cv_ffn_norm block_data)) , <sa_out)
   tfin =. |: ffn_in
   gate_f =. |: ((lf2_cv_ffn_gate block_data) (+/ .* ) tfin)
   up_f =. |: ((lf2_cv_ffn_up block_data) (+/ .* ) tfin)
@@ -460,12 +463,15 @@ lf2_run_blocks_b =: 4 : 0
   rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. <mi, <start_pos, <rope are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<mi) , (<start_pos) , <rope)
+  NB. Hoist the layer-invariant mi_rms_eps (looked-up EVERY layer in the
+  NB. attn/block/conv forward verbs — compute once per chunk).
+  rms_eps =. mi_rms_eps mi
+  NB. <mi, <start_pos, <rope, + rms_eps are layer-invariant — box once, reuse.
+  bf_pre =. ((<mi) , (<rms_eps) , (<start_pos) , <rope)
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_b ((b { block_data_list) , (<mi) , <b)
+      result =. state lf2_conv_forward_b ((b { block_data_list) , (<mi) , (<rms_eps) , <b)
     else.
       result =. state lf2_block_forward_b ((b { block_data_list) , (<b) , bf_pre)
     end.

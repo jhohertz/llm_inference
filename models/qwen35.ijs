@@ -331,8 +331,9 @@ qw35_attention_b =: 4 : 0
   block_data =. > 0 { y
   layer =. > 1 { y
   mi =. > 2 { y
-  start_pos =. > 3 { y
-  rope =. > 4 { y
+  rms_eps =. > 3 { y
+  start_pos =. > 4 { y
+  rope =. > 5 { y
   NB. rope = <cos_all; sin_all; cos_expq; sin_expq; cos_expk; sin_expk; mask_g2>
   cos_all =. > 0 { rope
   sin_all =. > 1 { rope
@@ -350,7 +351,7 @@ qw35_attention_b =: 4 : 0
   half =. <. n_rot % 2
 
   NB. Attention norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
+  normed =. rms_norm_rows ((< rms_eps) , (< qw35_bd_attn_norm block_data) , <x)
   nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
@@ -365,10 +366,10 @@ qw35_attention_b =: 4 : 0
 
   NB. Per-head RMSNorm on Q and K BEFORE RoPE
   Qf =. ((L * n_heads) , head_dim) $ , Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_q_norm block_data) , <Qf)
+  Qf =. rms_norm_rows ((< rms_eps) , (< qw35_bd_a_q_norm block_data) , <Qf)
   Q =. (L , n_heads , head_dim) $ , Qf
   Kf =. ((L * n_heads_kv) , head_dim) $ , K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
+  Kf =. rms_norm_rows ((< rms_eps) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (L , n_heads_kv , head_dim) $ , Kf
 
   NB. Partial NEOX RoPE (n_rot dims, pairs (i, i+half)) — tables + expansions
@@ -398,8 +399,8 @@ qw35_attention_b =: 4 : 0
     K =. k_pre , K
     V =. v_pre , V
   end.
-  kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
-  kv_write_rows ((<1) , (1 { y) , (3 { y) , <V_batch)
+  kv_write_rows ((<0) , (1 { y) , (4 { y) , <K_batch)
+  kv_write_rows ((<1) , (1 { y) , (4 { y) , <V_batch)
 
   NB. GQA without expanding KV over the combined keys: group the query heads
   NB. (n_heads_kv groups of n_groups) and batched-matmul each group's Q against
@@ -494,14 +495,15 @@ qw35_ssm_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
-  layer =. > 2 { y
+  rms_eps =. > 2 { y
+  layer =. > 3 { y
   L =. {. $ hidden
   head_v_dim =. qw35_bd_s_head_v_dim block_data
   num_v_heads =. qw35_bd_s_n_v_heads block_data
   d_inner =. qw35_bd_s_d_inner block_data
 
   NB. Attention norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  normed =. rms_norm_rows ((< rms_eps) , (< qw35_bd_attn_norm block_data) , <hidden)
   nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
@@ -539,10 +541,10 @@ qw35_ssm_forward_b =: 4 : 0
   k3 =. (L , num_v_heads , head_v_dim) $ , k_conv
   v3 =. (L , num_v_heads , head_v_dim) $ , v_conv
   qf =. ((L * num_v_heads) , head_v_dim) $ , q3
-  qf =. l2norm_rows ((< mi_rms_eps mi) , <qf)
+  qf =. l2norm_rows ((< rms_eps) , <qf)
   q =. (L , num_v_heads , head_v_dim) $ , qf
   kf =. ((L * num_v_heads) , head_v_dim) $ , k3
-  kf =. l2norm_rows ((< mi_rms_eps mi) , <kf)
+  kf =. l2norm_rows ((< rms_eps) , <kf)
   k =. (L , num_v_heads , head_v_dim) $ , kf
 
   NB. Recurrence
@@ -554,7 +556,7 @@ qw35_ssm_forward_b =: 4 : 0
 
   NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z)
   o_flat =. ((L * num_v_heads) , head_v_dim) $ , o
-  o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
+  o_n =. rms_norm_rows ((< rms_eps) , (< qw35_bd_s_norm block_data) , <o_flat)
   z3 =. (L , num_v_heads , head_v_dim) $ , z
   z_flat =. ((L * num_v_heads) , head_v_dim) $ , z3
   gated =. o_n * silu z_flat
@@ -569,7 +571,7 @@ qw35_ssm_forward_b =: 4 : 0
   rs_write ((<layer) , (<new_conv) , <s_new)
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual)
-  post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
+  post =. rms_norm_rows ((< rms_eps) , (< qw35_bd_post_norm block_data) , <out)
   pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
   gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
   up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
@@ -584,10 +586,11 @@ qw35_block_forward_a_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 2 { y
+  rms_eps =. > 3 { y
   attn_result =. hidden qw35_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <sa_out)
+  post =. rms_norm_rows ((< rms_eps) , (< qw35_bd_post_norm block_data) , <sa_out)
   pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
   gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
   up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
@@ -646,12 +649,15 @@ qw35_run_blocks_b =: 4 : 0
   rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. <mi, <start_pos, <rope are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<mi) , (<start_pos) , <rope)
+  NB. Hoist the layer-invariant mi_rms_eps (looked-up EVERY layer in the
+  NB. attn/ssm forward verbs — compute once per chunk).
+  rms_eps =. mi_rms_eps mi
+  NB. <mi, <start_pos, <rope, + rms_eps are layer-invariant — box once, reuse.
+  bf_pre =. ((<mi) , (<rms_eps) , (<start_pos) , <rope)
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_b ((b { block_data_list) , (<mi) , <b)
+      result =. state qw35_block_forward_s_b ((b { block_data_list) , (<mi) , (<rms_eps) , <b)
     else.
       result =. state qw35_block_forward_a_b ((b { block_data_list) , (<b) , bf_pre)
     end.
@@ -1205,7 +1211,7 @@ qw35_ssm_forward_bp =: 4 : 0
 
     NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z)
     o_flat =. ((c * num_v_heads) , head_v_dim) $ , o
-    o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
+  o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
     z3 =. (c , num_v_heads , head_v_dim) $ , z_b
     z_flat =. ((c * num_v_heads) , head_v_dim) $ , z3
     gated =. o_n * silu z_flat

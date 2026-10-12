@@ -88,14 +88,14 @@ NB. ---- Expand KV axis (n_kv) -> n_heads (each KV head repeated n_groups times)
 NB. ---- Single-token attention (qwen2: GQA, NEOX RoPE, Q/K/V biases) ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_attention =: 4 : 0
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab layer' =. y
   n_heads =. qw2_bd_n_heads block_data
   head_dim =. qw2_bd_head_dim block_data
   n_heads_kv =. qw2_bd_n_heads_kv block_data
   n_groups =. n_heads % n_heads_kv
 
-  NB. Attention norm
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< (qw2_bd_attn_norm block_data)) , <x)
+  NB. Attention norm (rms_eps hoisted from run_blocks)
+  hidden =. rms_norm ((< rms_eps) , (< (qw2_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q, K, V projections
   qv =. (qw2_bd_attn_q block_data) linear_r hidden
@@ -111,9 +111,9 @@ qw2_attention =: 4 : 0
   K =. (n_heads_kv, head_dim) $ kv
   V =. (n_heads_kv, head_dim) $ vv
 
-  NB. NEOX RoPE (pairs offset by head_dim/2), table-based
-  cos_t =. pos { mi_cos_tab mi
-  sin_t =. pos { mi_sin_tab mi
+  NB. NEOX RoPE (pairs offset by head_dim/2), table-based (tables hoisted)
+  cos_t =. pos { cos_tab
+  sin_t =. pos { sin_tab
   rope_t =. (<cos_t) , (<sin_t)
   Q =. Q rope_apply2_neox_t rope_t
   K =. K rope_apply2_neox_t rope_t
@@ -121,9 +121,9 @@ qw2_attention =: 4 : 0
   NB. Qwen2 scales Q by 1/sqrt(head_dim) before attention
   Q =. Q % head_dim ^ 0.5
 
-  NB. Write K,V (n_kv, hd) to cache, read all up to pos
-  kv_write ((3 { y) , (1 { y) , (<K) , (<V))
-  kv_result =. kv_read ((3 { y) , (1 { y))
+  NB. Write K,V (n_kv, hd) to cache, read all up to pos (layer at index 6 after the hoist)
+  kv_write ((6 { y) , (1 { y) , (<K) , (<V))
+  kv_result =. kv_read ((6 { y) , (1 { y))
   k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
   v_all =. > 1 { kv_result
   win =. pos + 1
@@ -252,11 +252,11 @@ NB. ---- Single block forward (qwen2) ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_block_forward =: 4 : 0
   hidden =. x
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab layer' =. y
   attn_result =. hidden qw2_attention y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< (qw2_bd_ff_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm ((< rms_eps) , (< (qw2_bd_ff_norm block_data)) , <sa_out)
   gate =. (qw2_bd_ff_gate block_data) linear_r ffn_in
   up =. (qw2_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (qw2_bd_ff_down block_data) linear_r (gate swiglu up)
@@ -289,14 +289,19 @@ qw2_run_blocks =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
+  NB. Hoist the layer-invariant mi scalars/tables (looked-up EVERY layer in
+  NB. qw2_attention/qw2_block_forward — compute once per token).
+  rms_eps =. mi_rms_eps mi
+  cos_tab =. mi_cos_tab mi
+  sin_tab =. mi_sin_tab mi
   state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<pos) , (<mi))
+  NB. (<pos), (<mi), + the hoisted mi values are layer-invariant — box once, reuse.
+  bf_pre =. ((<pos) , (<mi) , (<rms_eps) , (<cos_tab) , (<sin_tab))
   while. b < block_count do.
     result =. state qw2_block_forward ((b { block_data_list) , bf_pre , <b)
     state =. > 0 { result

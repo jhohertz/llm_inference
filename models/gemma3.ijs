@@ -118,15 +118,15 @@ NB. ---- Standard self-attention for Gemma3 ----
 NB. Computes attention for the CURRENT token only against all cached K/V
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_attention =: 4 : 0
-  'block_data pos swa mi layer' =. y
+  'block_data pos swa mi rms_eps layer' =. y
   
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
   rope_freq =. gem3_bd_rope_freq block_data
   n_heads_kv =. gem3_bd_n_heads_kv block_data
   
-  NB. Attention norm
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
+  NB. Attention norm (rms_eps hoisted from run_blocks)
+  hidden =. rms_norm ((< rms_eps) , (< (gem3_bd_attn_norm block_data)) , <x)
   
    NB. Q, K, V projections — fused single matmul
    fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -140,9 +140,9 @@ gem3_attention =: 4 : 0
    K =. (n_heads_kv, head_dim) $ K
    V =. (n_heads_kv, head_dim) $ V
   
-  NB. Q/K norm
-  Q =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Q)
-  K =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <K)
+  NB. Q/K norm (rms_eps hoisted)
+  Q =. rms_norm_rows ((< rms_eps) , (< (gem3_bd_q_norm block_data)) , <Q)
+  K =. rms_norm_rows ((< rms_eps) , (< (gem3_bd_k_norm block_data)) , <K)
   
     NB. RoPE — apply per head (Gemma3 uses NEOX layout: pairs offset by head_dim/2)
     NB. cos/sin precomputed once per position in PER-LAYER tables (dense vs SWA freq)
@@ -156,11 +156,11 @@ gem3_attention =: 4 : 0
    NB. llama.cpp: pre-scale Q by 1/sqrt(head_dim) for Gemma (after RoPE)
    Q =. Q % head_dim ^ 0.5
   
-   NB. Write K, V to KV cache at current position
-   kv_write ((4 { y) , (1 { y) , (<K) , (<V))
+   NB. Write K, V to KV cache at current position (layer at index 5 after the hoist)
+   kv_write ((5 { y) , (1 { y) , (<K) , (<V))
    
    NB. Read all K, V from cache up to current position
-   kv_result =. kv_read ((4 { y) , (1 { y))
+   kv_result =. kv_read ((5 { y) , (1 { y))
    k_all =. > 0 { kv_result
    v_all =. > 1 { kv_result
   
@@ -775,7 +775,7 @@ NB. ---- Single Gemma3 block forward ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_block_forward =: 4 : 0
   hidden =. x
-  'block_data pos swa mi layer' =. y
+  'block_data pos swa mi rms_eps layer' =. y
   
   attn_result =. hidden gem3_attention y
   attn_out =. > 0 { attn_result
@@ -783,7 +783,7 @@ gem3_block_forward =: 4 : 0
   sa_out =. attn_out + hidden
   
   ff_norm_w =. gem3_bd_ff_norm block_data
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
+  ffn_in =. rms_norm ((< rms_eps) , (< ff_norm_w) , <sa_out)
   
    fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
    gate_up =. fused_ff_gu_w linear_r ffn_in
@@ -795,7 +795,7 @@ gem3_block_forward =: 4 : 0
      ffn_raw =. ff_down_w linear_r (gate_out geglu up_out)  NB. GEGLU: GELU(gate) * up
   
     ff_pn_w =. gem3_bd_ff_pn block_data
-    ffn_out =. rms_norm ((< mi_rms_eps mi) , (< ff_pn_w) , <ffn_raw)
+    ffn_out =. rms_norm ((< rms_eps) , (< ff_pn_w) , <ffn_raw)
     
     output =. ffn_out + sa_out
   
@@ -812,6 +812,9 @@ gem3_run_blocks =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
+  NB. Hoist the layer-invariant mi_rms_eps (looked-up EVERY layer in
+  NB. gem3_attention/gem3_block_forward — compute once per token).
+  rms_eps =. mi_rms_eps mi
 
   state =. x
   if. 0 = # kv_meta do.
@@ -820,8 +823,8 @@ gem3_run_blocks =: 4 : 0
 
    b =. 0
    block_data_list =. llm_block_data llm
-   NB. (<pos), (<swa), (<mi) are layer-invariant — box once, reuse per layer.
-   bf_pre =. (<pos) , (<swa) , (<mi)
+   NB. (<pos), (<swa), (<mi), (<rms_eps) are layer-invariant — box once, reuse.
+   bf_pre =. (<pos) , (<swa) , (<mi) , (<rms_eps)
    while. b < block_count do.
      result =. state gem3_block_forward (b { block_data_list) , bf_pre , (<b)
     state =. > 0 { result
