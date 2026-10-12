@@ -1460,9 +1460,12 @@ negligible overhead — not in the generation hot path). Commit `49e7a58`.
 
 ## Dict-ification & accessor robustness — llm noun, catalog, tokenizers (2026-10)
 
-The `llm` noun became a named dict (11 named members, queried via the `llm_*`
-accessors); `kv_data`/`mi` are jdicts. Follow-up pass on the shared
-dict/index access pattern + catalog + the remaining `kv_write` re-box:
+The `llm` noun became a named dict (queried via the `llm_*` accessors; now **16
+members**: `path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
+block_data; kv_data; stop_tokens; ct_tmpl; arch; ct_caps; ct_tool_ex; lf2_conv`);
+`kv_data`/`mi` are jdicts. Follow-up pass on the shared dict/index access pattern
++ catalog + the remaining `kv_write` re-box, plus the generic-verb DRY (Tier 1)
++ the Tier 3 per-model-globals-into-the-dict work:
 
 - **`catalog_d` (util/models.ijs)** — the model catalog is now a `catalog_d`
   jdict (id → spec dict `{arch; repo; main; extras}`) with named accessors
@@ -1482,3 +1485,17 @@ dict/index access pattern + catalog + the remaining `kv_write` re-box:
   `kv_write_rows` in `lfm2_attention_b`/`qw35_attention_b` re-boxed `(<layer)`,
   `(<start_pos)` after unpacking from `y` — now reuse `(1{y),(3{y)`. Verified
   bit-exact (`test_lfm2` 22/22, `test_qwen35` 39/39, `test_batched` 11/11).
+- **Generic chat/stop/tokenize verbs (Tier 1, DRY)** — `*_chat_prompt` (8 arch
+  aliases → one `chat_prompt`), `*_stop_tokens` (8 → the dict member `stop_tokens`
+  read via the `llm_stop_tokens` accessor), `*_tokenize`/`*_detokenize` (16 →
+  `llm_tokenize`/`llm_detokenize` in llm_core, arch-dispatched from the dict,
+  inlining the llama-bpe bos logic). The per-arch names stay as thin aliases
+  (the documented "precise entry points" + tests keep working).
+- **Tier 3 per-model globals → dict members** — `ct_tmpl` (the GGUF
+  `tokenizer.chat_template`, read via `llm_ct_tmpl`); `ct_caps` + `ct_tool_ex`
+  (lazily computed once per model via `ct_new`/`detect_caps`, cached in
+  `chat_tmpl_render` — no per-render recompute, read via `llm_ct_caps`/
+  `llm_ct_tool_ex`); `lf2_conv` (the per-model lfm2 conv config
+  `lf2_conv_layers`/`lf2_n_conv_g` + dims, read via `llm_lf2_conv`, bound on
+  model load by `llm_lf2_bind`, which also resets the conv runtime mirror so no
+  stale conv state crosses models).

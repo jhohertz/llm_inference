@@ -24,32 +24,18 @@ arches batch==single, `tests/j/test_batched.ijs` 11/11). **Phase 4 (engineering
 stretch) is evaluated** — each item was measured/analyzed and closed (kept or
 dropped) with a reason. **No prior planned work remains** — the deferred idiom
 ideas (Broadcastly, LoopWithInitial, tokenizer obverse) and the **jllama study**
-(findings 1-8, all resolved) are assessed/closed in **docs/HISTORICAL.md**.
-
-## jllama Study (reference/jllama) — RESOLVED
-
-The eight candidate-adoption findings from the `reference/jllama` study are all
-resolved (done / adopted-in-simpler-form / evaluated-and-kept). They are
-recorded in **docs/HISTORICAL.md** ("jllama study — adopted/evaluated"); this
-section is kept only as a pointer — no planned work remains here.
+(findings 1-8, all resolved) are assessed/closed in **docs/HISTORICAL.md**
+("jllama study — adopted/evaluated").
 
 ## Deferred Optimization Opportunities
 
 Found during the 2026-10 boxing/copy-elimination pass (see HISTORICAL.md
 "Boxing/copy elimination — generation hot paths (2026-10)"). Measured/assessed,
 left for a later pass — each is real but marginal/invasive relative to the
-matmul-dominated decode. The RoPE table+expansion hoist for the batched paths
-(`*_run_blocks_bd`/`_bp` → `*_block_forward` → `*_attention`, all 8 arches) AND
-the per-layer `mi` dict-lookup hoist for the single-token path (all 8 arches)
-are now DONE — see HISTORICAL.md "Redundant computation elimination — generation
-hot paths (2026-10)".
-- **~~`kv_write` re-box in single-token `*_attention`~~** — RESOLVED (2026-10,
-  dict-ification pass): the single-token `*_attention` was already index-based
-  (`(3{y),(1{y)` llama/qwen2/qwen3, `(4{y),(1{y)` gemma3); the remaining
-  `kv_read`/`kv_write_rows` in `lfm2_attention_b`/`qw35_attention_b` (re-boxing
-  `(<layer)`, `(<start_pos)` after unpacking from `y`) now reuse `(1{y),(3{y)`.
-  Verified bit-exact (test_lfm2 22/22, test_qwen35 39/39, test_batched 11/11).
-  See HISTORICAL.md "Dict-ification & accessor robustness".
+matmul-dominated decode. (The RoPE table+expansion hoist for the batched paths
+and the per-layer `mi` dict-lookup hoist for the single-token path are DONE —
+see HISTORICAL.md "Redundant computation elimination — generation hot paths
+(2026-10)".)
 - **Tacit conversion**: the hot kernels (`rms_norm`, `rms_norm_rows`,
   `linear_r`) are already tacit; the batched loops stay explicit `while.`
   because the candidate `u^:v^:_` DoWhile / `u^:n` Power / `m@.v` idioms are
@@ -65,7 +51,11 @@ made the per-arch wrappers largely redundant: the llm dict now carries
 per-model verbs/nouns that just dispatch on those are pure aliases/data and can
 be shed into ONE generic set that reads everything from the dict and dispatches
 the arch-specific forward via `llm_arch`. This is a DRY study (2026-10) —
-inventory below; the plan is 3 tiers, executed in order.
+inventory below; the plan is 3 tiers, executed in order. **Tier 1 items 1-3 and
+the Tier 3 per-model-globals members are DONE** (see HISTORICAL.md
+"Dict-ification & accessor robustness" — generic `chat_prompt`/`llm_stop_tokens`/
+`llm_tokenize`/`llm_detokenize`, and the `ct_tmpl`/`ct_caps`/`ct_tool_ex`/`lf2_conv`
+dict members). The remaining tiers/items below are still planned.
 
 ### Tier 1 — shed pure aliases/data (low risk, ~40 verbs)
 
@@ -74,25 +64,10 @@ for the arch-specific forward math + tokenizer — fold them into one shared ver
 each. The per-arch names stay as thin aliases so the documented "precise entry
 points" (and the tests that pin them) keep working.
 
-1. **`*_chat_prompt` (8)** — already pure aliases (`gem3_chat_prompt =:
-   chat_prompt`, etc., util/chat.ijs:39-46). Collapse to one `chat_prompt`
-   (alias all 8 names to it). **DONE**.
-2. **`*_stop_tokens` (8)** — pure data (which eos + extras: gemma3 `eos,1`;
-   qwen2/granite/llama/ernie `eos_g`; qwen3/qwen35 `eos_g,<|im_end|>`). Move to
-   a computed-once dict member (e.g. `stop_tokens`) set in each `*_load`; alias
-   the 8 `*_stop_tokens` names to a `llm_stop_tokens` accessor. **DONE** (dict
-   member `stop_tokens`, `llm_stop_tokens` accessor, 8 aliases).
-3. **`*_tokenize`/`*_detokenize` (16)** — mostly 1-line aliases over the shared
-   tokenizers (`granite_tokenize =: gpt2_tokenize`, `ernie_tokenize =:
-   spm_tokenize`, `llama_detokenize =: gpt2_detokenize`); only `llama_tokenize`
-   has the llama-bpe bos-dispatch. Fold into generic `llm_tokenize`/`llm_detokenize`
-   that dispatch on the arch (from the llm dict), inlining the bos logic; alias
-   the per-arch pairs. **DONE** (`llm_tokenize`/`llm_detokenize` in llm_core,
-   aliased by the 4 arches that had per-arch verbs).
-4. **`*_kv_uint`/`*_kv_float` (16)** — thin wrappers over the gguf `kv_uint`/
+1. **`*_kv_uint`/`*_kv_float` (16)** — thin wrappers over the gguf `kv_uint`/
    `kv_float`; the `kv_value` vt dispatch already handles them. Fold into
    `kv_value` (or keep one generic `kv_uint`/`kv_float`); alias the 8 pairs.
-5. **gemma3 `*_infer` sample call** — gemma3 uses `params sampler_sample logits`
+2. **gemma3 `*_infer` sample call** — gemma3 uses `params sampler_sample logits`
    (gemma3.ijs:991) while all others use `sample_from ((<temp),(<k),(<p),(<min_p),<logits)`
    (llm_core.ijs:297 wraps `sampler_sample`). Fold gemma3 onto `sample_from`.
 
@@ -124,23 +99,10 @@ test_lfm2/test_batched) + CLI/chat/TUI/server all keep working via the aliases.
 ### Tier 3 — per-model globals into the llm dict
 
 Per-model state that is currently a shared global (set per `*_load`), move into
-dict members so each loaded model keeps its own (no clobber, multi-model-ready):
+dict members so each loaded model keeps its own (no clobber, multi-model-ready).
+(The chat-template `ct_tmpl`/`ct_caps`/`ct_tool_ex`, the tokenizer-pre, and the
+lfm2 `lf2_conv` members are DONE — see the intro + HISTORICAL.md.)
 
-- `ct_tmpl_g` (chat template), `ct_caps_g` (chat-template caps), `ct_tool_ex_g`,
-  `ct_eos_g` — set per `*_load` → dict members. **DONE**: `ct_tmpl` (dict member
-  read via `llm_ct_tmpl`); `ct_caps` + `ct_tool_ex` (dict members, lazily computed
-  once per model via `ct_new`/`detect_caps` and cached in `chat_tmpl_render` —
-  no per-render recompute; read via `llm_ct_caps`/`llm_ct_tool_ex`). `ct_eos_g`
-  is always `''` in the render flow (single caller passes `''`), so it needs no
-  cache member.
-- `llama_tokenizer_pre_g` — per-model tokenizer pre → fold into the `tokenizer`
-  member (already carries `pre` via `tokenizer_pre_g`).
-- `lf2_conv_cache_g`/`lf2_n_conv_g` — per-model lfm2 conv state → dict members.
-  **DONE**: the per-model conv config (`lf2_conv_layers`/`lf2_n_conv_g` + dims) is
-  cached in the dict member `lf2_conv` (read via `llm_lf2_conv`) by `llm_lf2_bind`
-  (called on model load); the conv runtime mirror (`lf2_conv_meta`/`lf2_conv_cache_g`/
-  `lf2_conv_batch_g`) is reset on load by `llm_lf2_bind` — no stale conv state
-  across models. The monadic conv verbs stay monadic (read the mirror).
 - **KV cache state** (`kv_pos_g`/`kv_max_seq_g`/`kv_batch_g`/`kv_seq_g`/
   `kv_batch_alloc_g` + `k_cache_g`/`v_cache_g`) → the dict's `kv_cache` member.
   **Medium risk**: the kv verbs are monadic (no llm arg) — need dyadic `llm`
