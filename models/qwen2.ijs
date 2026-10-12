@@ -14,33 +14,20 @@ require 'llm/inference/util/chat_template'
 
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
 
-NB. ---- KV helpers ----
-qw2_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-qw2_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract qwen2 model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim; rope_freq; vocab_size; rms_eps; n_ff>
 qw2_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'qwen2.block_count' qw2_kv_uint data
-  context_length =. 'qwen2.context_length' qw2_kv_uint data
-  emb_len =. 'qwen2.embedding_length' qw2_kv_uint data
-  n_heads =. 'qwen2.attention.head_count' qw2_kv_uint data
-  n_heads_kv =. 'qwen2.attention.head_count_kv' qw2_kv_uint data
-  rope_freq =. 'qwen2.rope.freq_base' qw2_kv_float data
-  vocab_size =. 'qwen2.vocab_size' qw2_kv_uint data
-  rms_eps =. 'qwen2.attention.layer_norm_rms_epsilon' qw2_kv_float data
-  n_ff =. 'qwen2.feed_forward_length' qw2_kv_uint data
-  key_len =. 'qwen2.attention.key_length' qw2_kv_uint data
+  block_count =. 'qwen2.block_count' kv_uint data
+  context_length =. 'qwen2.context_length' kv_uint data
+  emb_len =. 'qwen2.embedding_length' kv_uint data
+  n_heads =. 'qwen2.attention.head_count' kv_uint data
+  n_heads_kv =. 'qwen2.attention.head_count_kv' kv_uint data
+  rope_freq =. 'qwen2.rope.freq_base' kv_float data
+  vocab_size =. 'qwen2.vocab_size' kv_uint data
+  rms_eps =. 'qwen2.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'qwen2.feed_forward_length' kv_uint data
+  key_len =. 'qwen2.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -101,14 +88,14 @@ NB. ---- Expand KV axis (n_kv) -> n_heads (each KV head repeated n_groups times)
 NB. ---- Single-token attention (qwen2: GQA, NEOX RoPE, Q/K/V biases) ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_attention =: 4 : 0
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab layer' =. y
   n_heads =. qw2_bd_n_heads block_data
   head_dim =. qw2_bd_head_dim block_data
   n_heads_kv =. qw2_bd_n_heads_kv block_data
   n_groups =. n_heads % n_heads_kv
 
-  NB. Attention norm
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< (qw2_bd_attn_norm block_data)) , <x)
+  NB. Attention norm (rms_eps hoisted from run_blocks)
+  hidden =. rms_norm ((< rms_eps) , (< (qw2_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q, K, V projections
   qv =. (qw2_bd_attn_q block_data) linear_r hidden
@@ -124,9 +111,9 @@ qw2_attention =: 4 : 0
   K =. (n_heads_kv, head_dim) $ kv
   V =. (n_heads_kv, head_dim) $ vv
 
-  NB. NEOX RoPE (pairs offset by head_dim/2), table-based
-  cos_t =. pos { mi_cos_tab mi
-  sin_t =. pos { mi_sin_tab mi
+  NB. NEOX RoPE (pairs offset by head_dim/2), table-based (tables hoisted)
+  cos_t =. pos { cos_tab
+  sin_t =. pos { sin_tab
   rope_t =. (<cos_t) , (<sin_t)
   Q =. Q rope_apply2_neox_t rope_t
   K =. K rope_apply2_neox_t rope_t
@@ -134,9 +121,9 @@ qw2_attention =: 4 : 0
   NB. Qwen2 scales Q by 1/sqrt(head_dim) before attention
   Q =. Q % head_dim ^ 0.5
 
-  NB. Write K,V (n_kv, hd) to cache, read all up to pos
-  kv_write ((3 { y) , (1 { y) , (<K) , (<V))
-  kv_result =. kv_read ((3 { y) , (1 { y))
+  NB. Write K,V (n_kv, hd) to cache, read all up to pos (layer at index 6 after the hoist)
+  kv_write ((6 { y) , (1 { y) , (<K) , (<V))
+  kv_result =. kv_read ((6 { y) , (1 { y))
   k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
   v_all =. > 1 { kv_result
   win =. pos + 1
@@ -265,11 +252,11 @@ NB. ---- Single block forward (qwen2) ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 qw2_block_forward =: 4 : 0
   hidden =. x
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab layer' =. y
   attn_result =. hidden qw2_attention y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< (qw2_bd_ff_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm ((< rms_eps) , (< (qw2_bd_ff_norm block_data)) , <sa_out)
   gate =. (qw2_bd_ff_gate block_data) linear_r ffn_in
   up =. (qw2_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (qw2_bd_ff_down block_data) linear_r (gate swiglu up)
@@ -302,17 +289,21 @@ qw2_run_blocks =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
+  NB. Hoist the layer-invariant mi scalars/tables (looked-up EVERY layer in
+  NB. qw2_attention/qw2_block_forward — compute once per token).
+  rms_eps =. mi_rms_eps mi
+  cos_tab =. mi_cos_tab mi
+  sin_tab =. mi_sin_tab mi
   state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<pos) , (<mi))
+  NB. (<pos), (<mi), + the hoisted mi values are layer-invariant — box once, reuse.
+  bf_pre =. ((<pos) , (<mi) , (<rms_eps) , (<cos_tab) , (<sin_tab))
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state qw2_block_forward ((<block_data) , bf_pre , <b)
+    result =. state qw2_block_forward ((b { block_data_list) , bf_pre , <b)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -361,8 +352,7 @@ qw2_run_blocks_b =: 4 : 0
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state qw2_block_forward_b ((<block_data) , (<b) , bfb_pre)
+    result =. state qw2_block_forward_b ((b { block_data_list) , (<b) , bfb_pre)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -534,8 +524,7 @@ qw2_run_blocks_bd =: 4 : 0
   NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
   bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state qw2_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
+    result =. state qw2_block_forward_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -699,8 +688,7 @@ qw2_run_blocks_bp =: 4 : 0
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state qw2_block_forward_bp ((<block_data) , (<b) , bfb_pre , <rope)
+    result =. state qw2_block_forward_bp ((b { block_data_list) , (<b) , bfb_pre , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -731,8 +719,9 @@ qw2_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -756,7 +745,7 @@ qw2_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -764,140 +753,11 @@ qw2_load =: 3 : 0
   block_data =. qw2_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
-NB. ---- Single-token inference ----
-NB. Usage: llm qw2_infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm qw2_infer_simple text
-qw2_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. gpt2_tokenize (<llm) , <text
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  scale =. 1
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-  output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-  tok_list =. , > tokens
-  n_tokens =. # tok_list
-  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-  if. 1 = n_tokens do.
-    tok =. 0 { tok_list
-    hidden =. scale * |: (tok {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result =. hidden qw2_run_blocks (<llm) , <0'
-    else.
-      result =. hidden qw2_run_blocks (<llm) , <0
-    end.
-    hidden =. > 0 { result
-  else.
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result_b =. emb_all qw2_run_blocks_b ((<llm) , <0)'
-    else.
-      result_b =. emb_all qw2_run_blocks_b ((<llm) , <0)
-    end.
-    h_b =. > 0 { result_b
-    hidden =. > (n_tokens - 1) { h_b
-  end.
-  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  decoded =. gpt2_detokenize (<llm) , <pred_tok
-  tokens ; pred_tok ; decoded ; logits
-)
-
-NB. ---- Multi-token generation ----
-NB. Usage: llm qw2_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm qw2_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, run_blocks/run_blocks_b) are dispatched by
-NB. llm_arch. Fresh mode: kv_create + batched prefill; resume mode (chat
-NB. sessions): incremental prefill of the new segment. Stop token not appended.
-qw2_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. qw2_chat_prompt messages
-  tokens =. gpt2_tokenize (<llm) , <prompt
-  stop =. qw2_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  gpt2_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm qw2_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-NB. prompts = boxed list of B texts → boxed list of B answer texts.
-NB. The generation weight matmuls are amortized across B (the M=1 matvec
-NB. floor is memory-bound on weight reads); each sequence keeps its own KV
-NB. cache window + position. Stop per sequence.
-qw2_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-
-  NB. Tokenize + chat-frame each prompt
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. qw2_chat_prompt messages
-    tokens =. gpt2_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. qw2_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-
-  NB. Strip prompt tokens and detokenize per sequence
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(gpt2_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm qw2_infer_simple text            | llm qw2_generate_simple (text ; n)
-qw2_infer_simple =: qw2_infer (] ; (<0 0 0.95 0.0)"_)
-qw2_generate_simple =: qw2_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.
@@ -906,8 +766,5 @@ NB. (tokenizer.chat_template) via the minja/chat_template port when present
 NB. (chat_tmpl_render in chat.ijs); falls back to the bespoke qwen2 prompt
 NB. when the GGUF has none. No BOS (llama.cpp qwen2 chat omits bos).
 
-NB. Stop token: <|im_end|> (EOS).
-qw2_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Stop token: <|im_end|> (EOS). Computed once in qw2_load (dict member stop_tokens).
+qw2_stop_tokens =: llm_stop_tokens

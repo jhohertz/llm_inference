@@ -23,19 +23,6 @@ require 'llm/inference/tokenizers/tokenizer_gpt2'
 require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 
-NB. ---- KV helpers ----
-lf2_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-lf2_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract LFM2 model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim;
 NB.     rope_freq; vocab_size; rms_eps; n_ff>
@@ -43,17 +30,17 @@ NB. head_count_kv is an ARRAY KV (0 for shortconv layers, 8 for attention) —
 NB. kv_uint returns _1; take the max for n_heads_kv.
 lf2_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'lfm2.block_count' lf2_kv_uint data
-  context_length =. 'lfm2.context_length' lf2_kv_uint data
-  emb_len =. 'lfm2.embedding_length' lf2_kv_uint data
-  n_heads =. 'lfm2.attention.head_count' lf2_kv_uint data
+  block_count =. 'lfm2.block_count' kv_uint data
+  context_length =. 'lfm2.context_length' kv_uint data
+  emb_len =. 'lfm2.embedding_length' kv_uint data
+  n_heads =. 'lfm2.attention.head_count' kv_uint data
   hc_kv =. 'lfm2.attention.head_count_kv' kv_array data
   n_heads_kv =. >./ hc_kv
-  rope_freq =. 'lfm2.rope.freq_base' lf2_kv_float data
-  vocab_size =. 'lfm2.vocab_size' lf2_kv_uint data
-  rms_eps =. 'lfm2.attention.layer_norm_rms_epsilon' lf2_kv_float data
-  n_ff =. 'lfm2.feed_forward_length' lf2_kv_uint data
-  key_len =. 'lfm2.attention.key_length' lf2_kv_uint data
+  rope_freq =. 'lfm2.rope.freq_base' kv_float data
+  vocab_size =. 'lfm2.vocab_size' kv_uint data
+  rms_eps =. 'lfm2.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'lfm2.feed_forward_length' kv_uint data
+  key_len =. 'lfm2.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -214,6 +201,26 @@ lf2_conv_write_b =: 3 : 0
   ''
 )
 
+NB. ---- Bind the lfm2 conv mirror globals from the dict's config (model switch) ----
+NB. Resets the conv runtime mirror (lf2_conv_meta/cache_g/batch_g) on model load so
+NB. no stale conv state leaks across models. The conv config (lf2_conv_layers /
+NB. lf2_n_conv_g + dims) is per-model (set at load) and stays in the mirror for the
+NB. monadic conv verbs; this verb also caches it in the dict (lf2_conv). y = llm.
+llm_lf2_bind =: 3 : 0
+  llm =. y
+  if. 0 < # lf2_conv_layers do.
+    d =. llm
+    emb =. mi_emb_len (llm_mi llm)
+    cfg =. <(lf2_conv_layers ; lf2_n_conv_g ; 2 ; emb)
+    ct =. llm_ct_tmpl llm
+    (cfg ; ct) put__d 'lf2_conv' ; 'ct_tmpl'
+  end.
+  lf2_conv_meta =: ''
+  lf2_conv_cache_g =: ''
+  lf2_conv_batch_g =: 1
+  ''
+)
+
 NB. Batched read/write: all B sequences' conv state in ONE indexed pass (mirror
 NB. lf2_conv_read_b/lf2_conv_write_b's per-seq index math). y = <layer; B>
 NB. (read) / <layer; conv_states(B,d_conv,emb); B> (write).
@@ -247,8 +254,9 @@ lf2_attention_b =: 4 : 0
   block_data =. > 0 { y
   layer =. > 1 { y
   mi =. > 2 { y
-  start_pos =. > 3 { y
-  rope =. > 4 { y
+  rms_eps =. > 3 { y
+  start_pos =. > 4 { y
+  rope =. > 5 { y
   NB. rope = <cos_all; sin_all; cos_expq; sin_expq; cos_expk; sin_expk; mask_g2>
   cos_all =. > 0 { rope
   sin_all =. > 1 { rope
@@ -265,7 +273,7 @@ lf2_attention_b =: 4 : 0
   half =. <. head_dim % 2
 
   NB. Attention norm per row
-  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <x)
+  hidden =. rms_norm_rows ((< rms_eps) , (< (lf2_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q,K,V batched projections (|: hidden hoisted once — 3 transposes
   NB. of the (L,emb) hidden were materializing 3 copies)
@@ -283,10 +291,10 @@ lf2_attention_b =: 4 : 0
 
   NB. Per-head RMSNorm on Q and K BEFORE RoPE (shared weight, size=head_dim)
   Qf =. ((L * n_heads) , head_dim) $ , Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_q_norm block_data) , <Qf)
+  Qf =. rms_norm_rows ((< rms_eps) , (< lf2_bd_q_norm block_data) , <Qf)
   Q =. (L, n_heads, head_dim) $ , Qf
   Kf =. ((L * n_heads_kv) , head_dim) $ , K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< lf2_bd_k_norm block_data) , <Kf)
+  Kf =. rms_norm_rows ((< rms_eps) , (< lf2_bd_k_norm block_data) , <Kf)
   K =. (L, n_heads_kv, head_dim) $ , Kf
 
   NB. NEOX RoPE batched (table-based): pairs (i, i+half) per row — tables +
@@ -310,15 +318,16 @@ lf2_attention_b =: 4 : 0
   K_batch =. K
   V_batch =. V
   if. start_pos > 0 do.
-    k_pre =. > 0 { (kv_read ((<layer) , <(start_pos - 1)))
-    v_pre =. > 1 { (kv_read ((<layer) , <(start_pos - 1)))
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
     K =. k_pre , K
     V =. v_pre , V
   end.
 
-  NB. Bulk write the new batch's L K/V into cache at layer, starting at start_pos
-  kv_write_rows ((<0) , (<layer) , (<start_pos) , <K_batch)
-  kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
+  NB. Bulk write the new batch's L K/V into cache at layer, starting at start_pos.
+  NB. layer/start_pos are already boxed in y (indices 1/3) — pass them, no re-box.
+  kv_write_rows ((<0) , (1 { y) , (4 { y) , <K_batch)
+  kv_write_rows ((<1) , (1 { y) , (4 { y) , <V_batch)
 
   NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
   NB. n_groups) and batched-matmul each group's Q against its shared K/V row —
@@ -347,10 +356,11 @@ lf2_block_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 2 { y
+  rms_eps =. > 3 { y
   attn_result =. hidden lf2_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm_rows ((< rms_eps) , (< (lf2_bd_ffn_norm block_data)) , <sa_out)
   ffn_raw =. |: ((lf2_bd_ffn_down block_data) (+/ .* ) ((lf2_bd_ffn_gate block_data) (+/ .* ) |: ffn_in) swiglu ((lf2_bd_ffn_up block_data) (+/ .* ) |: ffn_in))
   output =. ffn_raw + sa_out
   (<output)
@@ -362,12 +372,13 @@ lf2_conv_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
-  layer =. > 2 { y
+  rms_eps =. > 2 { y
+  layer =. > 3 { y
   L =. {. $ hidden
   emb =. {: $ hidden
 
   NB. Operator norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_bd_attn_norm block_data)) , <hidden)
+  normed =. rms_norm_rows ((< rms_eps) , (< (lf2_bd_attn_norm block_data)) , <hidden)
 
   NB. in_proj -> split b,c,x chunks (each emb)
   bcx =. |: ((lf2_bd_in_proj block_data) (+/ .* ) |: normed)   NB. (L, 3*emb)
@@ -398,7 +409,7 @@ lf2_conv_forward_b =: 4 : 0
   lf2_conv_write ((<layer) , <new_conv)
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual) — conv-layout accessors
-  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (lf2_cv_ffn_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm_rows ((< rms_eps) , (< (lf2_cv_ffn_norm block_data)) , <sa_out)
   tfin =. |: ffn_in
   gate_f =. |: ((lf2_cv_ffn_gate block_data) (+/ .* ) tfin)
   up_f =. |: ((lf2_cv_ffn_up block_data) (+/ .* ) tfin)
@@ -452,14 +463,17 @@ lf2_run_blocks_b =: 4 : 0
   rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. <mi, <start_pos, <rope are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<mi) , (<start_pos) , <rope)
+  NB. Hoist the layer-invariant mi_rms_eps (looked-up EVERY layer in the
+  NB. attn/block/conv forward verbs — compute once per chunk).
+  rms_eps =. mi_rms_eps mi
+  NB. <mi, <start_pos, <rope, + rms_eps are layer-invariant — box once, reuse.
+  bf_pre =. ((<mi) , (<rms_eps) , (<start_pos) , <rope)
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_b ((<block_data) , (<mi) , <b)
+      result =. state lf2_conv_forward_b ((b { block_data_list) , (<mi) , (<rms_eps) , <b)
     else.
-      result =. state lf2_block_forward_b ((<block_data) , (<b) , bf_pre)
+      result =. state lf2_block_forward_b ((b { block_data_list) , (<b) , bf_pre)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -688,9 +702,9 @@ lf2_run_blocks_bp =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , <lens)
+      result =. state lf2_conv_forward_bp ((b { block_data_list) , (<pos) , (<mi) , (<b) , <lens)
     else.
-      result =. state lf2_block_forward_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
+      result =. state lf2_block_forward_bp ((b { block_data_list) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -911,9 +925,9 @@ lf2_run_blocks_bd =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. lf2_bd_is_conv block_data do.
-      result =. state lf2_conv_forward_bd ((<block_data) , bf_pre , <b)
+      result =. state lf2_conv_forward_bd ((b { block_data_list) , bf_pre , <b)
     else.
-      result =. state lf2_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
+      result =. state lf2_block_forward_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -957,8 +971,9 @@ lf2_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   ((> 0 { rope_tables) ; (> 1 { rope_tables)) put__mi 'cos_tab' ; 'sin_tab'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -986,7 +1001,7 @@ lf2_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -994,6 +1009,8 @@ lf2_load =: 3 : 0
   block_data =. lf2_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Tokenize/detokenize (gpt2 BPE + llama3 pre, BOS prepended) ----
@@ -1002,147 +1019,10 @@ NB. add_bos=true) — gpt2_tokenize dispatches 'lfm2' to llama3_pre_tokenize.
 NB. BOS token 1 (<|startoftext|>) is prepended here; the chat template's
 NB. {{bos_token}} is rendered as '' (lf2_chat_prompt) so the stream matches
 NB. llama.cpp (bos once).
-lf2_tokenize =: 3 : 0
-  llm_data =. input_llm y
-  text =. input_text y
-  tokenizer =. llm_tokenizer llm_data
-  tokens =. gpt2_tokenize (<llm_data) , <text
-  bos =. tokenizer_bos_g tokenizer
-  if. bos > 0 do. tokens =. (<bos) , tokens end.
-  tokens
-)
-lf2_detokenize =: 3 : 0
-  gpt2_detokenize y
-)
+lf2_tokenize =: llm_tokenize
+lf2_detokenize =: llm_detokenize
 
-NB. ---- Single-token inference ----
-NB. Usage: llm lf2_infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm lf2_infer_simple text
-lf2_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. lf2_tokenize (<llm) , <text
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  scale =. 1
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-  output_norm_w =. 'token_embd_norm.weight' get_tensor_cached_d llm
-  tok_list =. , > tokens
-  n_tokens =. # tok_list
-  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-  NB. Fresh single-token infer: zero the conv recurrent state (lf2_run_blocks_b
-  NB. create is guarded to protect batched per-sequence prefill).
-  lf2_conv_reset ((<lf2_n_conv_g) , (<2) , (<emb_len))
-  if. 1 = n_tokens do.
-    tok =. 0 { tok_list
-    hidden =. scale * |: (tok {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result =. hidden lf2_run_blocks (<llm) , <0'
-    else.
-      result =. hidden lf2_run_blocks (<llm) , <0
-    end.
-    hidden =. > 0 { result
-  else.
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result_b =. emb_all lf2_run_blocks_b ((<llm) , <0)'
-    else.
-      result_b =. emb_all lf2_run_blocks_b ((<llm) , <0)
-    end.
-    h_b =. > 0 { result_b
-    hidden =. > (n_tokens - 1) { h_b
-  end.
-  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  decoded =. lf2_detokenize (<llm) , <pred_tok
-  tokens ; pred_tok ; decoded ; logits
-)
-
-NB. ---- Multi-token generation ----
-NB. Usage: llm lf2_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm lf2_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, logit scale, run_blocks/run_blocks_b) are
-NB. dispatched by llm_arch. Fresh mode: kv_create + batched prefill; resume
-NB. mode (chat sessions): incremental prefill of the new segment. Stop token
-NB. not appended.
-lf2_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. lf2_chat_prompt messages
-  tokens =. lf2_tokenize (<llm) , <prompt
-  stop =. lf2_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  lf2_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm lf2_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-lf2_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. lf2_chat_prompt messages
-    tokens =. lf2_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. lf2_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(lf2_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm lf2_infer_simple text            | llm lf2_generate_simple (text ; n)
-lf2_infer_simple =: lf2_infer (] ; (<0 0 0.95 0.0)"_)
-lf2_generate_simple =: lf2_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- LFM2 chat template ----
 NB. qwen-style: {{bos_token}} + <|im_start|>role\n content <|im_end|>\n per
@@ -1151,8 +1031,5 @@ NB. block. {{bos_token}} is rendered as '' — lf2_tokenize prepends BOS so the
 NB. token stream matches llama.cpp (bos once).
 
 
-NB. Stop tokens: EOS = <|im_end|> (7).
-lf2_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Stop tokens: EOS = <|im_end|> (7). Computed once in lf2_load (dict member stop_tokens).
+lf2_stop_tokens =: llm_stop_tokens

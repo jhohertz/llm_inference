@@ -29,7 +29,7 @@ test_llama32 =: 3 : 0
 
   NB. --- architecture ---
   assert_test ('llama' -: llm_arch llm) ; 'arch = llama'
-  assert_test ('llama-bpe' -: llama_tokenizer_pre_g) ; 'tokenizer pre = llama-bpe (llama3 template)'
+  assert_test ('llama-bpe' -: tokenizer_pre_g (llm_tokenizer llm)) ; 'tokenizer pre = llama-bpe (llama3 template)'
   mi =. llm_mi llm
   assert_test (16 -: mi_block_count mi) ; 'block_count = 16'
   assert_test (131072 -: mi_context_len mi) ; 'context_length = 131072'
@@ -58,7 +58,7 @@ test_llama32 =: 3 : 0
 
   NB. --- chat prompt tokens vs llama.cpp _input_ids (fixed date) ---
   messages =. <('user') ; 'The capital of France is'
-  prompt =. llama_chat_prompt messages
+  prompt =. llm llama_chat_prompt messages
   toks =. llama_tokenize (<llm) , <prompt
   got_toks =. , > toks
   exp_toks =. 128000 128006 9125 128007 271 38766 1303 33025 2696 25 6790 220 2366 18 198 15724 2696 25 220 1627 10263 220 2366 19 271 128009 128006 882 128007 271 791 6864 315 9822 374 128009 128006 78191 128007 271

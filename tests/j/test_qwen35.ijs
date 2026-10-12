@@ -87,15 +87,15 @@ test_qwen35 =: 3 : 0
   echo '  Workspace after load: ' , fmt_bytes mem_after_load
   echo ''
 
-  NB. --- llm structure: 9 core + block_data + kv_data + arch = 11 ---
-  tc =. tc + 1
-  if. 11 = # llm do.
-    pc =. pc + 1
-    echo 'PASS: llm has 11 elements'
-  else.
-    fc =. fc + 1
-    fl =. fl , 'llm has 11 elements', LF
-    echo 'FAIL: llm has 11 elements'; echo '  got: '; echo # llm
+   NB. --- llm structure: 9 core + block_data + kv_data + stop_tokens + ct_tmpl + arch + ct_caps + ct_tool_ex + lf2_conv = 16 ---
+   tc =. tc + 1
+   if. 16 = llm_count llm do.
+     pc =. pc + 1
+     echo 'PASS: llm has 16 elements'
+   else.
+     fc =. fc + 1
+     fl =. fl , 'llm has 16 elements', LF
+     echo 'FAIL: llm has 16 elements'; echo '  got: '; echo llm_count llm
   end.
 
   mi =. llm_mi llm

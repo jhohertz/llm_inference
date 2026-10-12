@@ -59,7 +59,7 @@ test_lfm25 =: 3 : 0
 
   NB. --- chat prompt tokens vs llama.cpp (rendered template, special=True) ---
   messages =. <('user') ; 'The capital of France is'
-  prompt =. lf2_chat_prompt messages
+  prompt =. llm lf2_chat_prompt messages
   toks =. lf2_tokenize (<llm) , <prompt
   got_toks =. , > toks
   exp_toks =. 1 6 6423 708 1098 5706 803 4481 856 7 708 6 64015 708

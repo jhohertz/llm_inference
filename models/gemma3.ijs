@@ -46,33 +46,20 @@ gem3_bd_fused_qkv   =: >@(17&{)
 gem3_bd_cos_tab     =: >@(18&{)
 gem3_bd_sin_tab     =: >@(19&{)
 gem3_bd_swa_l       =: >@(20&{)
-NB. KV helpers: key kv_uint/kv_float data
-gem3_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-gem3_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract Gemma3 model info from KV pairs ----
 gem3_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'gemma3.block_count' gem3_kv_uint data
-  context_length =. 'gemma3.context_length' gem3_kv_uint data
-  emb_len =. 'gemma3.embedding_length' gem3_kv_uint data
-  n_heads =. 'gemma3.attention.head_count' gem3_kv_uint data
-  n_heads_kv =. 'gemma3.attention.head_count_kv' gem3_kv_uint data
-  rope_freq =. 'gemma3.rope.freq_base' gem3_kv_float data
-  vocab_size =. 'llama.vocab_size' gem3_kv_uint data
-  rms_eps =. 'gemma3.attention.layer_norm_rms_epsilon' gem3_kv_float data
-  swa =. 'gemma3.attention.sliding_window' gem3_kv_uint data
-  n_ff =. 'gemma3.feed_forward_length' gem3_kv_uint data
-   key_len =. 'gemma3.attention.key_length' gem3_kv_uint data
+  block_count =. 'gemma3.block_count' kv_uint data
+  context_length =. 'gemma3.context_length' kv_uint data
+  emb_len =. 'gemma3.embedding_length' kv_uint data
+  n_heads =. 'gemma3.attention.head_count' kv_uint data
+  n_heads_kv =. 'gemma3.attention.head_count_kv' kv_uint data
+  rope_freq =. 'gemma3.rope.freq_base' kv_float data
+  vocab_size =. 'llama.vocab_size' kv_uint data
+  rms_eps =. 'gemma3.attention.layer_norm_rms_epsilon' kv_float data
+  swa =. 'gemma3.attention.sliding_window' kv_uint data
+  n_ff =. 'gemma3.feed_forward_length' kv_uint data
+   key_len =. 'gemma3.attention.key_length' kv_uint data
    head_dim =. key_len % n_heads_kv
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
 )
@@ -131,15 +118,15 @@ NB. ---- Standard self-attention for Gemma3 ----
 NB. Computes attention for the CURRENT token only against all cached K/V
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_attention =: 4 : 0
-  'block_data pos swa mi layer' =. y
+  'block_data pos swa mi rms_eps layer' =. y
   
   n_heads =. gem3_bd_n_heads block_data
   head_dim =. gem3_bd_head_dim block_data
   rope_freq =. gem3_bd_rope_freq block_data
   n_heads_kv =. gem3_bd_n_heads_kv block_data
   
-  NB. Attention norm
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< (gem3_bd_attn_norm block_data)) , <x)
+  NB. Attention norm (rms_eps hoisted from run_blocks)
+  hidden =. rms_norm ((< rms_eps) , (< (gem3_bd_attn_norm block_data)) , <x)
   
    NB. Q, K, V projections — fused single matmul
    fused_qkv_w =. gem3_bd_fused_qkv block_data
@@ -153,9 +140,9 @@ gem3_attention =: 4 : 0
    K =. (n_heads_kv, head_dim) $ K
    V =. (n_heads_kv, head_dim) $ V
   
-  NB. Q/K norm
-  Q =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_q_norm block_data)) , <Q)
-  K =. rms_norm_rows ((< mi_rms_eps mi) , (< (gem3_bd_k_norm block_data)) , <K)
+  NB. Q/K norm (rms_eps hoisted)
+  Q =. rms_norm_rows ((< rms_eps) , (< (gem3_bd_q_norm block_data)) , <Q)
+  K =. rms_norm_rows ((< rms_eps) , (< (gem3_bd_k_norm block_data)) , <K)
   
     NB. RoPE — apply per head (Gemma3 uses NEOX layout: pairs offset by head_dim/2)
     NB. cos/sin precomputed once per position in PER-LAYER tables (dense vs SWA freq)
@@ -169,11 +156,11 @@ gem3_attention =: 4 : 0
    NB. llama.cpp: pre-scale Q by 1/sqrt(head_dim) for Gemma (after RoPE)
    Q =. Q % head_dim ^ 0.5
   
-   NB. Write K, V to KV cache at current position
-   kv_write ((4 { y) , (1 { y) , (<K) , (<V))
+   NB. Write K, V to KV cache at current position (layer at index 5 after the hoist)
+   kv_write ((5 { y) , (1 { y) , (<K) , (<V))
    
    NB. Read all K, V from cache up to current position
-   kv_result =. kv_read ((4 { y) , (1 { y))
+   kv_result =. kv_read ((5 { y) , (1 { y))
    k_all =. > 0 { kv_result
    v_all =. > 1 { kv_result
   
@@ -401,8 +388,7 @@ gem3_run_blocks_b =: 4 : 0
    NB. (<swa), (<mi), (<start_pos) are layer-invariant — box once, reuse per layer.
    bfb_pre =. (<swa) , (<mi) , (<start_pos)
    while. b < block_count do.
-     block_data =. > b { block_data_list
-    result =. state gem3_block_forward_b (<block_data) , (<b) , bfb_pre
+     result =. state gem3_block_forward_b (b { block_data_list) , (<b) , bfb_pre
     state =. > 0 { result
      b =. b + 1
    end.
@@ -594,8 +580,7 @@ gem3_run_blocks_bp =: 4 : 0
    NB. (<swa), (<pos), (<mi), <lens are layer-invariant — box once, reuse per layer.
    bfb_pre =. (<swa) , (<pos) , (<mi) , <lens
    while. b < block_count do.
-     block_data =. > b { block_data_list
-     result =. state gem3_block_forward_bp (<block_data) , (<b) , bfb_pre , <rope
+      result =. state gem3_block_forward_bp (b { block_data_list) , (<b) , bfb_pre , <rope
      state =. > 0 { result
      b =. b + 1
    end.
@@ -779,8 +764,7 @@ gem3_run_blocks_bd =: 4 : 0
   NB. (<pos), (<swa), (<mi) are layer-invariant — box once, reuse per layer.
   bf_pre =. (<pos) , (<swa) , (<mi)
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state gem3_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
+    result =. state gem3_block_forward_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -791,7 +775,7 @@ NB. ---- Single Gemma3 block forward ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; swa; mi; layer>
 gem3_block_forward =: 4 : 0
   hidden =. x
-  'block_data pos swa mi layer' =. y
+  'block_data pos swa mi rms_eps layer' =. y
   
   attn_result =. hidden gem3_attention y
   attn_out =. > 0 { attn_result
@@ -799,7 +783,7 @@ gem3_block_forward =: 4 : 0
   sa_out =. attn_out + hidden
   
   ff_norm_w =. gem3_bd_ff_norm block_data
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< ff_norm_w) , <sa_out)
+  ffn_in =. rms_norm ((< rms_eps) , (< ff_norm_w) , <sa_out)
   
    fused_ff_gu_w =. gem3_bd_fused_ff_gu block_data
    gate_up =. fused_ff_gu_w linear_r ffn_in
@@ -811,7 +795,7 @@ gem3_block_forward =: 4 : 0
      ffn_raw =. ff_down_w linear_r (gate_out geglu up_out)  NB. GEGLU: GELU(gate) * up
   
     ff_pn_w =. gem3_bd_ff_pn block_data
-    ffn_out =. rms_norm ((< mi_rms_eps mi) , (< ff_pn_w) , <ffn_raw)
+    ffn_out =. rms_norm ((< rms_eps) , (< ff_pn_w) , <ffn_raw)
     
     output =. ffn_out + sa_out
   
@@ -828,6 +812,9 @@ gem3_run_blocks =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
+  NB. Hoist the layer-invariant mi_rms_eps (looked-up EVERY layer in
+  NB. gem3_attention/gem3_block_forward — compute once per token).
+  rms_eps =. mi_rms_eps mi
 
   state =. x
   if. 0 = # kv_meta do.
@@ -836,11 +823,10 @@ gem3_run_blocks =: 4 : 0
 
    b =. 0
    block_data_list =. llm_block_data llm
-   NB. (<pos), (<swa), (<mi) are layer-invariant — box once, reuse per layer.
-   bf_pre =. (<pos) , (<swa) , (<mi)
+   NB. (<pos), (<swa), (<mi), (<rms_eps) are layer-invariant — box once, reuse.
+   bf_pre =. (<pos) , (<swa) , (<mi) , (<rms_eps)
    while. b < block_count do.
-     block_data =. > b { block_data_list
-    result =. state gem3_block_forward (<block_data) , bf_pre , (<b)
+     result =. state gem3_block_forward (b { block_data_list) , bf_pre , (<b)
     state =. > 0 { result
      b =. b + 1
    end.
@@ -879,13 +865,14 @@ gem3_load =: 3 : 0
   NB. Gemma3-specific sliding window
   NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
-  swa =. 'gemma3.attention.sliding_window' gem3_kv_uint kvs_ctx
+  swa =. 'gemma3.attention.sliding_window' kv_uint kvs_ctx
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; swa) put__mi 'cos_tab' ; 'sin_tab' ; 'swa'
   
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   
   tokenizer =. build_llama3_tokenizer kv_result
+  stop_tokens =. (tokenizer_eos tokenizer) , 1
   
   all_tensors =. ''
   tensor_idx =. 0
@@ -915,7 +902,7 @@ gem3_load =: 3 : 0
   ze =. <1.0 64 0.95 0.001   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -923,155 +910,11 @@ gem3_load =: 3 : 0
   block_data =. gem3_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
-NB. ---- Single-token inference for Gemma3 ----
-NB. Usage: llm infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm infer_simple text
-NB. ----------------------------------------------------------------
-gem3_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. llama3_tokenize (<llm) , <text
-  
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  n_embd =. emb_len
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  
-    emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-     scale =. %: n_embd
-      NB. token_embd is stored transposed (emb, vocab) — column tok is embedding
-      
-     tok_list =. , > tokens
-    
-    output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-    
-    NB. Embed all input tokens (llama.cpp: no sqrt(n_embd) scale, no output_norm before blocks)
-    n_tokens =. # tok_list
-    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-    if. 1 = n_tokens do.
-      tok =. 0 { tok_list
-      hidden =. scale * |: (tok {"1 emb_w)
-      if. gen_timing_g do.
-        pre_s =. 6!:2 'result =. hidden gem3_run_blocks (<llm) , <0'
-      else.
-        result =. hidden gem3_run_blocks (<llm) , <0
-      end.
-      hidden =. > 0 { result
-    else.
-      NB. Batched prompt prefill: run all blocks once over (n_tokens x emb)
-      NB. gemma3 tokenizer is SentencePiece with a 262144 real-token vocab — NO byte
-      NB. tokens, so token ids are used directly (no 65536 clamp; that clamp is only
-      NB. valid for llama3-style BPE / gpt2 byte-level tokenizers).
-      emb_all =. scale * |: (tok_list {"1 emb_w)
-      if. gen_timing_g do.
-        pre_s =. 6!:2 'result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)'
-      else.
-        result_b =. emb_all gem3_run_blocks_b ((<llm) , <0)
-      end.
-      h_b =. > 0 { result_b
-      hidden =. > (n_tokens-1) { h_b   NB. last prompt token's hidden predicts next
-    end.
-  
-   NB. Final norm + lm_head
-   hidden =. rms_norm ((< mi_rms_eps mi) , (<output_norm_w) , <hidden)
-  emb_w_final =. 'token_embd.weight' get_tensor_cached_d llm
-  logits =. hidden (+/ .* ) emb_w_final
-  
-  NB. Sample from logits using sampler module
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  flat =. temp , k , p , min_p
-  params =. <"0 flat
-  pred_tok =. params sampler_sample logits
-  
-  decoded =. llama3_detokenize (<llm) , <pred_tok
-  
-  tokens ; pred_tok ; decoded ; logits
-)
-
-NB. ---- Multi-token generation for Gemma3 ----
-NB. Usage: llm generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, run_blocks/run_blocks_b) are dispatched by
-NB. llm_arch. Fresh mode: kv_create + batched prefill; resume mode (chat
-NB. sessions): incremental prefill of the new segment. Stop token not appended.
-gem3_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. gem3_chat_prompt messages
-  tokens =. llama3_tokenize (<llm) , <prompt
-  stop =. gem3_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  llama3_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm gem3_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-gem3_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. gem3_chat_prompt messages
-    tokens =. llama3_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. gem3_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(llama3_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm gem3_infer_simple text            | llm gem3_generate_simple (text ; n)
-gem3_infer_simple =: gem3_infer (] ; (<0 0 0.95 0.0)"_)
-gem3_generate_simple =: gem3_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each message = <role ; content>
@@ -1081,7 +924,5 @@ NB. generation prompt '<start_of_turn>model' appended. BOS is added by the
 NB. llama3 tokenizer (llama.cpp also prepends bos for gemma chat).
 
 NB. Stop tokens: <end_of_turn> (EOS) and <eos> (token 1) — per gemma params file.
-gem3_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  (tokenizer_eos tk) , 1
-)
+NB. Computed once in gem3_load (dict member stop_tokens).
+gem3_stop_tokens =: llm_stop_tokens

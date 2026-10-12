@@ -250,3 +250,19 @@ sess_kv_bind =: 3 : 0
   kv_max_seq_g =: > 12 { y
   ''
 )
+
+NB. ---- Bind the mirror globals from the dict's per-model cache config ----
+NB. x = llm. The dict holds the per-model cache config (authoritative, no
+NB. clobber across model loads); the mirror globals are the fast hot-path state
+NB. and are reset here on load. The cache itself (k_cache_g/v_cache_g) is
+NB. created lazily by kv_create (which reads the mirror).
+llm_kv_bind =: 3 : 0
+  llm =. y
+  kv_meta =: ''
+  kv_pos_g =: 0
+  kv_batch_g =: 1
+  kv_seq_g =: 0
+  kv_max_seq_g =: _1
+  kv_batch_alloc_g =: 1
+  ''
+)

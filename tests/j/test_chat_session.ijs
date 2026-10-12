@@ -92,9 +92,8 @@ test_chat_session =: 3 : 0
   assert_test (g2 -: gref2) ; 'gemma3 turn2 (persisted) == full re-render'
 
   NB. ---- Section 3: chat_core_stream (stateful + STREAMING, Phase 6 item 4) ----
-  NB. NOTE: uses gemma3 (llm2, loaded last) — the shared chat-template global
-  NB. ct_tmpl_g is clobbered by each arch load, so a Section-3 qwen2 re-render
-  NB. would use gemma3's template (the pre-existing test-design constraint).
+  NB. NOTE: uses gemma3 (llm2, loaded last) — the template now lives in the llm
+  NB. dict (ct_tmpl), so a Section-3 qwen2 re-render uses its own template.
   echo '--- chat_core_stream: stateful resume with live streaming ---'
   chat_resume_count =: 0
   chat_fallback_count =: 0

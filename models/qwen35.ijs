@@ -19,19 +19,6 @@ require 'llm/inference/tokenizers/tokenizer_gpt2'
 require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 
-NB. ---- KV helpers ----
-qw35_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-qw35_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract qwen35 model info from KV pairs ----
 NB. Returns the shared 12-item mi prefix (vocab patched by qw35_load from the
 NB. token_embd dims; qwen35.rope.dimension_sections is not needed for text).
@@ -41,21 +28,21 @@ NB.      key_len; n_rot; ssm_d_inner; ssm_d_state; ssm_dt_rank; ssm_n_group>
 NB.      (18 items after load adds rope tables)
 qw35_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'qwen35.block_count' qw35_kv_uint data
-  nextn =. 'qwen35.nextn_predict_layers' qw35_kv_uint data
+  block_count =. 'qwen35.block_count' kv_uint data
+  nextn =. 'qwen35.nextn_predict_layers' kv_uint data
   if. _1 ~: nextn do.
     NB. MTP flavour: block_count includes the nextn head (blk.24) — the trunk
     NB. is block_count - nextn. Non-MTP has no nextn KV (kv_uint -> _1).
     block_count =. block_count - nextn
   end.
-  context_length =. 'qwen35.context_length' qw35_kv_uint data
-  emb_len =. 'qwen35.embedding_length' qw35_kv_uint data
-  n_heads =. 'qwen35.attention.head_count' qw35_kv_uint data
-  n_heads_kv =. 'qwen35.attention.head_count_kv' qw35_kv_uint data
-  rope_freq =. 'qwen35.rope.freq_base' qw35_kv_float data
-  rms_eps =. 'qwen35.attention.layer_norm_rms_epsilon' qw35_kv_float data
-  n_ff =. 'qwen35.feed_forward_length' qw35_kv_uint data
-  key_len =. 'qwen35.attention.key_length' qw35_kv_uint data
+  context_length =. 'qwen35.context_length' kv_uint data
+  emb_len =. 'qwen35.embedding_length' kv_uint data
+  n_heads =. 'qwen35.attention.head_count' kv_uint data
+  n_heads_kv =. 'qwen35.attention.head_count_kv' kv_uint data
+  rope_freq =. 'qwen35.rope.freq_base' kv_float data
+  rms_eps =. 'qwen35.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'qwen35.feed_forward_length' kv_uint data
+  key_len =. 'qwen35.attention.key_length' kv_uint data
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , 0 , rms_eps , n_ff
 )
@@ -344,8 +331,9 @@ qw35_attention_b =: 4 : 0
   block_data =. > 0 { y
   layer =. > 1 { y
   mi =. > 2 { y
-  start_pos =. > 3 { y
-  rope =. > 4 { y
+  rms_eps =. > 3 { y
+  start_pos =. > 4 { y
+  rope =. > 5 { y
   NB. rope = <cos_all; sin_all; cos_expq; sin_expq; cos_expk; sin_expk; mask_g2>
   cos_all =. > 0 { rope
   sin_all =. > 1 { rope
@@ -363,7 +351,7 @@ qw35_attention_b =: 4 : 0
   half =. <. n_rot % 2
 
   NB. Attention norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <x)
+  normed =. rms_norm_rows ((< rms_eps) , (< qw35_bd_attn_norm block_data) , <x)
   nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   NB. Fused Q+GATE projection (wq = 2*head_dim per head), then K/V
@@ -378,10 +366,10 @@ qw35_attention_b =: 4 : 0
 
   NB. Per-head RMSNorm on Q and K BEFORE RoPE
   Qf =. ((L * n_heads) , head_dim) $ , Q
-  Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_q_norm block_data) , <Qf)
+  Qf =. rms_norm_rows ((< rms_eps) , (< qw35_bd_a_q_norm block_data) , <Qf)
   Q =. (L , n_heads , head_dim) $ , Qf
   Kf =. ((L * n_heads_kv) , head_dim) $ , K
-  Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_a_k_norm block_data) , <Kf)
+  Kf =. rms_norm_rows ((< rms_eps) , (< qw35_bd_a_k_norm block_data) , <Kf)
   K =. (L , n_heads_kv , head_dim) $ , Kf
 
   NB. Partial NEOX RoPE (n_rot dims, pairs (i, i+half)) — tables + expansions
@@ -406,13 +394,13 @@ qw35_attention_b =: 4 : 0
   K_batch =. K
   V_batch =. V
   if. start_pos > 0 do.
-    k_pre =. > 0 { (kv_read ((<layer) , <(start_pos - 1)))
-    v_pre =. > 1 { (kv_read ((<layer) , <(start_pos - 1)))
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
     K =. k_pre , K
     V =. v_pre , V
   end.
-  kv_write_rows ((<0) , (<layer) , (<start_pos) , <K_batch)
-  kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
+  kv_write_rows ((<0) , (1 { y) , (4 { y) , <K_batch)
+  kv_write_rows ((<1) , (1 { y) , (4 { y) , <V_batch)
 
   NB. GQA without expanding KV over the combined keys: group the query heads
   NB. (n_heads_kv groups of n_groups) and batched-matmul each group's Q against
@@ -507,14 +495,15 @@ qw35_ssm_forward_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 1 { y
-  layer =. > 2 { y
+  rms_eps =. > 2 { y
+  layer =. > 3 { y
   L =. {. $ hidden
   head_v_dim =. qw35_bd_s_head_v_dim block_data
   num_v_heads =. qw35_bd_s_n_v_heads block_data
   d_inner =. qw35_bd_s_d_inner block_data
 
   NB. Attention norm
-  normed =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_attn_norm block_data) , <hidden)
+  normed =. rms_norm_rows ((< rms_eps) , (< qw35_bd_attn_norm block_data) , <hidden)
   nt =. |: normed   NB. |: normed hoisted once — 3 (attn) / 4 (ssm) transposes were materializing copies
 
   key_dim =. (qw35_bd_s_head_k_dim block_data) * (qw35_bd_s_n_k_heads block_data)
@@ -552,10 +541,10 @@ qw35_ssm_forward_b =: 4 : 0
   k3 =. (L , num_v_heads , head_v_dim) $ , k_conv
   v3 =. (L , num_v_heads , head_v_dim) $ , v_conv
   qf =. ((L * num_v_heads) , head_v_dim) $ , q3
-  qf =. l2norm_rows ((< mi_rms_eps mi) , <qf)
+  qf =. l2norm_rows ((< rms_eps) , <qf)
   q =. (L , num_v_heads , head_v_dim) $ , qf
   kf =. ((L * num_v_heads) , head_v_dim) $ , k3
-  kf =. l2norm_rows ((< mi_rms_eps mi) , <kf)
+  kf =. l2norm_rows ((< rms_eps) , <kf)
   k =. (L , num_v_heads , head_v_dim) $ , kf
 
   NB. Recurrence
@@ -567,7 +556,7 @@ qw35_ssm_forward_b =: 4 : 0
 
   NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z)
   o_flat =. ((L * num_v_heads) , head_v_dim) $ , o
-  o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
+  o_n =. rms_norm_rows ((< rms_eps) , (< qw35_bd_s_norm block_data) , <o_flat)
   z3 =. (L , num_v_heads , head_v_dim) $ , z
   z_flat =. ((L * num_v_heads) , head_v_dim) $ , z3
   gated =. o_n * silu z_flat
@@ -582,7 +571,7 @@ qw35_ssm_forward_b =: 4 : 0
   rs_write ((<layer) , (<new_conv) , <s_new)
 
   NB. Post-attention norm + SwiGLU FFN (no inner residual)
-  post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <out)
+  post =. rms_norm_rows ((< rms_eps) , (< qw35_bd_post_norm block_data) , <out)
   pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
   gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
   up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
@@ -597,10 +586,11 @@ qw35_block_forward_a_b =: 4 : 0
   hidden =. x
   block_data =. > 0 { y
   mi =. > 2 { y
+  rms_eps =. > 3 { y
   attn_result =. hidden qw35_attention_b y
   attn_out =. > 0 { attn_result
   sa_out =. attn_out + hidden
-  post =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_post_norm block_data) , <sa_out)
+  post =. rms_norm_rows ((< rms_eps) , (< qw35_bd_post_norm block_data) , <sa_out)
   pt =. |: post   NB. |: post hoisted once — 2 transposes were materializing 2 copies
   gate_f =. |: ((qw35_bd_ff_gate block_data) (+/ .*) pt)
   up_f =. |: ((qw35_bd_ff_up block_data) (+/ .*) pt)
@@ -659,14 +649,17 @@ qw35_run_blocks_b =: 4 : 0
   rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. <mi, <start_pos, <rope are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<mi) , (<start_pos) , <rope)
+  NB. Hoist the layer-invariant mi_rms_eps (looked-up EVERY layer in the
+  NB. attn/ssm forward verbs — compute once per chunk).
+  rms_eps =. mi_rms_eps mi
+  NB. <mi, <start_pos, <rope, + rms_eps are layer-invariant — box once, reuse.
+  bf_pre =. ((<mi) , (<rms_eps) , (<start_pos) , <rope)
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_b ((<block_data) , (<mi) , <b)
+      result =. state qw35_block_forward_s_b ((b { block_data_list) , (<mi) , (<rms_eps) , <b)
     else.
-      result =. state qw35_block_forward_a_b ((<block_data) , (<b) , bf_pre)
+      result =. state qw35_block_forward_a_b ((b { block_data_list) , (<b) , bf_pre)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -926,9 +919,9 @@ qw35_run_blocks_bd =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bd ((<block_data) , bf_pre , <b)
+      result =. state qw35_block_forward_s_bd ((b { block_data_list) , bf_pre , <b)
     else.
-      result =. state qw35_block_forward_a_bd ((<block_data) , bf_pre , (<b) , <rope)
+      result =. state qw35_block_forward_a_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -969,20 +962,21 @@ qw35_load =: 3 : 0
   te_dims =. > ((0 * 6) + 1) { ti
   vocab =. {: te_dims
   NB. qwen35-specific config fields: key_len, n_rot, ssm_*
-  key_len =. 'qwen35.attention.key_length' qw35_kv_uint kvs_ctx
-  n_rot =. 'qwen35.rope.dimension_count' qw35_kv_uint kvs_ctx
-  ssm_d_inner =. 'qwen35.ssm.inner_size' qw35_kv_uint kvs_ctx
-  ssm_d_state =. 'qwen35.ssm.state_size' qw35_kv_uint kvs_ctx
-  ssm_dt_rank =. 'qwen35.ssm.time_step_rank' qw35_kv_uint kvs_ctx
-  ssm_n_group =. 'qwen35.ssm.group_count' qw35_kv_uint kvs_ctx
+  key_len =. 'qwen35.attention.key_length' kv_uint kvs_ctx
+  n_rot =. 'qwen35.rope.dimension_count' kv_uint kvs_ctx
+  ssm_d_inner =. 'qwen35.ssm.inner_size' kv_uint kvs_ctx
+  ssm_d_state =. 'qwen35.ssm.state_size' kv_uint kvs_ctx
+  ssm_dt_rank =. 'qwen35.ssm.time_step_rank' kv_uint kvs_ctx
+  ssm_n_group =. 'qwen35.ssm.group_count' kv_uint kvs_ctx
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (<n_rot) , (< mi_rope_freq mi))
   NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   NB. vocab_size overwrites the build_mi_dict placeholder (qwen35 has no KV).
   (vocab ; (> 0 { rope_tables) ; (> 1 { rope_tables) ; key_len ; n_rot ; ssm_d_inner ; ssm_d_state ; ssm_dt_rank ; ssm_n_group) put__mi 'vocab_size' ; 'cos_tab' ; 'sin_tab' ; 'key_len' ; 'n_rot' ; 'ssm_d_inner' ; 'ssm_d_state' ; 'ssm_dt_rank' ; 'ssm_n_group'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -1009,7 +1003,7 @@ qw35_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -1017,127 +1011,16 @@ qw35_load =: 3 : 0
   block_data =. qw35_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
-NB. ---- Infer (raw single forward, no chat template) ----
-qw35_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
-
-  tokens =. gpt2_tokenize (<llm) , <text
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  scale =. 1
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-  output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-  tok_list =. , > tokens
-  n_tokens =. # tok_list
-  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-  NB. Fresh single-token infer: zero the SSM recurrent state (qw35_run_blocks_b
-  NB. create is guarded to protect batched per-sequence prefill).
-  rs_reset ((<18) , (<3) , (<6144) , (<128) , <16)
-  if. 1 = n_tokens do.
-    tok =. 0 { tok_list
-    hidden =. scale * |: (tok {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result =. hidden qw35_run_blocks (<llm) , <0'
-    else.
-      result =. hidden qw35_run_blocks (<llm) , <0
-    end.
-    hidden =. > 0 { result
-  else.
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result_b =. emb_all qw35_run_blocks_b ((<llm) , <0)'
-    else.
-      result_b =. emb_all qw35_run_blocks_b ((<llm) , <0)
-    end.
-    h_b =. > 0 { result_b
-    hidden =. > (n_tokens - 1) { h_b
-  end.
-  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  decoded =. gpt2_detokenize (<llm) , <pred_tok
-  tokens ; pred_tok ; decoded ; logits
-)
-
-NB. ---- Chat template prompt (qwen3.5: thinking/response generation prompt) ----
+NB. ---- Infer (raw single forward, no chat template) ----NB. ---- Chat template prompt (qwen3.5: thinking/response generation prompt) ----
 NB. The real template (GGUF tokenizer.chat_template) renders the generation
 NB. prompt with angle-bracket tags: thinking LF LF response LF LF (default) or
 NB. thinking LF (enable_thinking=true). Rendered via chat_tmpl_render.
 
 
-
-NB. ---- Generate (chat-template single turn) ----
-qw35_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  messages =. <('user') ; text
-  prompt =. qw35_chat_prompt messages
-  tokens =. gpt2_tokenize (<llm) , <prompt
-  stop =. qw35_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  gpt2_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm qw35_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-qw35_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. qw35_chat_prompt messages
-    tokens =. gpt2_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. qw35_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(gpt2_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
 
 NB. ---- Batched-PREFILL attention (qwen35): B chunks, one per seq at pos[b] ----
 NB. Mirrors qw35_attention_b but for prefill: hidden = (B, c, emb).  Q+GATE (fused),
@@ -1328,7 +1211,7 @@ qw35_ssm_forward_bp =: 4 : 0
 
     NB. Norm-gated output: rms_norm(o, ssm_norm) * silu(z)
     o_flat =. ((c * num_v_heads) , head_v_dim) $ , o
-    o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
+  o_n =. rms_norm_rows ((< mi_rms_eps mi) , (< qw35_bd_s_norm block_data) , <o_flat)
     z3 =. (c , num_v_heads , head_v_dim) $ , z_b
     z_flat =. ((c * num_v_heads) , head_v_dim) $ , z3
     gated =. o_n * silu z_flat
@@ -1431,9 +1314,9 @@ qw35_run_blocks_bp =: 4 : 0
   while. b < block_count do.
     block_data =. > b { block_data_list
     if. qw35_bd_is_ssm block_data do.
-      result =. state qw35_block_forward_s_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens))
+      result =. state qw35_block_forward_s_bp ((b { block_data_list) , (<pos) , (<mi) , (<b) , (<lens))
     else.
-      result =. state qw35_block_forward_a_bp ((<block_data) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
+      result =. state qw35_block_forward_a_bp ((b { block_data_list) , (<pos) , (<mi) , (<b) , (<lens) , <rope)
     end.
     state =. > 0 { result
     b =. b + 1
@@ -1441,12 +1324,7 @@ qw35_run_blocks_bp =: 4 : 0
   <state
 )
 
-NB. ---- Stop tokens ----
-qw35_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. ---- Stop tokens (computed once in qw35_load, dict member stop_tokens) ----
+qw35_stop_tokens =: llm_stop_tokens
 
-NB. ---- Simple wrappers ----
-qw35_infer_simple =: qw35_infer (] ; (<0 0 0.95 0.0)"_)
-qw35_generate_simple =: qw35_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
+NB. ---- Simple wrappers (aliased to the generic infer_simple in util/chat.ijs) ----

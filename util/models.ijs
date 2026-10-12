@@ -16,6 +16,7 @@ NB. ================================================================
 coclass 'inference'
 
 require 'web/gethttp'
+require 'llm/inference/gguf/gguf'   NB. dict_new (the jdict addon) for catalog_d
 
 NB. --- register ~models as ~user/models (per-user, cross-platform) ---
 NB. UserFolders_j_ is J's documented extension point for jpath folder tags.
@@ -63,12 +64,70 @@ catalog =: catalog , 'lfm2.5-1.2b-instruct';'lfm2';'unsloth/LFM2.5-1.2B-Instruct
 catalog =: catalog , 'lfm2.5-1.2b-thinking';'lfm2';'unsloth/LFM2.5-1.2B-Thinking-GGUF';'LFM2.5-1.2B-Thinking-BF16.gguf';0$0
 cat_ids =: 0 {"1 catalog
 
-NB. --- catalog accessors (y = row index) ---
-cat_arch   =: 3 : '> 1 { y { catalog'
-cat_repo   =: 3 : '> 2 { y { catalog'
-cat_main   =: 3 : '> 3 { y { catalog'
-cat_extras =: 3 : '> 4 { y { catalog'
-cat_idx    =: 3 : 'cat_ids i. <y'
+NB. --- build the named catalog dict: id -> spec dict {arch; repo; main; extras} ---
+NB. One spec dict per catalog row (named members), keyed by id. Built once at
+NB. load; the boxed `catalog` array stays as the declarative source. Multi-put
+NB. only (the single-key put path is broken in this J9.8 build); initcapacity
+NB. sized up-front (the resize path crashes).
+build_catalog_d =: 3 : 0
+  n =. #catalog
+  p =. 3 2 $ ('keytype';'boxed';'valuetype';'boxed';'initcapacity';n)
+  cd =. dict_new 'hash concurrent' ,&< p
+  ids =. ''
+  specs =. ''
+  for_i. i. n do.
+    id =. > i { cat_ids
+    arch =. > i { 1 {"1 catalog
+    repo =. > i { 2 {"1 catalog
+    main =. > i { 3 {"1 catalog
+    extras =. > i { 4 {"1 catalog
+    sp =. 3 2 $ ('keytype';'boxed';'valuetype';'boxed';'initcapacity';4)
+    sd =. dict_new 'hash concurrent' ,&< sp
+    (arch;repo;main;extras) put__sd 'arch';'repo';'main';'extras'
+    ids =. ids , <id
+    specs =. specs , <sd
+  end.
+  specs put__cd ids
+  cd
+)
+catalog_d =: build_catalog_d ''
+
+NB. --- catalog accessors (y = model id) ---
+cat_has   =: 3 : 0
+  d =. catalog_d
+  has__d <y
+)
+cat_spec  =: 3 : 0
+  d =. catalog_d
+  if. has__d <y do. > get__d <y else. '' end.
+)
+cat_arch  =: 3 : 0
+  sd =. cat_spec y
+  if. sd -: '' do. '' return. end.
+  d =. sd
+  > get__d <'arch'
+)
+cat_repo  =: 3 : 0
+  sd =. cat_spec y
+  if. sd -: '' do. '' return. end.
+  d =. sd
+  > get__d <'repo'
+)
+cat_main  =: 3 : 0
+  sd =. cat_spec y
+  if. sd -: '' do. '' return. end.
+  d =. sd
+  > get__d <'main'
+)
+cat_extras =: 3 : 0
+  sd =. cat_spec y
+  if. sd -: '' do. 0$0 return. end.
+  d =. sd
+  > get__d <'extras'
+)
+cat_idx   =: 3 : 0
+  cat_ids i. <y
+)
 
 NB. --- split 'owner/repo' -> <owner; repo> ---
 split_owner =: 3 : 0
@@ -121,10 +180,9 @@ model_target =: 3 : 0
     jpath ('~models/' , owner , '/' , repo , '/' , rest)
     return.
   end.
-  idx =. cat_idx spec
-  if. idx = #catalog do. spec return. end.
-  'owner repo' =. split_owner (cat_repo idx)
-  file =. cat_main idx
+  if. -. cat_has spec do. spec return. end.
+  'owner repo' =. split_owner (cat_repo spec)
+  file =. cat_main spec
   jpath ('~models/' , owner , '/' , repo , '/' , file)
 )
 
@@ -132,10 +190,9 @@ NB. --- download URL for a spec (id / HF path / URL) ---
 dl_url =: 3 : 0
   spec =. y
   if. 1 e. '://' E. spec do. spec return. end.
-  idx =. cat_idx spec
-  if. idx < #catalog do.
-    'owner repo' =. split_owner (cat_repo idx)
-    file =. cat_main idx
+  if. cat_has spec do.
+    'owner repo' =. split_owner (cat_repo spec)
+    file =. cat_main spec
     'https://huggingface.co/' , owner , '/' , repo , '/resolve/main/' , file
   else.
     'owner repo rest' =. parse_hf spec
@@ -188,11 +245,10 @@ model_download =: model_path
 NB. --- list the catalog ---
 model_list =: 3 : 0
   ids =. cat_ids
-  archs =. 1 {"1 catalog
   echo 'llm/inference model catalog (id; arch; repo):'
   for_i. i. #catalog do.
     id =. > i { ids
-    ar =. > i { archs
+    ar =. cat_arch id
     if. 0 = #ar do. ar =. 'planned' end.
     echo ((": >: i) , '. ' , id , '  arch=' , ar)
   end.
@@ -201,27 +257,30 @@ model_list =: 3 : 0
 
 NB. --- files (roles) for a model: list of <role; file> ---
 model_roles =: 3 : 0
-  idx =. cat_idx y
-  if. idx = #catalog do. 0 $ 0 return. end.
-  ((<'main'; cat_main idx)) , cat_extras idx
+  if. -. cat_has y do. 0 $ 0 return. end.
+  ((<'main'; cat_main y)) , cat_extras y
 )
 
 NB. --- path for a specific role (main / mmproj / mtp / dflash) ---
 model_file =: 3 : 0      NB. y = <id; role>
   'id role' =. y
-  idx =. cat_idx id
-  if. idx = #catalog do. '' return. end.
+  if. -. cat_has id do. '' return. end.
   if. role -: 'main' do.
-    file =. cat_main idx
+    file =. cat_main id
   else.
-    extras =. cat_extras idx
+    extras =. cat_extras id
     if. 0 = #extras do.
       echo 'model_file: no ' , role , ' file for ' , id
       '' return.
     end.
-    file =. ''
+    rf =. (0 {"1 extras) i. <role
+    if. rf = #extras do.
+      echo 'model_file: no ' , role , ' file for ' , id
+      '' return.
+    end.
+    file =. > 1 { rf { extras
   end.
-  'owner repo' =. split_owner (cat_repo idx)
+  'owner repo' =. split_owner (cat_repo id)
   target =. jpath ('~models/' , owner , '/' , repo , '/' , file)
   if. -. fexist target do.
     url =. 'https://huggingface.co/' , owner , '/' , repo , '/resolve/main/' , file

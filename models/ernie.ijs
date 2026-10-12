@@ -22,19 +22,6 @@ require 'llm/inference/models/llama'
 require 'llm/inference/util/minja'
 require 'llm/inference/util/chat_template'
 
-NB. ---- KV helpers ----
-ernie_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-ernie_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
-
 NB. ---- Extract ERNIE model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim;
 NB.      rope_freq; vocab_size; rms_eps; n_ff>  (load appends rope tables at
@@ -42,16 +29,16 @@ NB.      10/11 and fixes vocab_size at 7 from token_embd dims — ERNIE has
 NB.      no vocab_size KV)
 ernie_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'ernie4_5.block_count' ernie_kv_uint data
-  context_length =. 'ernie4_5.context_length' ernie_kv_uint data
-  emb_len =. 'ernie4_5.embedding_length' ernie_kv_uint data
-  n_heads =. 'ernie4_5.attention.head_count' ernie_kv_uint data
-  n_heads_kv =. 'ernie4_5.attention.head_count_kv' ernie_kv_uint data
-  rope_freq =. 'ernie4_5.rope.freq_base' ernie_kv_float data
+  block_count =. 'ernie4_5.block_count' kv_uint data
+  context_length =. 'ernie4_5.context_length' kv_uint data
+  emb_len =. 'ernie4_5.embedding_length' kv_uint data
+  n_heads =. 'ernie4_5.attention.head_count' kv_uint data
+  n_heads_kv =. 'ernie4_5.attention.head_count_kv' kv_uint data
+  rope_freq =. 'ernie4_5.rope.freq_base' kv_float data
   vocab_size =. 0
-  rms_eps =. 'ernie4_5.attention.layer_norm_rms_epsilon' ernie_kv_float data
-  n_ff =. 'ernie4_5.feed_forward_length' ernie_kv_uint data
-  key_len =. 'ernie4_5.attention.key_length' ernie_kv_uint data
+  rms_eps =. 'ernie4_5.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'ernie4_5.feed_forward_length' kv_uint data
+  key_len =. 'ernie4_5.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -89,8 +76,9 @@ ernie_load =: 3 : 0
   vocab_size =. 1 { dims
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1 ; vocab_size) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale' ; 'vocab_size'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_spm_tokenizer kv_result
+  stop_tokens =. (spm_eos tokenizer) , 100272
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -114,7 +102,7 @@ ernie_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -122,16 +110,14 @@ ernie_load =: 3 : 0
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Tokenize/detokenize (SPM) ----
 NB. No BOS (add_bos_token=false): raw infer and chat both start with the text.
-ernie_tokenize =: 3 : 0
-  spm_tokenize y
-)
-ernie_detokenize =: 3 : 0
-  spm_detokenize y
-)
+ernie_tokenize =: llm_tokenize
+ernie_detokenize =: llm_detokenize
 
 NB. ---- Forward verbs: ERNIE reuses the generic llama arch ----
 ernie_run_blocks =: llama_run_blocks
@@ -139,132 +125,7 @@ ernie_run_blocks_b =: llama_run_blocks_b
 ernie_run_blocks_bd =: llama_run_blocks_bd
 ernie_run_blocks_bp =: llama_run_blocks_bp
 
-NB. ---- Single-token inference ----
-NB. Usage: llm ernie_infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm ernie_infer_simple text
-ernie_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. ernie_tokenize (<llm) , <text
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  scale =. 1
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-  output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-  tok_list =. , > tokens
-  n_tokens =. # tok_list
-  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-  if. 1 = n_tokens do.
-    tok =. 0 { tok_list
-    hidden =. scale * |: (tok {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result =. hidden ernie_run_blocks (<llm) , <0'
-    else.
-      result =. hidden ernie_run_blocks (<llm) , <0
-    end.
-    hidden =. > 0 { result
-  else.
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)'
-    else.
-      result_b =. emb_all ernie_run_blocks_b ((<llm) , <0)
-    end.
-    h_b =. > 0 { result_b
-    hidden =. > (n_tokens - 1) { h_b
-  end.
-  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  decoded =. ernie_detokenize (<llm) , <pred_tok
-  tokens ; pred_tok ; decoded ; logits
-)
-
-NB. ---- Multi-token generation ----
-NB. Usage: llm ernie_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm ernie_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, logit scale, run_blocks/run_blocks_b) are
-NB. dispatched by llm_arch. Fresh mode: kv_create + batched prefill; resume
-NB. mode (chat sessions): incremental prefill of the new segment. Stop token
-NB. not appended.
-ernie_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. ernie_chat_prompt messages
-  tokens =. ernie_tokenize (<llm) , <prompt
-  stop =. ernie_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  ernie_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm ernie_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-NB. Forward = llama_run_blocks_bd alias; SPM tokenizer + ERNIE chat template.
-ernie_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. ernie_chat_prompt messages
-    tokens =. ernie_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. ernie_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(ernie_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm ernie_infer_simple text            | llm ernie_generate_simple (text ; n)
-ernie_infer_simple =: ernie_infer (] ; (<0 0 0.95 0.0)"_)
-ernie_generate_simple =: ernie_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- ERNIE chat template ----
 NB. cls_token '<|begin_of_sentence|>'; user 'User: <content>\n'; assistant
@@ -273,7 +134,5 @@ NB. generation prompt 'Assistant: '. No BOS (add_bos_token=false) and no trim.
 
 
 NB. Stop tokens: EOS (</s> = 2) and the chat sep token <|end_of_sentence|> (100272).
-ernie_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  (spm_eos tk) , 100272
-)
+NB. Computed once in ernie_load (dict member stop_tokens).
+ernie_stop_tokens =: llm_stop_tokens

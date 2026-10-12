@@ -17,39 +17,22 @@ require 'llm/inference/util/chat_template'
 
 NB. Chat-template dispatch marker. '' = SmolLM2 template; llama_load sets it
 NB. to the tokenizer's pre ('llama-bpe' -> Llama-3.2 template). The default
-NB. keeps llama_chat_prompt usable when a tokenizer is built standalone
-NB. (test_chat builds minimal llms without llama_load).
-llama_tokenizer_pre_g =: ''
-
 NB. ---- Helper: move axes (dyadic |:) using variable axis list ----
-
-NB. ---- KV helpers ----
-llama_kv_uint =: 4 : 0
-  key =. x
-  data =. y
-  key kv_uint data
-)
-
-llama_kv_float =: 4 : 0
-  key =. x
-  data =. y
-  key kv_float data
-)
 
 NB. ---- Extract llama model info from KV pairs ----
 NB. mi = <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim; rope_freq; vocab_size; rms_eps; n_ff>
 llama_extract_hparams =: 3 : 0
   data =. y
-  block_count =. 'llama.block_count' llama_kv_uint data
-  context_length =. 'llama.context_length' llama_kv_uint data
-  emb_len =. 'llama.embedding_length' llama_kv_uint data
-  n_heads =. 'llama.attention.head_count' llama_kv_uint data
-  n_heads_kv =. 'llama.attention.head_count_kv' llama_kv_uint data
-  rope_freq =. 'llama.rope.freq_base' llama_kv_float data
-  vocab_size =. 'llama.vocab_size' llama_kv_uint data
-  rms_eps =. 'llama.attention.layer_norm_rms_epsilon' llama_kv_float data
-  n_ff =. 'llama.feed_forward_length' llama_kv_uint data
-  key_len =. 'llama.attention.key_length' llama_kv_uint data
+  block_count =. 'llama.block_count' kv_uint data
+  context_length =. 'llama.context_length' kv_uint data
+  emb_len =. 'llama.embedding_length' kv_uint data
+  n_heads =. 'llama.attention.head_count' kv_uint data
+  n_heads_kv =. 'llama.attention.head_count_kv' kv_uint data
+  rope_freq =. 'llama.rope.freq_base' kv_float data
+  vocab_size =. 'llama.vocab_size' kv_uint data
+  rms_eps =. 'llama.attention.layer_norm_rms_epsilon' kv_float data
+  n_ff =. 'llama.feed_forward_length' kv_uint data
+  key_len =. 'llama.attention.key_length' kv_uint data
   if. key_len <: 0 do. key_len =. emb_len % n_heads end.
   head_dim =. key_len
   (<"0) block_count , context_length , emb_len , n_heads , n_heads_kv , head_dim , rope_freq , vocab_size , rms_eps , n_ff
@@ -104,14 +87,14 @@ NB. ---- Expand KV axis (n_kv) -> n_heads (each KV head repeated n_groups times)
 NB. ---- Single-token attention (llama: GQA, interleaved RoPE, no SWA) ----
 NB. x = hidden; y = <block_data; pos; mi; layer>
 llama_attention =: 4 : 0
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab attn_scale resid_scale layer' =. y
   n_heads =. llama_bd_n_heads block_data
   head_dim =. llama_bd_head_dim block_data
   n_heads_kv =. llama_bd_n_heads_kv block_data
   n_groups =. n_heads % n_heads_kv
 
-  NB. Attention norm
-  hidden =. rms_norm ((< mi_rms_eps mi) , (< (llama_bd_attn_norm block_data)) , <x)
+  NB. Attention norm (rms_eps hoisted from run_blocks — no per-layer mi lookup)
+  hidden =. rms_norm ((< rms_eps) , (< (llama_bd_attn_norm block_data)) , <x)
 
   NB. Separate Q, K, V projections
   qv =. (llama_bd_attn_q block_data) linear_r hidden
@@ -121,20 +104,20 @@ llama_attention =: 4 : 0
   K =. (n_heads_kv, head_dim) $ kv
   V =. (n_heads_kv, head_dim) $ vv
 
-  NB. Interleaved RoPE (table-based)
-  cos_t =. pos { mi_cos_tab mi
-  sin_t =. pos { mi_sin_tab mi
+  NB. Interleaved RoPE (table-based; tables hoisted from run_blocks)
+  cos_t =. pos { cos_tab
+  sin_t =. pos { sin_tab
   rope_t =. (<cos_t) , (<sin_t)
   Q =. Q rope_apply2_t rope_t
   K =. K rope_apply2_t rope_t
 
-  NB. Llama scales Q by 1/sqrt(head_dim) before attention
-  Q =. Q * mi_attn_scale mi
+  NB. Llama scales Q by 1/sqrt(head_dim) before attention (hoisted)
+  Q =. Q * attn_scale
 
   NB. Write K,V (n_kv, hd) to cache, read all up to pos
-  NB. layer/pos are already boxed in y (indices 3/1) — pass them, no re-box.
-  kv_write ((3 { y) , (1 { y) , (<K) , (<V))
-  kv_result =. kv_read ((3 { y) , (1 { y))
+  NB. layer/pos are already boxed in y (indices 8/1 after the hoist) — pass them, no re-box.
+  kv_write ((8 { y) , (1 { y) , (<K) , (<V))
+  kv_result =. kv_read ((8 { y) , (1 { y))
   k_all =. > 0 { kv_result   NB. (win, n_kv, hd)
   v_all =. > 1 { kv_result
   win =. pos + 1
@@ -258,13 +241,13 @@ NB. ---- Single block forward (llama) ----
 NB. x = hidden (emb,) — the layer input; y = <block_data; pos; mi; layer>
 llama_block_forward =: 4 : 0
   hidden =. x
-  'block_data pos mi layer' =. y
+  'block_data pos mi rms_eps cos_tab sin_tab attn_scale resid_scale layer' =. y
   attn_result =. hidden llama_attention y
   attn_out =. > 0 { attn_result
-  rs =. mi_resid_scale mi   NB. 1 for non-granite — skip the no-op copy
+  rs =. resid_scale   NB. hoisted from run_blocks (1 for non-granite — skip the no-op copy)
   if. rs ~: 1 do. attn_out =. attn_out * rs end.
   sa_out =. attn_out + hidden
-  ffn_in =. rms_norm ((< mi_rms_eps mi) , (< (llama_bd_ff_norm block_data)) , <sa_out)
+  ffn_in =. rms_norm ((< rms_eps) , (< (llama_bd_ff_norm block_data)) , <sa_out)
   gate =. (llama_bd_ff_gate block_data) linear_r ffn_in
   up =. (llama_bd_ff_up block_data) linear_r ffn_in
   ffn_raw =. (llama_bd_ff_down block_data) linear_r (gate swiglu up)
@@ -301,17 +284,24 @@ llama_run_blocks =: 4 : 0
   n_heads_kv =. mi_n_heads_kv mi
   block_count =. mi_block_count mi
   ctx_len =. mi_context_len mi
+  NB. Hoist the layer-invariant mi scalars/tables once (they are hash-looked-up
+  NB. EVERY layer in llama_attention/llama_block_forward — ~6 lookups × n_layers ×
+  NB. tokens; computing them once per token avoids the per-layer hash lookups).
+  rms_eps =. mi_rms_eps mi
+  cos_tab =. mi_cos_tab mi
+  sin_tab =. mi_sin_tab mi
+  attn_scale =. mi_attn_scale mi
+  resid_scale =. mi_resid_scale mi
   state =. x
   if. 0 = # kv_meta do.
     kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
   end.
   b =. 0
   block_data_list =. llm_block_data llm
-  NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
-  bf_pre =. ((<pos) , (<mi))
+  NB. (<pos), (<mi), + the hoisted mi values are layer-invariant — box once, reuse.
+  bf_pre =. ((<pos) , (<mi) , (<rms_eps) , (<cos_tab) , (<sin_tab) , (<attn_scale) , (<resid_scale))
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward ((<block_data) , bf_pre , <b)
+    result =. state llama_block_forward ((b { block_data_list) , bf_pre , <b)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -361,8 +351,7 @@ llama_run_blocks_b =: 4 : 0
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward_b ((<block_data) , (<b) , bfb_pre)
+    result =. state llama_block_forward_b ((b { block_data_list) , (<b) , bfb_pre)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -629,8 +618,7 @@ llama_run_blocks_bd =: 4 : 0
   NB. (<pos), (<mi) are layer-invariant — box once, reuse per layer.
   bf_pre =. ((<pos) , (<mi))
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward_bd ((<block_data) , bf_pre , (<b) , <rope)
+    result =. state llama_block_forward_bd ((b { block_data_list) , bf_pre , (<b) , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -700,8 +688,7 @@ llama_run_blocks_bp =: 4 : 0
   b =. 0
   block_data_list =. llm_block_data llm
   while. b < block_count do.
-    block_data =. > b { block_data_list
-    result =. state llama_block_forward_bp ((<block_data) , (<b) , bfb_pre , <rope)
+    result =. state llama_block_forward_bp ((b { block_data_list) , (<b) , bfb_pre , <rope)
     state =. > 0 { result
     b =. b + 1
   end.
@@ -734,12 +721,10 @@ llama_load =: 3 : 0
   head_dim =. mi_head_dim mi
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale'
   NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv_result)
+  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
   tokenizer =. build_gpt2_tokenizer kv_result
+  stop_tokens =. tokenizer_eos_g tokenizer
   NB. Chat-template dispatch marker: llama_chat_prompt takes messages only
-  NB. (chat.ijs contract), so the llama module remembers which tokenizer
-  NB. pre the current model uses ('llama-bpe' -> llama3 template, else SmolLM2).
-  llama_tokenizer_pre_g =: tokenizer_pre_g tokenizer
   all_tensors =. ''
   tensor_idx =. 0
   while. tensor_idx < n_tensors do.
@@ -763,7 +748,7 @@ llama_load =: 3 : 0
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
   tk =. <tokenizer
   mi_b =. <mi
-  kc_b =. <''   NB. kv cache is the kv_cache_g global, not stored in the llm
+  kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
   td =. <tds
   all_tensors =. emb_canonical all_tensors
   at =. <all_tensors
@@ -771,6 +756,8 @@ llama_load =: 3 : 0
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
   llm =. llm , <kv_data
+  llm =. llm , <stop_tokens
+  llm =. llm , <ct_tmpl
 )
 
 NB. ---- Generic tokenize/detokenize (llama arch) ----
@@ -779,145 +766,10 @@ NB. (pre 'llama-bpe'): llama3 regex pre + gpt2 BPE merges, and llama.cpp
 NB. adds BOS (add_bos=true), so the bos token is prepended here. The chat
 NB. template renders no <|begin_of_text|> marker — this supplies it, so the
 NB. token stream matches llama.cpp's _input_ids exactly (bos once).
-llama_tokenize =: 3 : 0
-  llm_data =. input_llm y
-  text =. input_text y
-  tokenizer =. llm_tokenizer llm_data
-  tokens =. gpt2_tokenize (<llm_data) , <text
-  if. 'llama-bpe' -: tokenizer_pre_g tokenizer do.
-    bos =. tokenizer_bos_g tokenizer
-    if. bos > 0 do. tokens =. (<bos) , tokens end.
-  end.
-  tokens
-)
-llama_detokenize =: 3 : 0
-  gpt2_detokenize y
-)
+llama_tokenize =: llm_tokenize
+llama_detokenize =: llm_detokenize
 
-NB. ---- Single-token inference ----
-NB. Usage: llm llama_infer (text ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm llama_infer_simple text
-llama_infer =: 4 : 0
-  llm =. x
-  args =. infer_args y
-  text =. > 0 { args
-  temp =. > 1 { args
-  k =. > 2 { args
-  p =. > 3 { args
-  min_p =. > 4 { args
 
-  tokens =. llama_tokenize (<llm) , <text
-  mi =. llm_mi llm
-  emb_len =. mi_emb_len mi
-  scale =. 1
-  block_count =. mi_block_count mi
-  ctx_len =. mi_context_len mi
-  n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
-  emb_w =. 'token_embd.weight' get_tensor_cached_d llm
-  output_norm_w =. 'output_norm.weight' get_tensor_cached_d llm
-  tok_list =. , > tokens
-  n_tokens =. # tok_list
-  kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
-  if. 1 = n_tokens do.
-    tok =. 0 { tok_list
-    hidden =. scale * |: (tok {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result =. hidden llama_run_blocks (<llm) , <0'
-    else.
-      result =. hidden llama_run_blocks (<llm) , <0
-    end.
-    hidden =. > 0 { result
-  else.
-    emb_all =. scale * |: (tok_list {"1 emb_w)
-    if. gen_timing_g do.
-      pre_s =. 6!:2 'result_b =. emb_all llama_run_blocks_b ((<llm) , <0)'
-    else.
-      result_b =. emb_all llama_run_blocks_b ((<llm) , <0)
-    end.
-    h_b =. > 0 { result_b
-    hidden =. > (n_tokens - 1) { h_b
-  end.
-  logits =. output_head ((< mi_rms_eps mi) , (<output_norm_w) , (<emb_w) , <hidden)
-  if. gen_timing_g do. report_prefill (pre_s , n_tokens) end.
-  pred_tok =. sample_from ((<temp) , (<k) , (<p) , (<min_p) , <logits)
-  decoded =. llama_detokenize (<llm) , <pred_tok
-  tokens ; pred_tok ; decoded ; logits
-)
-
-NB. ---- Multi-token generation ----
-NB. Usage: llm llama_generate (text ; max_steps ; <temp;k;p;min_p>)
-NB.        Simple (default params): llm llama_generate_simple (text ; max_steps)
-NB. Generation is the UNIFIED gen_loop_core (llm_core.ijs) — per-arch
-NB. differences (embedding scale, run_blocks/run_blocks_b) are dispatched by
-NB. llm_arch. Fresh mode: kv_create + batched prefill; resume mode (chat
-NB. sessions): incremental prefill of the new segment. Stop token not appended.
-llama_generate =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  text =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-
-  NB. Frame the prompt with the chat template (single user message) so the
-  NB. instruct model emits its stop tokens; stop on the arch stop list.
-  messages =. <('user') ; text
-  prompt =. llama_chat_prompt messages
-  tokens =. llama_tokenize (<llm) , <prompt
-  stop =. llama_stop_tokens llm
-  L =. # , > tokens
-  output =. llm gen_loop_core (tokens ; '' ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  gen =. L }. output
-  llama_detokenize (<llm) , <gen
-)
-
-NB. ---- Batched generation: B independent prompts in parallel ----
-NB. Usage: llm llama_generate_batch (prompts ; max_steps ; <temp;k;p;min_p>)
-llama_generate_batch =: 4 : 0
-  llm =. x
-  args =. gen_args y
-  prompts =. > 0 { args
-  max_steps =. > 1 { args
-  temp =. > 2 { args
-  k =. > 3 { args
-  p =. > 4 { args
-  min_p =. > 5 { args
-  B =. # prompts
-  llm_box =. <llm
-  prompts_tok =. ''
-  prompts_len =. ''
-  i =. 0
-  while. i < B do.
-    text =. > i { prompts
-    messages =. <('user') ; text
-    prompt =. llama_chat_prompt messages
-    tokens =. llama_tokenize (llm_box , <prompt)
-    tok_list =. , > tokens
-    prompts_tok =. prompts_tok , <tok_list
-    prompts_len =. prompts_len , <(# tok_list)
-    i =. i + 1
-  end.
-  stop =. llama_stop_tokens llm
-  kv_batch_g =: B
-  output =. llm gen_loop_batch (prompts_tok ; max_steps ; temp ; k ; p ; min_p ; <stop)
-  answers =. ''
-  i =. 0
-  while. i < B do.
-    L =. > i { prompts_len
-    gen =. (L) }. (> i { output)
-    answers =. answers , <(llama_detokenize (llm_box , <gen))
-    i =. i + 1
-  end.
-  answers
-)
-
-NB. ---- Simple wrappers (default greedy/top-p params) ----
-NB. llm llama_infer_simple text            | llm llama_generate_simple (text ; n)
-llama_infer_simple =: llama_infer (] ; (<0 0 0.95 0.0)"_)
-llama_generate_simple =: llama_generate (0&{ , 1&{ , (<0 0 0.95 0.0)"_)
 
 NB. ---- Chat-template support (Phase 1.1) ----
 NB. y = messages: boxed list of message boxes; each = <role ; content>.
@@ -926,7 +778,5 @@ NB. chat_tmpl_render for both SmolLM2 and Llama-3.2 (the llama arch).
 
 
 NB. Stop token: EOS (SmolLM2 <|im_end|>=2; Llama-3.2 <|eot_id|>=128009).
-llama_stop_tokens =: 3 : 0
-  tk =. llm_tokenizer y
-  tokenizer_eos_g tk
-)
+NB. Computed once in llama_load (dict member stop_tokens).
+llama_stop_tokens =: llm_stop_tokens

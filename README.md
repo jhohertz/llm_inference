@@ -257,18 +257,6 @@ To pin a specific one, use its arch verb (all share the same canonical form):
 | Qwen3.5 | `qw35_infer_inference_` / `qw35_generate_inference_` |
 | LFM2 | `lfm2_infer_inference_` / `lfm2_generate_inference_` |
 
-### Object wrapper
-
-Prefer objects? `util/llmobj.ijs` wraps a loaded model so you don't juggle
-box-of-boxes:
-
-```j
-require 'llm/inference/util/llmobj.ijs'
-obj =. './models/model.gguf' conew 'llmobj'
-text =. generate__obj ('Hello' ; 20 ; <1.0 64 0.95 0.0)
-destroy__obj ''
-```
-
 ---
 
 ## Models
@@ -365,7 +353,7 @@ tokenizers/          BPE + SentencePiece tokenizers
 kernels/             float kernels (jfloat.ijs)
 gguf/                GGUF parser + quant decoders
 util/                KV cache, session, llm core, sampler, chat, chat-template
-                     + minja jinja engine, model catalog, llmobj
+                     + minja jinja engine, model catalog
 http/                OpenAI-compatible HTTP server (server.ijs, protocol.ijs, builders.ijs)
 tests/               test suites (run tests/j/run_all_tests.sh from the checkout)
 ```

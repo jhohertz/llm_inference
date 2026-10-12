@@ -227,12 +227,14 @@ These were once "known limitations" and are now resolved or documented:
    smollm2 9/10/11, qwen2 12/13/14), breaking the first's attention on a second
    load. **DONE** — per-arch accessor prefixes (`gem3_bd_*`/`qw2_bd_*`/`llama_bd_*`)
    + `tests/j/test_multiach.ijs` regression (gemma3 then qwen2 module load).
-   Note: locales/OOP are the deeper architecture direction (each model as an
-   object locale holding its arch/block_data/tokenizer, `llmobj.ijs` already
-   seeds the OOP path); the rename was chosen as the contained fix to keep the
-   public `inference`-locale contract unchanged. Enables side-by-side
-   multi-model testing (Phase 2 verification) and chat-template tests across
-   arches.
+   Note: locales/OOP were the deeper architecture direction (each model as an
+   object locale holding its arch/block_data/tokenizer); `llmobj.ijs` seeded the
+   OOP path but was RETIRED (2026-10) once the llm noun became a named dict (11
+   named members via the `llm_*` accessors) — the dict gives the same
+   named-member access without a separate OOP wrapper. The rename was chosen as
+   the contained fix to keep the public `inference`-locale contract unchanged.
+   Enables side-by-side multi-model testing (Phase 2 verification) and
+   chat-template tests across arches.
 3. **Test infra**: **DONE** — re-enabled `test_gguf.ijs` (parser suite
    135/135, 9 models); add chat-template oracle tests for the three models.
 
@@ -1273,10 +1275,10 @@ gate green throughout.
 
 Deferred (recorded in PLAN.md "Deferred Optimization Opportunities"): per-layer
 `mi` dict-lookup hoisting (measured ~0.38μs/lookup, ≈0.1-0.5% of a decode step —
-genuinely marginal, and invasive/conflicting with the pass-through), the
-`kv_write (<layer), (<pos)` re-box, and tacit conversion of the hot loops
-(kernels already tacit; loops stay explicit — the `u^:v^:_`/`u^:n` idioms are
-rank-0 slow here).
+genuinely marginal, and invasive/conflicting with the pass-through), and tacit
+conversion of the hot loops (kernels already tacit; loops stay explicit — the
+`u^:v^:_`/`u^:n` idioms are rank-0 slow here). (The `kv_write (<layer), (<pos)`
+re-box was completed in the 2026-10 dict-ification pass — see below.)
 
 ## Redundant computation elimination — generation hot paths (2026-10)
 
@@ -1311,6 +1313,22 @@ and lint load-probe green.
   - **J gotcha**: `bf_pre , <b , <rope` mis-parses as a numeric/boxed domain
     error (the `, <b` after a boxed-list variable); parenthesize as `(<b)`.
     Recorded in docs/J-KNOWLEDGE.md §Boxing/Packing Rules.
+- **Per-layer `mi` dict-lookup hoisting (single-token path, all 8 arches)** —
+  the `mi_rms_eps mi` / `mi_attn_scale mi` / `mi_resid_scale mi` /
+  `mi_cos_tab mi` / `mi_sin_tab mi` accessors are hash-looked-up EVERY layer in
+  `*_attention`/`*_block_forward` (~5-7 lookups × n_layers × tokens). Each arch's
+  `*_run_blocks` now computes the layer-invariant scalars/tables ONCE per token
+  and threads them through the `y` signature (boxed once in `bf_pre`), replacing
+  the per-layer hash-lookups. Arch-specific: llama/granite/ernie hoist
+  `rms_eps`+`cos_tab`+`sin_tab`+`attn_scale`+`resid_scale`; gemma3/qwen2/qwen3
+  hoist `rms_eps`+`cos_tab`+`sin_tab`; qwen35/lfm2 hoist `rms_eps` (their rope
+  tables were already hoisted in `*_run_blocks_b`). The `*_bd`/`_bp` batched-multi
+  path is untouched. Commit `6f0c51f`. J gotcha: the `y`-signature unpack indices
+  shift when adding boxes to `bf_pre` — `kv_write`/`kv_write_rows`/`kv_read`
+  layer/start_pos indices must be updated (layer moved to index 5/6/8, start_pos
+  to 4); an `o_n` edit accidentally matched the `_bp` path (not `_b`) — the `_bp`
+  path keeps its own `mi_rms_eps mi`. Verified bit-exact (all 8 arch suites +
+  test_batched 11/11, run_all_tests.sh ALL TESTS + LINT PASSED).
 - **`sampler_softmax` dead `allsame` guard** — the `allsame =. *./ shifted =
   max_x` check + branch was provably dead: when all logits equal `max_x`,
   `shifted` is all 0 so `2 ^ shifted` = all 1.0 = the `1 #~ # y` branch. Removed
@@ -1439,3 +1457,45 @@ negligible overhead — not in the generation hot path). Commit `49e7a58`.
   each site so both the timed and direct paths execute in the loop verb's scope.
   (The `6!:2`/`0!:0` string-evals persist their `=.` locals in the caller's
   scope, so the timed path is correct when the flag is on.)
+
+## Dict-ification & accessor robustness — llm noun, catalog, tokenizers (2026-10)
+
+The `llm` noun became a named dict (queried via the `llm_*` accessors; now **16
+members**: `path; ti; default_params; tokenizer; mi; kv_cache; tds; all_tensors;
+block_data; kv_data; stop_tokens; ct_tmpl; arch; ct_caps; ct_tool_ex; lf2_conv`);
+`kv_data`/`mi` are jdicts. Follow-up pass on the shared dict/index access pattern
++ catalog + the remaining `kv_write` re-box, plus the generic-verb DRY (Tier 1)
++ the Tier 3 per-model-globals-into-the-dict work:
+
+- **`catalog_d` (util/models.ijs)** — the model catalog is now a `catalog_d`
+  jdict (id → spec dict `{arch; repo; main; extras}`) with named accessors
+  `cat_has`/`cat_spec`/`cat_arch`/`cat_repo`/`cat_main`/`cat_extras`;
+  `model_target`/`dl_url`/`model_list`/`model_roles`/`model_file` updated
+  (`model_file`/`model_roles` do real role lookups in `extras` — mmproj/mtp/
+  dflash; all empty today, wired for future). Verified `test_models` 23/23.
+- **`dict_probe` (util/llm_core.ijs)** — the dual-mode dict/index access pattern
+  (`llm_get` + the tokenizer accessors `tokenizer_llama3`/`tokenizer_gpt2`/
+  `spm_llm_tokenizer`) is DRY'd into one `dict_probe` helper: `x dict_probe y`
+  → `<found; value|container>` (robust dict detection via `has__d` in a
+  try/catch — a bare `1 = # y` misdetects a 1-element box as a dict). Fixed the
+  `x ; boxed_list` SPREAD + `'found v' =.` unboxing bugs on the way.
+- **`kv_write` re-box completion (lfm2/qwen35 `_b` attention)** — the
+  single-token `*_attention` re-box was already index-based (`(3{y),(1{y)`
+  llama/qwen2/qwen3, `(4{y),(1{y)` gemma3); the remaining `kv_read`/
+  `kv_write_rows` in `lfm2_attention_b`/`qw35_attention_b` re-boxed `(<layer)`,
+  `(<start_pos)` after unpacking from `y` — now reuse `(1{y),(3{y)`. Verified
+  bit-exact (`test_lfm2` 22/22, `test_qwen35` 39/39, `test_batched` 11/11).
+- **Generic chat/stop/tokenize verbs (Tier 1, DRY)** — `*_chat_prompt` (8 arch
+  aliases → one `chat_prompt`), `*_stop_tokens` (8 → the dict member `stop_tokens`
+  read via the `llm_stop_tokens` accessor), `*_tokenize`/`*_detokenize` (16 →
+  `llm_tokenize`/`llm_detokenize` in llm_core, arch-dispatched from the dict,
+  inlining the llama-bpe bos logic). The per-arch names stay as thin aliases
+  (the documented "precise entry points" + tests keep working).
+- **Tier 3 per-model globals → dict members** — `ct_tmpl` (the GGUF
+  `tokenizer.chat_template`, read via `llm_ct_tmpl`); `ct_caps` + `ct_tool_ex`
+  (lazily computed once per model via `ct_new`/`detect_caps`, cached in
+  `chat_tmpl_render` — no per-render recompute, read via `llm_ct_caps`/
+  `llm_ct_tool_ex`); `lf2_conv` (the per-model lfm2 conv config
+  `lf2_conv_layers`/`lf2_n_conv_g` + dims, read via `llm_lf2_conv`, bound on
+  model load by `llm_lf2_bind`, which also resets the conv runtime mirror so no
+  stale conv state crosses models).

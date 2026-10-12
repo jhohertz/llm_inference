@@ -57,7 +57,7 @@ test_granite =: 3 : 0
 
   NB. --- chat prompt tokens vs llama.cpp _input_ids ---
   messages =. <('user') ; 'The capital of France is'
-  prompt =. granite_chat_prompt messages
+  prompt =. llm granite_chat_prompt messages
   toks =. granite_tokenize (<llm) , <prompt
   got_toks =. , > toks
   exp_toks =. 100264 9125 100265 2675 527 264 11190 18328 13 5321 6106 14847 527 6721 11 13687 11 323 6220 13 100257 198 100264 882 100265 791 6864 315 9822 374 100257 198 100264 78191 100265

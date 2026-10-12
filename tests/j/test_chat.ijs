@@ -29,6 +29,16 @@ mk_llm =: 3 : 0
   (<'') , (<'') , (<'') , <y
 )
 
+NB. ---- Build a minimal llm noun with tokenizer at index 3 + ct_tmpl at 11 ----
+NB. y = <tokenizer ; ct_tmpl>. ct_tmpl lands at index 11 (dict order:
+NB. ...kv_data; stop_tokens; ct_tmpl; arch), so chat_tmpl_render's llm_ct_tmpl
+NB. works via the boxed-list index path.
+mk_llm_ct =: 3 : 0
+  tk =. 0 { y
+  ct =. 1 { y
+  (<'') , (<'') , (<'') , tk , (<'') , (<'') , (<'') , (<'') , (<'') , (<'') , (<'') , ct , (<'')
+)
+
 NB. ---- Prompt-token oracle check for one arch ----
 NB. y = <arch; path; ref> — dispatch builder/tokenizer/chat_prompt by arch.
 test_arch_prompt =: 3 : 0
@@ -38,25 +48,29 @@ test_arch_prompt =: 3 : 0
   msg =. ('user') ; 'The capital of France is'
   messages =. <msg
   kv =. parse_kv_pairs path
+  ct =. 'tokenizer.chat_template' kv_string (0 1 { kv)
   NB. Render via the real GGUF jinja template (chat_prompt is pure jinja now).
-  ct_tmpl_g =: 'tokenizer.chat_template' kv_string (0 1 { kv)
   select. arch
   case. 'gemma3' do.
     tk =. build_llama3_tokenizer kv
-    prompt =. gem3_chat_prompt messages
-    toks =. llama3_tokenize (<mk_llm tk) , <prompt
+    llm =. mk_llm_ct (tk ; ct)
+    prompt =. llm gem3_chat_prompt messages
+    toks =. llama3_tokenize (<llm) , <prompt
   case. 'qwen2' do.
     tk =. build_gpt2_tokenizer kv
-    prompt =. qw2_chat_prompt messages
-    toks =. gpt2_tokenize (<mk_llm tk) , <prompt
+    llm =. mk_llm_ct (tk ; ct)
+    prompt =. llm qw2_chat_prompt messages
+    toks =. gpt2_tokenize (<llm) , <prompt
   case. 'qwen35' do.
     tk =. build_gpt2_tokenizer kv
-    prompt =. qw35_chat_prompt messages
-    toks =. gpt2_tokenize (<mk_llm tk) , <prompt
+    llm =. mk_llm_ct (tk ; ct)
+    prompt =. llm qw35_chat_prompt messages
+    toks =. gpt2_tokenize (<llm) , <prompt
   case. 'llama' do.
     tk =. build_gpt2_tokenizer kv
-    prompt =. llama_chat_prompt messages
-    toks =. gpt2_tokenize (<mk_llm tk) , <prompt
+    llm =. mk_llm_ct (tk ; ct)
+    prompt =. llm llama_chat_prompt messages
+    toks =. gpt2_tokenize (<llm) , <prompt
   end.
   got =. , > toks
   echo '  ' , arch , ' prompt: ' , prompt
@@ -73,7 +87,7 @@ NB. matches the upstream golden exactly (chat_tmpl_render uses '' bos/eos,
 NB. so the <|startoftext|> marker is prepended to the render for the oracle).
 test_tools_render =: 3 : 0
   tmpl =. 1!:1 < 'tests/j/templates/meta-llama-Llama-3.1-8B-Instruct.jinja'
-  ct_tmpl_g =: tmpl
+  llm =. mk_llm_ct ('' ; tmpl)
   ct_now_g =: 1721952000
   c =. ct_parse_json_chatpl_ (1!:1 < 'reference/minja/tests/contexts/tool_use.json')
   msgs =. 'messages' obj_get_minja_ c
@@ -92,18 +106,17 @@ test_tools_render =: 3 : 0
   sess =. (<extra) (2) } sess
   sess =. (<(dumpc_minja_ ((<tools) , (<_1) , (<0) , (<1)))) (4) } sess
   sess_cur_g =: sess
-  out =. chat_tmpl_render messages
+  out =. llm chat_tmpl_render messages
   gold =. 1!:1 < 'tests/j/goldens/meta-llama-Llama-3.1-8B-Instruct-tool_use.txt'
   assert_test (((('<|startoftext|>') , out) -: gold)) ; 'chat_tmpl_render tools wiring == upstream tool_use golden'
 
   NB. regression: no tools -> the tool-dump section is skipped
   sess =. (<'') (4) } sess
   sess_cur_g =: sess
-  out0 =. chat_tmpl_render messages
+  out0 =. llm chat_tmpl_render messages
   assert_test ((-. ('You have access to the following functions' e. out0))) ; 'chat_tmpl_render no-tools drops tool dump'
   assert_test (('You have access to the following functions' e. out)) ; 'chat_tmpl_render tools adds tool dump'
   sess_cur_g =: ''
-  ct_tmpl_g =: ''
   ''
 )
 
