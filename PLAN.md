@@ -22,10 +22,12 @@ chat TUI, the network HTTP server, multi-session + batched HTTP generation,
 (qwen35 SSM recurrence, lfm2 conv decode+prefill, gemma3 SWA attention — all 8
 arches batch==single, `tests/j/test_batched.ijs` 11/11). **Phase 4 (engineering
 stretch) is evaluated** — each item was measured/analyzed and closed (kept or
-dropped) with a reason. **No prior planned work remains** — the deferred idiom
-ideas (Broadcastly, LoopWithInitial, tokenizer obverse) and the **jllama study**
-(findings 1-8, all resolved) are assessed/closed in **docs/HISTORICAL.md**
-("jllama study — adopted/evaluated").
+dropped) with a reason. **No prior planned work remains** — the DRY/Dict-ification refactor is complete
+(Tier 1 + Tier 2 done; the Tier 3 KV-cache member is ASSESSED/CLOSED — moving the
+cache buffers into the dict breaks the in-place write, measured ~95× slower, so
+the current design is kept); the deferred idiom ideas (Broadcastly, LoopWithInitial,
+tokenizer obverse) and the **jllama study** (findings 1-8, all resolved) are
+assessed/closed in **docs/HISTORICAL.md** ("jllama study — adopted/evaluated").
 
 ## Deferred Optimization Opportunities
 
@@ -51,50 +53,42 @@ made the per-arch wrappers largely redundant: the llm dict now carries
 per-model verbs/nouns that just dispatch on those are pure aliases/data and can
 be shed into ONE generic set that reads everything from the dict and dispatches
 the arch-specific forward via `llm_arch`. This is a DRY study (2026-10) —
-inventory below; the plan is 3 tiers, executed in order. **Tier 1 items 1-3 and
-the Tier 3 per-model-globals members are DONE** (see HISTORICAL.md
-"Dict-ification & accessor robustness" — generic `chat_prompt`/`llm_stop_tokens`/
-`llm_tokenize`/`llm_detokenize`, and the `ct_tmpl`/`ct_caps`/`ct_tool_ex`/`lf2_conv`
-dict members). The remaining tiers/items below are still planned.
+inventory below; the plan is 3 tiers, executed in order. **Tier 1 (all items) and
+Tier 2 are DONE** — the generic `infer`/`generate`/`infer_simple`/`generate_simple`/
+`generate_batch` live in util/chat.ijs and all 8 arch names are thin aliases to
+them (`gem3_infer =: infer`, etc.); the generic `infer` uses `sample_from` for
+all arches; the per-arch `*_kv_uint`/`*_kv_float` wrappers are gone (the arch
+modules read the `kv_data` dict via `dict_get`). **Tier 3's chat-template/
+tokenizer-pre/lfm2-conv members are DONE too** (see HISTORICAL.md
+"Dict-ification & accessor robustness"). **The Tier 3 KV-cache member is
+ASSESSED/CLOSED** — moving the cache buffers into the dict breaks the in-place
+write optimization (O(buffer) write-back, measured ~95× slower); the current
+design (config in dict, buffers+state in globals) is kept. **The DRY refactor is
+complete — no remaining planned work.**
+
+### Sprint ordering (recommended)
+
+- **Sprint 1 — Tier 1 completion** — **DONE** (the generic `kv_uint`/`kv_float`
+  wrappers are gone; gemma3's `*_infer` folds onto `sample_from` via the generic
+  `infer`).
+- **Sprint 2 — Tier 2** — **DONE** (generic infer/generate in util/chat.ijs,
+  per-arch names are aliases, ~720 lines collapsed, no behavior change).
+- **Sprint 3 — Tier 3** — **ASSESSED/CLOSED** (KV-cache state → the dict member
+  would break the in-place write — O(buffer) write-back, measured ~95× slower;
+  the current design is kept — see HISTORICAL.md).
 
 ### Tier 1 — shed pure aliases/data (low risk, ~40 verbs)
 
-The per-arch wrapper verbs below are identical across all 8 arch modules except
-for the arch-specific forward math + tokenizer — fold them into one shared verb
-each. The per-arch names stay as thin aliases so the documented "precise entry
-points" (and the tests that pin them) keep working.
-
-1. **`*_kv_uint`/`*_kv_float` (16)** — thin wrappers over the gguf `kv_uint`/
-   `kv_float`; the `kv_value` vt dispatch already handles them. Fold into
-   `kv_value` (or keep one generic `kv_uint`/`kv_float`); alias the 8 pairs.
-2. **gemma3 `*_infer` sample call** — gemma3 uses `params sampler_sample logits`
-   (gemma3.ijs:991) while all others use `sample_from ((<temp),(<k),(<p),(<min_p),<logits)`
-   (llm_core.ijs:297 wraps `sampler_sample`). Fold gemma3 onto `sample_from`.
+**DONE** — see the intro + HISTORICAL.md. The generic `infer` uses `sample_from`
+for all arches (gemma3 folded); the per-arch `*_kv_uint`/`*_kv_float` wrappers no
+longer exist (the arch modules read the `kv_data` dict via `dict_get`).
 
 ### Tier 2 — generic infer/generate in llm_core (the big win, ~720 lines)
 
-Collapse the per-arch `*_infer`/`*_generate`/`*_generate_batch`/`*_infer_simple`/
-`*_generate_simple` (40 verbs, ~720 lines, ~90% identical) into ONE generic set
-in util/llm_core.ijs that reads everything from the dict and dispatches the
-forward via `llm_arch`:
-
-- **Generic `infer`**: read tokenizer (`llm_tokenize`/`llm_detokenize` dispatch),
-  embed-scale + logit-scale (from the mi dict: `mi_emb_scale`/`mi_logit_scale` —
-  gemma3 `%: emb_len`, granite `granite_mi_embed_scale`/`granite_mi_logit_scale`,
-  others 1), `kv_create` args (block_count/ctx_len/n_heads_kv/head_dim from mi),
-  and dispatch `*_run_blocks`/`*_run_blocks_b` on `llm_arch`.
-- **Generic `generate`/`generate_batch`**: frame via `chat_prompt`, tokenize via
-  `llm_tokenize`, stop via `llm_stop_tokens`, then the EXISTING unified
-  `gen_loop_core`/`gen_loop_batch` (already arch-dispatched).
-- **Generic `*_simple`**: the two-line default-params wrappers.
-
-The per-arch `*_infer`/`*_generate`/`*_generate_batch`/`*_infer_simple`/
-`*_generate_simple` names become aliases to the generic (they still pin the
-loaded arch via `llm_arch` — no behavior change). Each arch module then keeps
-ONLY: hparam extraction, block_data build, and the forward math
-(`*_run_blocks`/`*_attention`/`*_block_forward`/`*_run_blocks_b`/`_bd`/`_bp`).
-Tests (test_gemma3/test_llama/test_qwen2/test_qwen3/test_ernie/test_qwen35/
-test_lfm2/test_batched) + CLI/chat/TUI/server all keep working via the aliases.
+**DONE** — see the intro + HISTORICAL.md. (Generic `infer`/`generate`/
+`infer_simple`/`generate_simple`/`generate_batch` in util/chat.ijs; the 8 arch
+names are thin aliases; each arch module keeps only hparam extraction + block_data
+build + forward math.)
 
 ### Tier 3 — per-model globals into the llm dict
 
@@ -105,17 +99,21 @@ lfm2 `lf2_conv` members are DONE — see the intro + HISTORICAL.md.)
 
 - **KV cache state** (`kv_pos_g`/`kv_max_seq_g`/`kv_batch_g`/`kv_seq_g`/
   `kv_batch_alloc_g` + `k_cache_g`/`v_cache_g`) → the dict's `kv_cache` member.
-  **Medium risk**: the kv verbs are monadic (no llm arg) — need dyadic `llm`
-  threading. DEFER until Tier 2 settles (it's the only tier needing
-  monadic→dyadic verb changes).
+  **ASSESSED/CLOSED (deferred)** — moving the cache buffers (`k_cache_g`/
+  `v_cache_g`) into the dict member breaks the in-place amend: the dict's
+  `get__d` hands back a value not shared with the dict's storage, so an amend
+  doesn't persist; persisting needs `put__d`, which copies the WHOLE buffer
+  (O(buffer) per write — measured ~95× slower on a 0.8MB buffer; ~2ms per write
+  for a 100MB cache). The current design (config in the dict, buffers+state in
+  globals, in-place amend) is kept — see HISTORICAL.md.
 
 ### Risk / verification
 
 - Tier 1/2: per-arch names stay as aliases → the documented "precise entry
   points" and all tests keep working. Verify each arch suite + test_batched +
-  lint load-probe after each tier.
-- Tier 3: data-ification only (no verb signatures change except the KV-cache
-  tier, which is deferred); verify the chat/TUI/server suites still pass.
+  lint load-probe after each tier. (Done — all suites green.)
+- Tier 3 KV-cache member: assessed/closed — see the Tier 3 section; the current
+  design is kept (no verb-signature changes, no regression).
 
 ## Key Reference
 
