@@ -93,6 +93,7 @@ echo "################################################################"
 echo ""
 
 run_suite "Kernels"         "$BASE/tests/j/test_kernels.ijs"
+run_suite "llm_core Helpers" "$BASE/tests/j/test_llm_core.ijs"
 run_suite "KV Cache"        "$BASE/tests/j/test_kv_cache.ijs"
 run_suite "Tokenizer"       "$BASE/tests/j/test_tokenizer_llama3.ijs"
 run_suite "GGUF Parser"     "$BASE/tests/j/test_gguf.ijs"

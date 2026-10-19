@@ -122,20 +122,9 @@ llama_attention =: 4 : 0
   v_all =. > 1 { kv_result
   win =. pos + 1
 
-  NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
-  NB. n_groups) and matmul each group's Q against its shared K/V — k_all/v_all
-  NB. stay (win, n_heads_kv, hd), never expanded to n_heads (4x llama).
-  scores2 =. ((n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) (1 2 0 |: k_all)   NB. (n_kv, n_groups, win): Q[g,r,d] vs K[j,g,d]
-  NB. Single-token decode: all cached j <= pos valid (causal), no mask.
-
-  NB. Softmax directly on the 3D scores2 (the old scores flatten +
-  NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
-  max_sf =. >./"1 scores2
-  exp_sf =. ^ (scores2 - max_sf)
-  softmax =. exp_sf % +/"1 exp_sf   NB. (n_kv, n_groups, win)
-
-  NB. Output: attn[h] = sum_j softmax[h,j] * V[j,g(h)]; output projection
-  attn_out =. (llama_bd_attn_o block_data) linear_r ((n_heads * head_dim) $ , (softmax (+/ .* "2) (1 0 2 |: v_all)))
+  NB. GQA without expanding KV + direct-3D softmax + output projection (shared)
+  NB. k_all/v_all stay (win, n_heads_kv, hd), never expanded to n_heads (4x llama).
+  attn_out =. gqa_attn_single (Q ; k_all ; v_all ; (llama_bd_attn_o block_data) ; n_heads ; n_heads_kv ; head_dim ; n_groups)
   (<attn_out)
 )
 
@@ -176,16 +165,8 @@ llama_attention_b =: 4 : 0
   V =. (L, n_heads_kv, head_dim) $ , vv
 
   NB. Interleaved RoPE batched (table-based): pairs (i,i+1) per row, NORM style
-  Qa =. idx {"1 Q          NB. (L, n_heads, half) even cols
-  Qb =. (1 + idx) {"1 Q    NB. odd cols
-  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
-  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
-  Q =. (L, n_heads, head_dim) $ , (1 2 3 0 |: (Qa_out ,: Qb_out))
-  Ka =. idx {"1 K          NB. (L, n_heads_kv, half)
-  Kb =. (1 + idx) {"1 K
-  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
-  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
-  K =. (L, n_heads_kv, head_dim) $ , (1 2 3 0 |: (Ka_out ,: Kb_out))
+  Q =. Q rope_apply2_t_b ((> 3 { rope) ; (> 4 { rope) ; (<idx))
+  K =. K rope_apply2_t_b ((> 5 { rope) ; (> 6 { rope) ; (<idx))
 
   NB. Llama scales Q by 1/sqrt(head_dim)
   Q =. Q * mi_attn_scale mi
@@ -205,35 +186,11 @@ llama_attention_b =: 4 : 0
   kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
   kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
 
-  NB. GQA without expanding KV: group the query heads (n_heads_kv groups of
-  NB. n_groups) and batched-matmul each group's Q against its shared K/V row —
-  NB. K/V stay (n_heads_kv, ctx, hd), never expanded to n_heads (7x KV for
-  NB. qwen2.5, 4x llama/granite, 2x qwen3). Q reshaped group-major so the
-  NB. frames (n_heads_kv) align for +/ .*"2.
-  Qp =. 1 0 2 |: Q        NB. (n_heads, L, hd)
-  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , Qp   NB. one ravel+reshape (the intermediate 4D reshape was redundant)
-  Kp2 =. 1 2 0 |: K        NB. (n_heads_kv, hd, start_pos+L) — one transpose
-  scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx): Q[t,h] vs K[j,g(h)]
-  NB. causal mask: mask[h,t,j]=1 if j>t; query t at position start_pos+t, keys
-  NB. 0..start_pos+L-1. Keep scores group-major: the tiled mask (row r*L+t
-  NB. needs mask row t) is hoisted (item 7 of rope, built once per chunk) —
-  NB. subtract with rank over the kv-head frame; no (n_heads, L, tot) 3D mask,
-  NB. no per-layer mask build, no scores re-shape copy.
-  scores2 =. scores2 -"2 (mask_g2 * 1e9)
-
-  NB. Softmax over j per (g,r,t) row (order-independent)
-  NB. Softmax directly on the 3D scores2 (the old scores_f flatten +
-  NB. softmax_g2 re-group were 2 redundant reshape copies per layer)
-  max_sf =. >./"1 scores2
-  exp_sf =. ^ (scores2 - max_sf)
-  softmax_f =. exp_sf % +/"1 exp_sf
-
-  NB. Output: attn[h,t] = sum_j softmax[g(h),t,j] * V[g(h),j]
-  Vp =. 1 0 2 |: V        NB. (n_heads_kv, start_pos+L, hd)
-  attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
-  NB. Output projection (batched)
-  attn_out =. |: ((llama_bd_attn_o block_data) (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , attn2))))   NB. (L, emb)
-
+  NB. GQA without expanding KV + direct-3D softmax + output projection (shared).
+  NB. K/V stay (n_heads_kv, ctx, hd), never expanded to n_heads (4x llama).
+  NB. mask_g2 (item 7 of rope) is the group-major tiled causal mask, hoisted
+  NB. once per chunk and threaded through — subtract with rank over kv-heads.
+  attn_out =. gqa_attn_batch (Q ; K ; V ; (llama_bd_attn_o block_data) ; mask_g2 ; n_heads ; n_heads_kv ; head_dim ; n_groups ; L)
   (<attn_out)
 )
 
@@ -391,23 +348,9 @@ llama_attention_bd =: 4 : 0
   NB. cos/sin tables + expansions are layer-invariant (depend only on pos) —
   NB. hoisted once in run_blocks_bd, threaded through y as <cos_all; sin_all;
   NB. idx; cos_expq; sin_expq; cos_expk; sin_expk>.
-  cos_all =. > 0 { rope
-  sin_all =. > 1 { rope
   idx =. > 2 { rope
-  cos_expq =. > 3 { rope
-  sin_expq =. > 4 { rope
-  cos_expk =. > 5 { rope
-  sin_expk =. > 6 { rope
-  Qa =. idx {"1 Q
-  Qb =. (1 + idx) {"1 Q
-  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
-  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
-  Q =. (B, n_heads, head_dim) $ , (1 2 3 0 |: (Qa_out ,: Qb_out))
-  Ka =. idx {"1 K
-  Kb =. (1 + idx) {"1 K
-  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
-  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
-  K =. (B, n_heads_kv, head_dim) $ , (1 2 3 0 |: (Ka_out ,: Kb_out))
+  Q =. Q rope_apply2_t_b ((> 3 { rope) ; (> 4 { rope) ; (<idx))
+  K =. K rope_apply2_t_b ((> 5 { rope) ; (> 6 { rope) ; (<idx))
 
   NB. Llama scales Q by 1/sqrt(head_dim)
   Q =. Q * mi_attn_scale mi
@@ -512,23 +455,9 @@ llama_attention_bp =: 4 : 0
   NB. expansions are layer-invariant (depend only on pos) — hoisted once in
   NB. run_blocks_bp, threaded through y as <cos_all; sin_all; idx; cos_expq;
   NB. sin_expq; cos_expk; sin_expk>.
-  cos_all =. > 0 { rope
-  sin_all =. > 1 { rope
   idx =. > 2 { rope
-  cos_expq =. > 3 { rope
-  sin_expq =. > 4 { rope
-  cos_expk =. > 5 { rope
-  sin_expk =. > 6 { rope
-  Qa =. idx {"1 Q
-  Qb =. (1 + idx) {"1 Q
-  Qa_out =. (Qa * cos_expq) - (Qb * sin_expq)
-  Qb_out =. (Qa * sin_expq) + (Qb * cos_expq)
-  Q =. (B, c, n_heads, head_dim) $ , (1 2 3 4 0 |: (Qa_out ,: Qb_out))
-  Ka =. idx {"1 K
-  Kb =. (1 + idx) {"1 K
-  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
-  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
-  K =. (B, c, n_heads_kv, head_dim) $ , (1 2 3 4 0 |: (Ka_out ,: Kb_out))
+  Q =. Q rope_apply2_t_b ((> 3 { rope) ; (> 4 { rope) ; (<idx))
+  K =. K rope_apply2_t_b ((> 5 { rope) ; (> 6 { rope) ; (<idx))
 
   NB. Llama scales Q by 1/sqrt(head_dim)
   Q =. Q * mi_attn_scale mi
@@ -698,21 +627,18 @@ llama_run_blocks_bp =: 4 : 0
 llama_load =: 3 : 0
   NB. y = <path; raw> — raw is the memory-mapped file (mapped by
   NB. load_gguf_to_llm; unmap'd after load — kvs_ctx is load-time only).
-  data =. y
-  path =. > 0 { data
-  raw =. > 1 { data
-  header =. parse_hdr_raw raw
-  n_tensors =. > 2 { header
-  kv_result =. parse_kv_pairs_raw raw
-  kvs =. > 0 { kv_result
-  kv_end =. > 3 { kv_result
-  ti =. parse_tensor_infos (<raw) , (<kv_end) , (<n_tensors)
-  ti_end_offset =. > ((n_tensors * 6) - 1) { ti
-  tds =. 32 * <. (ti_end_offset + 31) % 32
-  kvs_ctx =. (<kvs) , (<raw)
-  kv_data =. build_kv_dict kvs_ctx
-  mi =. llama_extract_hparams kvs_ctx
-  mi =. build_mi_dict mi
+  NB. The parse + tensor-load + llm-noun base is shared (load_gguf_base); only
+  NB. the arch-specific extract/mi-puts/tokenizer/stop/block_data stay here.
+  base =. load_gguf_base y
+  path =. 0 {:: base
+  ti =. 1 {:: base
+  tds =. 2 {:: base
+  at =. 3 {:: base
+  kvd =. 4 {:: base
+  kvs_ctx =. 5 {:: base
+  kvres =. 6 {:: base
+  ct_tmpl =. 7 {:: base
+  mi =. build_mi_dict (llama_extract_hparams kvs_ctx)
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   NB. Default attention/residual scales: 1/sqrt(hd) and 1. Granite overrides
   NB. these with its GGUF scale KVs; the shared forward verbs read them.
@@ -720,42 +646,17 @@ llama_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   head_dim =. mi_head_dim mi
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; (1 % head_dim ^ 0.5) ; 1) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale'
-  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
-  tokenizer =. build_gpt2_tokenizer kv_result
+  tokenizer =. build_gpt2_tokenizer kvres
   stop_tokens =. tokenizer_eos_g tokenizer
-  NB. Chat-template dispatch marker: llama_chat_prompt takes messages only
-  all_tensors =. ''
-  tensor_idx =. 0
-  while. tensor_idx < n_tensors do.
-    tname =. > (tensor_idx * 6) { ti
-    tdata =. (<path) , (<ti) , (<tds) , (<tname) , (<raw)
-    td =. load_tdata tdata
-    if. 0 < # td do.
-      ti_row =. tname get_tensor_info ti
-      dims =. ti_dims ti_row
-      etype =. ti_etype ti_row
-      all_tensors =. all_tensors , (<tname) , (<td) , (<dims) , (<etype)
-    end.
-    tensor_idx =. tensor_idx + 1
-  end.
   n_heads_kv =. mi_n_heads_kv mi
-  head_dim =. mi_head_dim mi
   ctx_len =. mi_context_len mi
   block_count =. mi_block_count mi
-  p  =. <path
-  t  =. <ti
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
-  tk =. <tokenizer
-  mi_b =. <mi
   kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
-  td =. <tds
-  all_tensors =. emb_canonical all_tensors
-  at =. <all_tensors
-  llm =. p , t , ze , tk , mi_b , kc_b , td , at
+  llm =. (<path) , (<ti) , ze , (<tokenizer) , (<mi) , kc_b , (<tds) , (<at)
   block_data =. llama_pre_build_block_data llm
   llm =. llm , <block_data
-  llm =. llm , <kv_data
+  llm =. llm , <kvd
   llm =. llm , <stop_tokens
   llm =. llm , <ct_tmpl
 )

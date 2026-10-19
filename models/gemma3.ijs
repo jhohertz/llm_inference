@@ -258,20 +258,13 @@ gem3_attention_b =: 4 : 0
   NB. RoPE — batched, table-based (NEOX). cos/sin per position, PER-LAYER tables.
   cos_all =. (start_pos + i. L) { gem3_bd_cos_tab block_data    NB. (L, half)
   sin_all =. (start_pos + i. L) { gem3_bd_sin_tab block_data
-  Qa =. half {. "1 Q                     NB. (L, n_heads, half)
-  Qb =. half }. "1 Q
-  cos_exp =. (0 2 1) |: ((L , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_exp =. (0 2 1) |: ((L , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
-  Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
-  Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
-  Q =. (L, n_heads, head_dim) $ ,(Qa_out ,"1 Qb_out)
-  Ka =. half {. "1 K                     NB. (L, n_heads_kv, half)
-  Kb =. half }. "1 K
-  cos_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((L , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
-  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
-  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
-  K =. (L, n_heads_kv, head_dim) $ ,(Ka_out ,"1 Kb_out)
+  rope_exp =. (cos_all ; sin_all ; half ; n_heads ; n_heads_kv ; L) build_rope_expansions ''
+  cos_exp =. > 0 { rope_exp
+  sin_exp =. > 1 { rope_exp
+  Q =. Q rope_apply2_neox_b ((cos_exp) ; (sin_exp))
+  cos_expk =. > 2 { rope_exp
+  sin_expk =. > 3 { rope_exp
+  K =. K rope_apply2_neox_b ((cos_expk) ; (sin_expk))
   
   NB. Pre-scale Q by 1/sqrt(head_dim) (Gemma)
   Q =. Q % head_dim ^ 0.5
@@ -450,20 +443,12 @@ gem3_attention_bp =: 4 : 0
   NB. cos_exp; sin_exp; cos_expk; sin_expk>.
   cos_all =. > 0 { rope   NB. (B*c, half)
   sin_all =. > 1 { rope
-  Qa =. half {. "1 Q   NB. (B, c, n_heads, half)
-  Qb =. half }. "1 Q
   cos_exp =. > 2 { rope
   sin_exp =. > 3 { rope
-  Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
-  Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
-  Q =. (B, c, n_heads, head_dim) $ , (Qa_out ,"1 Qb_out)
-  Ka =. half {. "1 K   NB. (B, c, n_heads_kv, half)
-  Kb =. half }. "1 K
+  Q =. Q rope_apply2_neox_b ((cos_exp) ; (sin_exp))
   cos_expk =. > 4 { rope
   sin_expk =. > 5 { rope
-  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
-  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
-  K =. (B, c, n_heads_kv, head_dim) $ , (Ka_out ,"1 Kb_out)
+  K =. K rope_apply2_neox_b ((cos_expk) ; (sin_expk))
 
   NB. Pre-scale Q by 1/sqrt(head_dim) (Gemma)
   Q =. Q % head_dim ^ 0.5
@@ -570,10 +555,11 @@ gem3_run_blocks_bp =: 4 : 0
   pos_bc_flat =. (B*c) $ , (pos +/ i. c)
   cos_all =. pos_bc_flat { mi_cos_tab mi   NB. (B*c, half)
   sin_all =. pos_bc_flat { mi_sin_tab mi
-  cos_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (cos_all (*/) (n_heads $ 1))))
-  sin_exp =. (B, c, n_heads, half) $ , ((0 2 1) |: (((B*c) , half , n_heads) $ , (sin_all (*/) (n_heads $ 1))))
-  cos_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1))))
-  sin_expk =. (B, c, n_heads_kv, half) $ , ((0 2 1) |: (((B*c) , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1))))
+  rope_exp =. (cos_all ; sin_all ; half ; n_heads ; n_heads_kv ; B*c) build_rope_expansions ''
+  cos_exp =. (B, c, n_heads, half) $ , > 0 { rope_exp
+  sin_exp =. (B, c, n_heads, half) $ , > 1 { rope_exp
+  cos_expk =. (B, c, n_heads_kv, half) $ , > 2 { rope_exp
+  sin_expk =. (B, c, n_heads_kv, half) $ , > 3 { rope_exp
   rope =. (<cos_all) , (<sin_all) , (<cos_exp) , (<sin_exp) , (<cos_expk) , (<sin_expk)
    b =. 0
    block_data_list =. llm_block_data llm
@@ -634,18 +620,10 @@ gem3_attention_bd =: 4 : 0
   sin_all =. > 1 { rope
   cos_exp =. > 2 { rope
   sin_exp =. > 3 { rope
-  Qa =. half {. "1 Q
-  Qb =. half }. "1 Q
-  Qa_out =. (Qa * cos_exp) - (Qb * sin_exp)
-  Qb_out =. (Qa * sin_exp) + (Qb * cos_exp)
-  Q =. (B, n_heads, head_dim) $ ,(Qa_out ,"1 Qb_out)
+  Q =. Q rope_apply2_neox_b ((cos_exp) ; (sin_exp))
   cos_expk =. > 4 { rope
   sin_expk =. > 5 { rope
-  Ka =. half {. "1 K
-  Kb =. half }. "1 K
-  Ka_out =. (Ka * cos_expk) - (Kb * sin_expk)
-  Kb_out =. (Ka * sin_expk) + (Kb * cos_expk)
-  K =. (B, n_heads_kv, head_dim) $ ,(Ka_out ,"1 Kb_out)
+  K =. K rope_apply2_neox_b ((cos_expk) ; (sin_expk))
 
   NB. Pre-scale Q by 1/sqrt(head_dim) (Gemma)
   Q =. Q % head_dim ^ 0.5
@@ -754,10 +732,11 @@ gem3_run_blocks_bd =: 4 : 0
   half =. <. head_dim % 2
   cos_all =. pos { mi_cos_tab mi    NB. (B, half)
   sin_all =. pos { mi_sin_tab mi
-  cos_exp =. (0 2 1) |: ((B , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
-  sin_exp =. (0 2 1) |: ((B , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
-  cos_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
-  sin_expk =. (0 2 1) |: ((B , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  rope_exp =. (cos_all ; sin_all ; half ; n_heads ; n_heads_kv ; B) build_rope_expansions ''
+  cos_exp =. > 0 { rope_exp
+  sin_exp =. > 1 { rope_exp
+  cos_expk =. > 2 { rope_exp
+  sin_expk =. > 3 { rope_exp
   rope =. (<cos_all) , (<sin_all) , (<cos_exp) , (<sin_exp) , (<cos_expk) , (<sin_expk)
   b =. 0
   block_data_list =. llm_block_data llm
@@ -838,28 +817,17 @@ NB. ---- Load Gemma3 GGUF into llm noun ----
 gem3_load =: 3 : 0
   NB. y = <path; raw> — raw is the memory-mapped file (mapped by
   NB. load_gguf_to_llm; unmap'd after load — kvs_ctx is load-time only).
-  data =. y
-  path =. > 0 { data
-  raw =. > 1 { data
-  
-  header =. parse_hdr_raw raw
-  n_tensors =. > 2 { header
-  n_kv =. > 3 { header
-  
-  kv_result =. parse_kv_pairs_raw raw
-  kvs =. > 0 { kv_result
-  kv_end =. > 3 { kv_result
-  
-  ti =. parse_tensor_infos (<raw) , (<kv_end) , (<n_tensors)
-  
-  ti_end_offset =. > ((n_tensors * 6) - 1) { ti
-  tds =. 32 * <. (ti_end_offset + 31) % 32
-  
-  kvs_ctx =. (<kvs) , (<raw)
-  kv_data =. build_kv_dict kvs_ctx
-  mi =. gem3_extract_hparams kvs_ctx
-  mi =. build_mi_dict mi
-
+  NB. The parse + tensor-load + llm-noun base is shared (load_gguf_base).
+  base =. load_gguf_base y
+  path =. 0 {:: base
+  ti =. 1 {:: base
+  tds =. 2 {:: base
+  at =. 3 {:: base
+  kvd =. 4 {:: base
+  kvs_ctx =. 5 {:: base
+  kvres =. 6 {:: base
+  ct_tmpl =. 7 {:: base
+  mi =. build_mi_dict (gem3_extract_hparams kvs_ctx)
   NB. Precompute RoPE cos/sin tables for all positions (removes per-token trig)
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   NB. Gemma3-specific sliding window
@@ -867,49 +835,18 @@ gem3_load =: 3 : 0
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
   swa =. 'gemma3.attention.sliding_window' kv_uint kvs_ctx
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; swa) put__mi 'cos_tab' ; 'sin_tab' ; 'swa'
-  
-  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
-  
-  tokenizer =. build_llama3_tokenizer kv_result
+  tokenizer =. build_llama3_tokenizer kvres
   stop_tokens =. (tokenizer_eos tokenizer) , 1
-  
-  all_tensors =. ''
-  tensor_idx =. 0
-  while. tensor_idx < n_tensors do.
-    tname =. > (tensor_idx * 6) { ti
-    tdata =. (<path) , (<ti) , (<tds) , (<tname) , (<raw)
-    td =. load_tdata tdata
-    if. 0 < # td do.
-      ti_row =. tname get_tensor_info ti
-      dims =. ti_dims ti_row
-      etype =. ti_etype ti_row
-      all_tensors =. all_tensors , (<tname) , (<td) , (<dims) , (<etype)
-    end.
-    tensor_idx =. tensor_idx + 1
-  end.
-  
-   swa =. mi_swa mi
-   n_heads_kv =. mi_n_heads_kv mi
-   head_dim =. mi_head_dim mi
-   ctx_len =. mi_context_len mi
-   block_count =. mi_block_count mi
-  
-  NB. Build llm as boxed vector: each element individually boxed
-  NB. Must box EVERY element to prevent razing during , concatenation
-  p  =. <path
-  t  =. <ti
+  n_heads_kv =. mi_n_heads_kv mi
+  head_dim =. mi_head_dim mi
+  ctx_len =. mi_context_len mi
+  block_count =. mi_block_count mi
   ze =. <1.0 64 0.95 0.001   NB. default_params (chat sampling defaults)
-  tk =. <tokenizer
-  mi_b =. <mi
   kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
-  td =. <tds
-  all_tensors =. emb_canonical all_tensors
-  at =. <all_tensors
-  llm =. p , t , ze , tk , mi_b , kc_b , td , at
+  llm =. (<path) , (<ti) , ze , (<tokenizer) , (<mi) , kc_b , (<tds) , (<at)
   block_data =. gem3_pre_build_block_data llm
   llm =. llm , <block_data
-  llm =. llm , <kv_data
+  llm =. llm , <kvd
   llm =. llm , <stop_tokens
   llm =. llm , <ct_tmpl
 )
