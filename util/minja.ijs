@@ -293,6 +293,118 @@ dumpc =: 3 : 0
   end.
 )
 
+NB. ---- JSON -> Value (bindings; inverse of dumpj) ----
+ws =: ' ' , TAB , CR , LF
+skipws =: 3 : 0
+  's i' =. y
+  rest =. i }. s
+  k =. 0
+  while. k < # rest do.
+    if. (k { rest) e. ws do. k =. k + 1 else. break. end.
+  end.
+  i + k
+)
+json_read =: 3 : 0
+  's i' =. y
+  i =. skipws (s ; i)
+  if. i >: # s do. (<mknull_minja_ '') , <i return. end.
+  c =. i { s
+  select. c
+  case. '{' do. json_obj (s ; i)
+  case. '[' do. json_arr (s ; i)
+  case. '"' do. json_str_parse (s ; i)
+  case. do.
+    if. (c = '-') +. (c e. '0123456789') do. json_num (s ; i)
+    else.
+      r =. i }. s
+      if. (4 <: # r) * (4 { r) -: 'true' do. (<mkbool_minja_ 1) , <(i + 4)
+      elseif. (5 <: # r) * (5 { r) -: 'false' do. (<mkbool_minja_ 0) , <(i + 5)
+      elseif. (4 <: # r) * (4 { r) -: 'null' do. (<mknull_minja_ '') , <(i + 4)
+      else. (<mknull_minja_ '') , <i end.
+    end.
+  end.
+)
+json_str_parse =: 3 : 0
+  's i' =. y
+  i =. i + 1
+  out =. ''
+  while. i < # s do.
+    c =. i { s
+    if. c = '\' do.
+      nxt =. (i + 1) { s
+      select. nxt
+      case. 'n' do. out =. out , LF
+      case. 't' do. out =. out , TAB
+      case. 'r' do. out =. out , CR
+      case. '\' do. out =. out , '\'
+      case. '"' do. out =. out , '"'
+      case. '/' do. out =. out , '/'
+      case. do. out =. out , nxt
+      end.
+      i =. i + 2
+      continue.
+    end.
+    if. c = '"' do. (<mkstr_minja_ out) , <(i + 1) return. end.
+    out =. out , c
+    i =. i + 1
+  end.
+  (<mkstr_minja_ out) , <i
+)
+json_num =: 3 : 0
+  's i' =. y
+  start =. i
+  if. (i { s) = '-' do. i =. i + 1 end.
+  while. i < # s do.
+    if. (i { s) e. '0123456789.eE' do. i =. i + 1 else. break. end.
+  end.
+  numstr =. (i - start) {. (start }. s)
+  if. 0 < # (I. numstr = '.') do. (<mkfloat_minja_ (0 ". numstr)) , <i else. (<mkint_minja_ (0 ". numstr)) , <i end.
+)
+json_obj =: 3 : 0
+  's i' =. y
+  i =. i + 1
+  pairs =. ''
+  while. i < # s do.
+    i =. skipws (s ; i)
+    if. i >: # s do. break. end.
+    c =. i { s
+    if. c = '}' do. (<mkobj_minja_ pairs) , <(i + 1) return. end.
+    if. c = ',' do. i =. i + 1 continue. end.
+    if. c = '"' do.
+      kr =. json_str_parse (s ; i)
+      key =. > 0 { kr
+      i =. > 1 { kr
+      i =. skipws (s ; i)
+      if. (i < # s) do. if. (i { s) = ':' do. i =. i + 1 end. end.
+      vr =. json_read (s ; i)
+      pairs =. pairs , ((<key) , <(> 0 { vr))
+      i =. > 1 { vr
+    else. i =. i + 1
+    end.
+  end.
+  (<mkobj_minja_ pairs) , <i
+)
+json_arr =: 3 : 0
+  's i' =. y
+  i =. i + 1
+  items =. ''
+  while. i < # s do.
+    i =. skipws (s ; i)
+    if. i >: # s do. break. end.
+    c =. i { s
+    if. c = ']' do. (<mkarr_minja_ items) , <(i + 1) return. end.
+    if. c = ',' do. i =. i + 1 continue. end.
+    vr =. json_read (s ; i)
+    items =. items , <(> 0 { vr)
+    i =. > 1 { vr
+  end.
+  (<mkarr_minja_ items) , <i
+)
+from_json =: 3 : 0
+  r =. json_read (y ; 0)
+  > 0 { r
+)
+
 NB. ---- Equality (numeric-tolerant; else structural via dump) ----
 eq =: 4 : 0
   if. 2 = 3!:0 x do. x =. mkstr x end.
@@ -2074,7 +2186,7 @@ lex_template =: 3 : 0
     f =. > i { tflags
     lt2 =. 2 | f
     rt2 =. f >: 2
-    if. lt2 = 1 do.
+      if. lt2 = 1 do.
       if. i > 0 do.
         prev =. > (i - 1) { toks
         if. ('text' -: > 0 { prev) do.
@@ -2093,7 +2205,7 @@ lex_template =: 3 : 0
         nxt =. > (i + 1) { toks
         if. ('text' -: > 0 { nxt) do.
           s =. > 1 { nxt
-          j =. 0
+                  j =. 0
           while. j < # s do.
             if. -. ((a. i. (j { s)) e. 9 10 13 32) do. break. end.
             j =. j + 1
