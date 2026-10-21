@@ -58,14 +58,14 @@ test_multiach =: 3 : 0
     echo 'FAIL: gem3_bd_n_heads after qwen2 load'; echo '  got: '; echo gem3_bd_n_heads bd0
   end.
 
-  NB. --- qwen2 accessor is a separate name reading a different index ---
+  NB. --- qwen2/qwen3 use the shared bd_* accessors (normalized layout) ---
   tc =. tc + 1
-  if. 0 = 4 -: qw2_bd_n_heads bd0 do.
+  if. 4 = bd_n_heads bd0 do.
     pc =. pc + 1
-    echo 'PASS: qw2_bd_n_heads is independent of gem3_bd_n_heads (reads index 12, not 13)'
+    echo 'PASS: bd_n_heads shared accessor reads n_heads (independent of gem3_bd_n_heads)'
   else.
-    fl =. fl , 'qw2_bd_n_heads independence', LF
-    echo 'FAIL: qw2_bd_n_heads not independent'; echo '  got: '; echo qw2_bd_n_heads bd0
+    fl =. fl , 'bd_n_heads independence', LF
+    echo 'FAIL: bd_n_heads not independent'; echo '  got: '; echo bd_n_heads bd0
   end.
 
   echo ''

@@ -457,6 +457,13 @@ Corollaries we hit in this repo:
 - `dict_probe` returns `1 ; <v` — the `;`-with-boxed-list spread forces the 2nd
   element `<`-boxed; callers unpack with `'found v' =.` (multiple-assignment
   UNBOXES), so `v` arrives ALREADY-OPEN (no `> v`).
+- Verbs that unpack a boxed arg via `> 0 { y` / `> 1 { y` (the batched RoPE
+  kernels `rope_apply2_neox_b`/`rope_apply2_t_b`) REQUIRE a BOXED pair/triple:
+  pass `(cos) ; (sin)` (box), NOT `(cos) , (sin)` (append). `,` builds an
+  `(2L,n_heads,half)` ARRAY and `> 0 { y` then grabs the 0th ROW `(n_heads,half)`
+  — only correct when L=1; for L>1 the shapes stop conforming (`2 16 64` vs
+  `16 64`). (Hit in the batched-RoPE DRY pass — the caller convention is
+  `;`, the kernel convention is a boxed pair/triple.)
 
 ---
 

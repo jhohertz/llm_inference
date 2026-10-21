@@ -2,29 +2,9 @@ NB. ================================================================
 NB. Shared Transformer Kernels — used by all architecture models
 NB. ================================================================
 
-NB. ---- Matrix Multiplication (idiomatic J) ----
 coclass 'inference'
-matmul =: +/ .*
 
-NB. ---- Linear Layer Forward ----
-NB. x = weight (n, emb); y = <input (emb,); bias (n,)>
-linear =: 4 : 0
-  input =. > 0 { y
-  bias =. > 1 { y
-  ws =. $ x
-  ins =. $ input
-  if. 0 = #ws do. echo 'LINEAR: EMPTY WEIGHT, wtype:', ": 3!:0 x; echo 'y was:', ": 3!:0 y; return. $0 end.
-  if. 0 = #ins do. echo 'LINEAR: EMPTY INPUT, itype:', ": 3!:0 input; echo 'y was:', ": 3!:0 y; return. $0 end.
-  result =. x (+/ .* ) input
-  if. #bias > 0 do. result =. result + bias end.
-  NB. NOTE: `result + bias` is valid when result is a single row `(out,)` OR
-  NB. when the result is `(batch,out)` (bias right-aligns on the out axis).
-  NB. Our matmul yields `(out,batch)` — bias `(out,)` right-aligns on `batch`,
-  NB. which NumPy rejects too — so use `$`-replication or transpose there,
-  NB. not Broadcastly. (Broadcastly handles the `rms_norm_rows`-style
-  NB. `(len,)` weight × `(rows,len)` matrix broadcast.)
-  result
-)
+NB. ---- Raw matvec/matmat (no boxing) — for hot fused projections ----
 
 NB. ---- Raw matvec/matmat (no boxing) — for hot fused projections ----
 NB. x = weight, y = raw input array (no bias). Skips the box/unbox of `linear`.
@@ -101,98 +81,14 @@ NB. Broadcastly does not reproduce rms_norm_rows exactly, so keep `$`.
 rms_norm_rows =: ((($ @ >@(2&{)) $ >@(1&{)) * ((>@(2&{)) % (%: @ (((+/"1 @ (*: @ >@(2&{))) % ({: @ $ @ >@(2&{))) + >@(0&{)))))
 
 NB. ---- RoPE for 1D vector ----
-NB. x rope_apply y: x = qk vector (1D), y = <dim, pos, freq>
-NB. freq = rope_freq_base from KV pairs
-NB. Formula: freq_i = (pos * freq_base) ^ (-2i / dim)
-rope_apply =: 4 : 0
-  qk =. x
-  dim =. > 0 { y
-  pos =. > 1 { y
-  freq =. > 2 { y
-  pair_count =. dim % 2
-  indices =. 2 * i. pair_count
-  theta =. pos * freq ^ (0 - indices) % dim
-  cos_t =. 2 o. theta
-  sin_t =. 1 o. theta
-  NB. Extract even/odd indexed elements directly (no reshape)
-  a =. indices { qk
-  b =. (1 + indices) { qk
-  a_out =. (a * cos_t) - (b * sin_t)
-  b_out =. (a * sin_t) + (b * cos_t)
-  NB. Interleave back: pair each (a_out[i], b_out[i]) and flatten
-  , a_out ,. b_out
-)
 
-   NB. ---- RoPE for 2D array — vectorized row-wise ----
-   NB. x = (n_rows, dim) qk matrix, y = <dim, pos, freq>
-   NB. Applies rope_apply to each row in a vectorized operation
-   rope_apply2 =: 4 : 0
-     qk =. x
-     dim =. > 0 { y
-     pos =. > 1 { y
-     freq =. > 2 { y
-     pair_count =. dim % 2
-     indices =. 2 * i. pair_count
-     theta =. pos * freq ^ (0 - indices) % dim
-     cos_t =. 2 o. theta
-     sin_t =. 1 o. theta
-     NB. Extract a (even-indexed) and b (odd-indexed) for all rows
-     a =. indices {"1 qk     NB. (n_rows, pair_count)
-     b =. (1 + indices) {"1 qk  NB. (n_rows, pair_count)
-     NB. Broadcast cos/sin to match a/b shape
-     cos_exp =. ($ a) $ cos_t
-     sin_exp =. ($ a) $ sin_t
-     a_out =. (a * cos_exp) - (b * sin_exp)
-     b_out =. (a * sin_exp) + (b * cos_exp)
-      NB. Interleave: pair (a[i],b[i]) and reshape to [n_rows, dim]
-      n_rows =. # a_out
-      sh =. $ a_out
-      pair_count =. 1 { sh
-      stacked =. a_out ,: b_out
-      (n_rows, pair_count * 2) $ , (1 2 0 |: stacked)
-    )
-NB. ---- RoPE for 2D array (legacy alias) ----
-rope_apply2_v1 =: rope_apply"1
 
-NB. ---- NEOX-style RoPE (GPT-NeoX / Gemma3 / Qwen / Falcon) ----
-NB. Pairs element i with element i + dim/2 (offset by half), NOT consecutive pairs.
-NB. Same frequencies as rope_apply: theta_i = pos * freq_base^(-2i/dim), i in 0..dim/2-1.
-NB. Monadic on a 1D qk vector: x rope_apply_neox <dim; pos; freq>
-rope_apply_neox =: 4 : 0
-  qk =. x
-  dim =. > 0 { y
-  pos =. > 1 { y
-  freq =. > 2 { y
-  half =. dim % 2
-  theta =. pos * freq ^ (0 - 2 * i. half) % dim
-  cos_t =. 2 o. theta
-  sin_t =. 1 o. theta
-  a =. half {. qk          NB. elements 0..half-1
-  b =. half }. qk          NB. elements half..dim-1
-  a_out =. (a * cos_t) - (b * sin_t)
-  b_out =. (a * sin_t) + (b * cos_t)
-  a_out , b_out            NB. x[i]=a_out[i], x[i+half]=b_out[i]
-)
 
-NB. ---- NEOX RoPE for 2D array (vectorized row-wise) ----
-NB. x = (n_rows, dim) qk matrix, y = <dim, pos, freq>
-rope_apply2_neox =: 4 : 0
-  qk =. x
-  dim =. > 0 { y
-  pos =. > 1 { y
-  freq =. > 2 { y
-  half =. dim % 2
-  theta =. pos * freq ^ (0 - 2 * i. half) % dim
-  cos_t =. 2 o. theta
-  sin_t =. 1 o. theta
-  a =. half {. "1 qk       NB. first half of each row
-  b =. half }. "1 qk       NB. second half of each row
-  cos_exp =. ($ a) $ cos_t
-  sin_exp =. ($ a) $ sin_t
-  a_out =. (a * cos_exp) - (b * sin_exp)
-  b_out =. (a * sin_exp) + (b * cos_exp)
-  a_out ,"1 b_out          NB. per-row: x[i]=a_out[i], x[i+half]=b_out[i]
-)
+
+
+
+
+
 
 NB. ---- NEOX RoPE for 2D array — table-based (no per-call trig) ----
 NB. x = (n_rows, dim) qk matrix, y = <cos_t; sin_t> where cos_t/sin_t are (half,) vectors for the current position
@@ -234,6 +130,51 @@ rope_apply2_t =: 4 : 0
   pc =. 1 { $ a_out
   stacked =. a_out ,: b_out
   (n_rows , pc * 2) $ , (1 2 0 |: stacked)
+)
+
+NB. ---- NEOX RoPE for BATCHED arrays — table-based, rank-generic ----
+NB. x = (lead..., dim) qk array (any rank >= 2, dim on the LAST axis; e.g.
+NB. (L,n_heads,dim), (B,n_heads,dim), (B,c,n_heads,dim)). y = <cos_exp; sin_exp>
+NB. where cos_exp/sin_exp are PRE-EXPANDED to (lead..., half) — the leading shape
+NB. of x minus the dim axis, with half = dim % 2 (hoisted once per chunk by the
+NB. caller and threaded through). Pairs are (i, i+half) (NEOX). The `"1` rotate
+NB. + `,"1` concat are rank-generic (no permute needed for NEOX).
+NB. CALLER CONVENTION: y MUST be a BOXED pair — pass `(cos) ; (sin)` (box), NOT
+NB. `(cos) , (sin)` (append). `,` builds a (2*lead, n_heads, half) ARRAY and
+NB. `> 0 { y` grabs the 0th ROW (n_heads, half) — only correct when lead=1; for
+NB. lead>1 the cos/sin shapes stop conforming (2 16 64 vs 16 64).
+rope_apply2_neox_b =: 4 : 0
+  qk =. x
+  cos_exp =. > 0 { y
+  sin_exp =. > 1 { y
+  half =. {: $ cos_exp
+  a =. half {. "1 qk       NB. first half of each row
+  b =. half }. "1 qk        NB. second half of each row
+  a_out =. (a * cos_exp) - (b * sin_exp)
+  b_out =. (a * sin_exp) + (b * cos_exp)
+  a_out ,"1 b_out           NB. per-row: x[i]=a_out[i], x[i+half]=b_out[i]
+)
+
+NB. ---- INTERLEAVED RoPE for BATCHED arrays — table-based, rank-generic ----
+NB. x = (lead..., dim) qk array (any rank >= 2, dim on the LAST axis). y =
+NB. <cos_exp; sin_exp; idx> where cos_exp/sin_exp are PRE-EXPANDED to (lead..., half)
+NB. and idx = 2 * i. half. Pairs are consecutive (i, i+1), unlike NEOX. The
+NB. interleave stacks via `,:` then permutes the new axis to last (rank-generic:
+NB. perm = (1 + i. r-1) , 0 for the stacked rank r) before ravel+reshape.
+rope_apply2_t_b =: 4 : 0
+  qk =. x
+  cos_exp =. > 0 { y
+  sin_exp =. > 1 { y
+  idx =. > 2 { y
+  a =. idx {"1 qk           NB. even-indexed cols per row
+  b =. (1 + idx) {"1 qk     NB. odd-indexed cols per row
+  a_out =. (a * cos_exp) - (b * sin_exp)
+  b_out =. (a * sin_exp) + (b * cos_exp)
+  lead =. }: $ a_out
+  half =. {: $ a_out
+  r =. 1 + # $ a_out
+  perm =. (1 + i. r - 1) , 0
+  (lead , 2 * half) $ , (perm |: (a_out ,: b_out))
 )
 
 NB. ---- Build RoPE cos/sin tables for all positions ----

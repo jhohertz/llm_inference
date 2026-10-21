@@ -263,6 +263,46 @@ mi_resid_scale =: 3 : 0
   > get__d (<'resid_scale')
 )
 
+NB. ---- Shared GGUF load boilerplate (DRY: the parse + tensor-load + base) ----
+NB. y = <path; raw>.  Returns <path; ti; tds; all_tensors; kv_data; kvs_ctx;
+NB. kvres; ct_tmpl> — the common components every arch loader needs.  The
+NB. arch-specific parts (extract_hparams + mi puts, tokenizer, stop_tokens,
+NB. default_params, block_data) stay in the per-arch *_load.  kvs_ctx =
+NB. <kvs; raw> (for extract_hparams/build_kv_dict/kv_string); kvres = the full
+NB. 4-item kv_result (for the tokenizer builders); all_tensors is emb_canonical.
+load_gguf_base =: 3 : 0
+  data =. y   NB. <path; raw>
+  path =. > 0 { data
+  raw =. > 1 { data
+  header =. parse_hdr_raw raw
+  n_tensors =. > 2 { header
+  kvres =. parse_kv_pairs_raw raw
+  kvs =. > 0 { kvres
+  kv_end =. > 3 { kvres
+  ti =. parse_tensor_infos (<raw) , (<kv_end) , (<n_tensors)
+  ti_end_offset =. > ((n_tensors * 6) - 1) { ti
+  tds =. 32 * <. (ti_end_offset + 31) % 32
+  kvs_ctx =. (<kvs) , (<raw)
+  kv_data =. build_kv_dict kvs_ctx
+  all_tensors =. ''
+  tensor_idx =. 0
+  while. tensor_idx < n_tensors do.
+    tname =. > (tensor_idx * 6) { ti
+    tdata =. (<path) , (<ti) , (<tds) , (<tname) , (<raw)
+    td =. load_tdata tdata
+    if. 0 < # td do.
+      ti_row =. tname get_tensor_info ti
+      dims =. ti_dims ti_row
+      etype =. ti_etype ti_row
+      all_tensors =. all_tensors , (<tname) , (<td) , (<dims) , (<etype)
+    end.
+    tensor_idx =. tensor_idx + 1
+  end.
+  all_tensors =. emb_canonical all_tensors
+  ct_tmpl =. 'tokenizer.chat_template' kv_string kvs_ctx
+  (<path) , (<ti) , (<tds) , (<all_tensors) , (<kv_data) , (<kvs_ctx) , (<kvres) , (<ct_tmpl)
+)
+
 NB. ---- Build a named-hparams mi dict from the boxed mi noun (indices 0-9) ----
 NB. y = the boxed mi noun from *_extract_hparams:
 NB.   <block_count; context_len; emb_len; n_heads; n_heads_kv; head_dim;
@@ -341,6 +381,568 @@ output_head =: 3 : 0
   NB. boxes directly (0 1 { y) instead of open+reboxing them for rms_norm.
   hidden =. rms_norm ((0 1 { y) , <(> 3 { y))
   hidden (+/ .* ) > 2 { y
+)
+
+NB. ---- GQA attention scores/softmax/output (shared by llama/qwen2/qwen3/granite) ----
+NB. The group-major GQA matmul + direct-3D-softmax + output-projection block is
+NB. identical across the standard-GQA archs (the per-arch Q/K/V projection,
+NB. RoPE, and Q pre-scale happen BEFORE; only the scores/softmax/output differ
+NB. by single-token vs batched).  Q/K/V stay (n_heads_kv, ctx, hd) — never
+NB. expanded to n_heads.  Single-token: x = <Q; K; V; attn_o; n_heads; n_heads_kv;
+NB. head_dim; n_groups> where Q = (n_heads,hd), K = (win,n_kv,hd), V = (win,n_kv,hd),
+NB. attn_o = (emb,n_heads*hd).  Returns the (emb,) output row.
+gqa_attn_single =: 3 : 0
+  Q =. > 0 { y
+  K =. > 1 { y
+  V =. > 2 { y
+  attn_o =. > 3 { y
+  n_heads =. > 4 { y
+  n_heads_kv =. > 5 { y
+  head_dim =. > 6 { y
+  n_groups =. > 7 { y
+  scores2 =. ((n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) (1 2 0 |: K)   NB. (n_kv, n_groups, win)
+  max_sf =. >./"1 scores2
+  exp_sf =. ^ (scores2 - max_sf)
+  softmax =. exp_sf % +/"1 exp_sf   NB. (n_kv, n_groups, win)
+  attn_o linear_r ((n_heads * head_dim) $ , (softmax (+/ .* "2) (1 0 2 |: V)))
+)
+
+NB. Batched (prompt prefill): x = <Q; K; V; attn_o; mask_g2; n_heads; n_heads_kv;
+NB. head_dim; n_groups; L> where Q = (L,n_heads,hd), K/V = (n_heads_kv,ctx,hd)
+NB. (K includes the cache prefix), mask_g2 = (n_groups*L, ctx) tiled causal mask.
+NB. Returns the (L, emb) output.
+gqa_attn_batch =: 3 : 0
+  Q =. > 0 { y
+  K =. > 1 { y
+  V =. > 2 { y
+  attn_o =. > 3 { y
+  mask_g2 =. > 4 { y
+  n_heads =. > 5 { y
+  n_heads_kv =. > 6 { y
+  head_dim =. > 7 { y
+  n_groups =. > 8 { y
+  L =. > 9 { y
+  Qp =. 1 0 2 |: Q
+  Q_g2 =. (n_heads_kv , (n_groups * L) , head_dim) $ , Qp
+  Kp2 =. 1 2 0 |: K
+  scores2 =. Q_g2 (+/ .* "2) Kp2   NB. (n_kv, n_groups*L, ctx)
+  scores2 =. scores2 -"2 (mask_g2 * 1e9)
+  max_sf =. >./"1 scores2
+  exp_sf =. ^ (scores2 - max_sf)
+  softmax_f =. exp_sf % +/"1 exp_sf
+  Vp =. 1 0 2 |: V
+  attn2 =. softmax_f (+/ .* "2) Vp   NB. (n_kv, n_groups*L, hd)
+  |: (attn_o (+/ .* ) |: ((L, n_heads * head_dim) $ , (1 0 2 |: ((n_heads, L, head_dim) $ , attn2))))
+)
+
+NB. ---- qwen2/qwen3 block_data accessors (shared — normalized layout) ----
+NB. Both qwen2 and qwen3 build block_data with this COMMON 17-element layout:
+NB. <attn_norm; attn_q; attn_k; attn_v; attn_o; q_bias; k_bias; v_bias;
+NB. ffn_norm; ffn_gate; ffn_up; ffn_down; q_norm; k_norm; n_heads; head_dim;
+NB. n_heads_kv>. qwen2 fills q_bias/k_bias/v_bias (absent q/k norm -> $0);
+NB. qwen3 fills q_norm/k_norm (absent q/k/v bias -> $0). The forward verbs take
+NB. a <has_bias; has_qk_norm> flag and skip the empty slots.
+bd_attn_norm =: >@(0&{)
+bd_attn_q    =: >@(1&{)
+bd_attn_k    =: >@(2&{)
+bd_attn_v    =: >@(3&{)
+bd_attn_o    =: >@(4&{)
+bd_q_bias    =: >@(5&{)
+bd_k_bias    =: >@(6&{)
+bd_v_bias    =: >@(7&{)
+bd_ff_norm  =: >@(8&{)
+bd_ff_gate  =: >@(9&{)
+bd_ff_up    =: >@(10&{)
+bd_ff_down  =: >@(11&{)
+bd_q_norm    =: >@(12&{)
+bd_k_norm    =: >@(13&{)
+bd_n_heads   =: >@(14&{)
+bd_head_dim  =: >@(15&{)
+bd_n_heads_kv =: >@(16&{)
+
+NB. ---- qwen2/qwen3 shared single-token forward verbs ----
+NB. y carries the <has_bias; has_qk_norm> flags as the LAST 2 elements (qwen2:
+NB. has_bias=1/has_qk_norm=0; qwen3: has_bias=0/has_qk_norm=1). The flags let
+NB. ONE verb serve both arches (bias-add vs per-head Q/K RMSNorm).
+qwen_attention =: 4 : 0
+  'block_data pos mi rms_eps cos_tab sin_tab layer has_bias has_qk_norm' =. y
+  n_heads =. bd_n_heads block_data
+  head_dim =. bd_head_dim block_data
+  n_heads_kv =. bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  hidden =. rms_norm ((< rms_eps) , (< (bd_attn_norm block_data)) , <x)
+  qv =. (bd_attn_q block_data) linear_r hidden
+  kv =. (bd_attn_k block_data) linear_r hidden
+  vv =. (bd_attn_v block_data) linear_r hidden
+  if. has_bias do.
+    qv =. qv + bd_q_bias block_data
+    kv =. kv + bd_k_bias block_data
+    vv =. vv + bd_v_bias block_data
+  end.
+  Q =. (n_heads, head_dim) $ qv
+  K =. (n_heads_kv, head_dim) $ kv
+  V =. (n_heads_kv, head_dim) $ vv
+  if. has_qk_norm do.
+    Q =. rms_norm_rows ((< rms_eps) , (< bd_q_norm block_data) , <Q)
+    K =. rms_norm_rows ((< rms_eps) , (< bd_k_norm block_data) , <K)
+  end.
+  cos_t =. pos { cos_tab
+  sin_t =. pos { sin_tab
+  rope_t =. (<cos_t) , (<sin_t)
+  Q =. Q rope_apply2_neox_t rope_t
+  K =. K rope_apply2_neox_t rope_t
+  Q =. Q % head_dim ^ 0.5
+  kv_write ((6 { y) , (1 { y) , (<K) , (<V))
+  kv_result =. kv_read ((6 { y) , (1 { y))
+  k_all =. > 0 { kv_result
+  v_all =. > 1 { kv_result
+  win =. pos + 1
+  attn_out =. gqa_attn_single (Q ; k_all ; v_all ; (bd_attn_o block_data) ; n_heads ; n_heads_kv ; head_dim ; n_groups)
+  (<attn_out)
+)
+
+qwen_block_forward =: 4 : 0
+  hidden =. x
+  'block_data pos mi rms_eps cos_tab sin_tab layer has_bias has_qk_norm' =. y
+  attn_result =. hidden qwen_attention y
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + hidden
+  ffn_in =. rms_norm ((< rms_eps) , (< (bd_ff_norm block_data)) , <sa_out)
+  gate =. (bd_ff_gate block_data) linear_r ffn_in
+  up =. (bd_ff_up block_data) linear_r ffn_in
+  ffn_raw =. (bd_ff_down block_data) linear_r (gate swiglu up)
+  output =. ffn_raw + sa_out
+  (<output)
+)
+
+qwen_run_blocks =: 4 : 0
+  'llm pos has_bias has_qk_norm' =. y
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  rms_eps =. mi_rms_eps mi
+  cos_tab =. mi_cos_tab mi
+  sin_tab =. mi_sin_tab mi
+  state =. x
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  b =. 0
+  block_data_list =. llm_block_data llm
+  bf_pre =. ((<pos) , (<mi) , (<rms_eps) , (<cos_tab) , (<sin_tab))
+  while. b < block_count do.
+    result =. state qwen_block_forward ((b { block_data_list) , bf_pre , (<b) , (<has_bias) , (<has_qk_norm))
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
+NB. ---- qwen2/qwen3 shared BATCHED (prefill) verbs ----
+NB. y carries <has_bias; has_qk_norm> as the LAST 2 elements (same flag
+NB. convention as the single-token verbs). qwen2: has_bias=1/has_qk_norm=0;
+NB. qwen3: has_bias=0/has_qk_norm=1.
+qwen_attention_b =: 4 : 0
+  block_data =. > 0 { y
+  layer =. > 1 { y
+  mi =. > 2 { y
+  start_pos =. > 3 { y
+  rope =. > 4 { y
+  has_bias =. > 5 { y
+  has_qk_norm =. > 6 { y
+  L =. {. $ x
+  n_heads =. bd_n_heads block_data
+  head_dim =. bd_head_dim block_data
+  n_heads_kv =. bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  cos_all =. > 0 { rope
+  sin_all =. > 1 { rope
+  half =. > 2 { rope
+  cos_expq =. > 3 { rope
+  sin_expq =. > 4 { rope
+  cos_expk =. > 5 { rope
+  sin_expk =. > 6 { rope
+  mask_g2 =. > 7 { rope
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (bd_attn_norm block_data)) , <x)
+  thin =. |: hidden
+  qv =. |: ((bd_attn_q block_data) (+/ .* ) thin)
+  kv =. |: ((bd_attn_k block_data) (+/ .* ) thin)
+  vv =. |: ((bd_attn_v block_data) (+/ .* ) thin)
+  if. has_bias do.
+    qv =. qv + ((L , n_heads * head_dim) $ bd_q_bias block_data)
+    kv =. kv + ((L , n_heads_kv * head_dim) $ bd_k_bias block_data)
+    vv =. vv + ((L , n_heads_kv * head_dim) $ bd_v_bias block_data)
+  end.
+  Q =. (L, n_heads, head_dim) $ , qv
+  K =. (L, n_heads_kv, head_dim) $ , kv
+  V =. (L, n_heads_kv, head_dim) $ , vv
+  if. has_qk_norm do.
+    Qf =. ((L * n_heads) , head_dim) $ , Q
+    Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< bd_q_norm block_data) , <Qf)
+    Q =. (L, n_heads, head_dim) $ , Qf
+    Kf =. ((L * n_heads_kv) , head_dim) $ , K
+    Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< bd_k_norm block_data) , <Kf)
+    K =. (L, n_heads_kv, head_dim) $ , Kf
+  end.
+  Q =. Q rope_apply2_neox_b ((> 3 { rope) ; (> 4 { rope))
+  K =. K rope_apply2_neox_b ((> 5 { rope) ; (> 6 { rope))
+  Q =. Q % head_dim ^ 0.5
+  K_batch =. K
+  V_batch =. V
+  if. start_pos > 0 do.
+    k_pre =. > 0 { (kv_read ((1 { y) , <(start_pos - 1)))
+    v_pre =. > 1 { (kv_read ((1 { y) , <(start_pos - 1)))
+    K =. k_pre , K
+    V =. v_pre , V
+  end.
+  kv_write_rows ((<0) , (1 { y) , (3 { y) , <K_batch)
+  kv_write_rows ((<1) , (<layer) , (<start_pos) , <V_batch)
+  attn_out =. gqa_attn_batch (Q ; K ; V ; (bd_attn_o block_data) ; mask_g2 ; n_heads ; n_heads_kv ; head_dim ; n_groups ; L)
+  (<attn_out)
+)
+
+qwen_block_forward_b =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  mi =. > 2 { y
+  attn_result =. hidden qwen_attention_b y
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + hidden
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (bd_ff_norm block_data)) , <sa_out)
+  ft =. |: ffn_in
+  ffn_raw =. |: ((bd_ff_down block_data) (+/ .* ) ((bd_ff_gate block_data) (+/ .* ) ft) swiglu ((bd_ff_up block_data) (+/ .* ) ft))
+  output =. ffn_raw + sa_out
+  (<output)
+)
+
+qwen_run_blocks_b =: 4 : 0
+  'llm start_pos has_bias has_qk_norm' =. y
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. x
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  L =. {. $ x
+  half =. <. head_dim % 2
+  cos_all =. (start_pos + i. L) { mi_cos_tab mi
+  sin_all =. (start_pos + i. L) { mi_sin_tab mi
+  rope_exp =. (cos_all ; sin_all ; half ; n_heads ; n_heads_kv ; L) build_rope_expansions ''
+  cos_expq =. > 0 { rope_exp
+  sin_expq =. > 1 { rope_exp
+  cos_expk =. > 2 { rope_exp
+  sin_expk =. > 3 { rope_exp
+  n_groups =. n_heads % n_heads_kv
+  key_pos =. i. (start_pos + L)
+  q_pos =. start_pos + i. L
+  mask_2d =. q_pos </ key_pos
+  mask_g2 =. ((n_groups * L) , start_pos + L) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1)))
+  rope =. (<cos_all) , (<sin_all) , (<half) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk) , (<mask_g2)
+  bfb_pre =. ((<mi) , (<start_pos) , <rope)
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    result =. state qwen_block_forward_b ((b { block_data_list) , (<b) , bfb_pre , (<has_bias) , (<has_qk_norm))
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
+NB. ---- qwen2/qwen3 shared BATCHED-DECODE verbs (B sequences, one token each) ----
+NB. y carries <has_bias; has_qk_norm> as the LAST 2 elements (same convention).
+qwen_attention_bd =: 4 : 0
+  block_data =. > 0 { y
+  pos =. > 1 { y
+  mi =. > 2 { y
+  layer =. > 3 { y
+  rope =. > 4 { y
+  has_bias =. > 5 { y
+  has_qk_norm =. > 6 { y
+  B =. {. $ x
+  n_heads =. bd_n_heads block_data
+  head_dim =. bd_head_dim block_data
+  n_heads_kv =. bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  half =. <. head_dim % 2
+  hidden =. rms_norm_rows ((< mi_rms_eps mi) , (< (bd_attn_norm block_data)) , <x)
+  thin =. |: hidden
+  qv =. |: ((bd_attn_q block_data) (+/ .* ) thin)
+  kv =. |: ((bd_attn_k block_data) (+/ .* ) thin)
+  vv =. |: ((bd_attn_v block_data) (+/ .* ) thin)
+  if. has_bias do.
+    qv =. qv + ((B , n_heads * head_dim) $ bd_q_bias block_data)
+    kv =. kv + ((B , n_heads_kv * head_dim) $ bd_k_bias block_data)
+    vv =. vv + ((B , n_heads_kv * head_dim) $ bd_v_bias block_data)
+  end.
+  Q =. (B, n_heads, head_dim) $ , qv
+  K =. (B, n_heads_kv, head_dim) $ , kv
+  V =. (B, n_heads_kv, head_dim) $ , vv
+  if. has_qk_norm do.
+    Qf =. ((B * n_heads) , head_dim) $ , Q
+    Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< bd_q_norm block_data) , <Qf)
+    Q =. (B, n_heads, head_dim) $ , Qf
+    Kf =. ((B * n_heads_kv) , head_dim) $ , K
+    Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< bd_k_norm block_data) , <Kf)
+    K =. (B, n_heads_kv, head_dim) $ , Kf
+  end.
+  Q =. Q rope_apply2_neox_b ((> 2 { rope) ; (> 3 { rope))
+  K =. K rope_apply2_neox_b ((> 4 { rope) ; (> 5 { rope))
+  Q =. Q % head_dim ^ 0.5
+  if. (B > 1) *. (pos -: (B $ 0 { pos)) do.
+    win =. (0 { pos) + 1
+    eff_seq =. > 1 { kv_meta
+    base_b =. ((layer * kv_batch_g) + i. B) * eff_seq
+    idxw =. base_b + pos
+    k_cache_g =: ((B , n_heads_kv * head_dim) $ , K) idxw} k_cache_g
+    v_cache_g =: ((B , n_heads_kv * head_dim) $ , V) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. (0 { pos) + 1
+    idxr =. base_b +/ i. win
+    scores_b =. ((B , n_heads_kv , n_groups , head_dim) $ , Q) (+/ .* "2) ((0 2 3 1) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { k_cache_g)))
+    max_sf_b =. >./"1 scores_b
+    exp_sf_b =. ^ (scores_b - max_sf_b)
+    softmax_b =. exp_sf_b % +/"1 exp_sf_b
+    attn_all =. (B , n_heads * head_dim) $ , (softmax_b (+/ .* "2) ((0 2 1 3) |: ((B , win , n_heads_kv , head_dim) $ , (idxr { v_cache_g))))
+  else.
+    attn_out =. ''
+    b =. 0
+    while. b < B do.
+      q_b =. b { Q
+      k_b =. b { K
+      v_b =. b { V
+      pos_b =. b { pos
+      kv_write ((3 { y) , (<pos_b) , (<k_b) , (<v_b) , (<b))
+      kv_result =. kv_read ((3 { y) , (<pos_b) , (<b))
+      win =. pos_b + 1
+      scores2 =. ((n_heads_kv , n_groups , head_dim) $ , q_b) (+/ .* "2) (1 2 0 |: (> 0 { kv_result))
+      max_sf =. >./"1 scores2
+      exp_sf =. ^ (scores2 - max_sf)
+      softmax =. exp_sf % +/"1 exp_sf
+      attn_out =. attn_out , <((n_heads * head_dim) $ , (softmax (+/ .* "2) (1 0 2 |: (> 1 { kv_result))))
+      b =. b + 1
+    end.
+    attn_all =. > attn_out
+  end.
+  attn_result =. |: ((bd_attn_o block_data) (+/ .* ) |: attn_all)
+  (<attn_result)
+)
+
+qwen_block_forward_bd =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  mi =. > 2 { y
+  attn_result =. hidden qwen_attention_bd y
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + hidden
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (bd_ff_norm block_data)) , <sa_out)
+  ft =. |: ffn_in
+  ffn_raw =. |: ((bd_ff_down block_data) (+/ .* ) ((bd_ff_gate block_data) (+/ .* ) ft) swiglu ((bd_ff_up block_data) (+/ .* ) ft))
+  output =. ffn_raw + sa_out
+  (<output)
+)
+
+qwen_run_blocks_bd =: 4 : 0
+  'llm pos has_bias has_qk_norm' =. y
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. x
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  B =. {. $ state
+  half =. <. head_dim % 2
+  cos_all =. pos { mi_cos_tab mi
+  sin_all =. pos { mi_sin_tab mi
+  rope_exp =. (cos_all ; sin_all ; half ; n_heads ; n_heads_kv ; B) build_rope_expansions ''
+  cos_expq =. > 0 { rope_exp
+  sin_expq =. > 1 { rope_exp
+  cos_expk =. > 2 { rope_exp
+  sin_expk =. > 3 { rope_exp
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk)
+  b =. 0
+  block_data_list =. llm_block_data llm
+  bf_pre =. ((<pos) , (<mi))
+  while. b < block_count do.
+    result =. state qwen_block_forward_bd ((b { block_data_list) , bf_pre , (<b) , (<rope) , (<has_bias) , (<has_qk_norm))
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
+NB. ---- qwen2/qwen3 shared BATCHED-PREFILL verbs ----
+NB. y carries <has_bias; has_qk_norm> as the LAST 2 elements (same flag
+NB. convention as the single/batched verbs). qwen2: has_bias=1/has_qk_norm=0;
+NB. qwen3: has_bias=0/has_qk_norm=1. The prefill path always passes lens (the
+NB. lens-masked per-sequence length, possibly empty) — at y index 4 (attention/
+NB. block_forward) or 2 (run_blocks) — mirror the arch *_run_blocks_bp convention.
+qwen_attention_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  layer =. > 1 { y
+  pos =. > 2 { y
+  mi =. > 3 { y
+  lens =. ''
+  if. 4 < # y do. lens =. > 4 { y end.
+  rope =. > 5 { y
+  has_bias =. > 6 { y
+  has_qk_norm =. > 7 { y
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  n_heads =. bd_n_heads block_data
+  head_dim =. bd_head_dim block_data
+  n_heads_kv =. bd_n_heads_kv block_data
+  n_groups =. n_heads % n_heads_kv
+  half =. <. head_dim % 2
+  eff_seq =. > 1 { kv_meta
+
+  hidden_flat =. rms_norm_rows ((< mi_rms_eps mi) , (< (bd_attn_norm block_data)) , <(((B*c) , emb_len) $ , hidden))
+
+  thin =. |: hidden_flat
+  qv =. |: ((bd_attn_q block_data) (+/ .* ) thin)
+  kv =. |: ((bd_attn_k block_data) (+/ .* ) thin)
+  vv =. |: ((bd_attn_v block_data) (+/ .* ) thin)
+  if. has_bias do.
+    qv =. qv + (((B*c) , n_heads * head_dim) $ bd_q_bias block_data)
+    kv =. kv + (((B*c) , n_heads_kv * head_dim) $ bd_k_bias block_data)
+    vv =. vv + (((B*c) , n_heads_kv * head_dim) $ bd_v_bias block_data)
+  end.
+
+  Q =. (B, c, n_heads, head_dim) $ , qv
+  K =. (B, c, n_heads_kv, head_dim) $ , kv
+  V =. (B, c, n_heads_kv, head_dim) $ , vv
+
+  if. has_qk_norm do.
+    Qf =. ((B*c*n_heads) , head_dim) $ , Q
+    Qf =. rms_norm_rows ((< mi_rms_eps mi) , (< bd_q_norm block_data) , <Qf)
+    Q =. (B, c, n_heads, head_dim) $ , Qf
+    Kf =. ((B*c*n_heads_kv) , head_dim) $ , K
+    Kf =. rms_norm_rows ((< mi_rms_eps mi) , (< bd_k_norm block_data) , <Kf)
+    K =. (B, c, n_heads_kv, head_dim) $ , Kf
+  end.
+
+  Q =. Q rope_apply2_neox_b ((> 2 { rope) ; (> 3 { rope))
+  K =. K rope_apply2_neox_b ((> 4 { rope) ; (> 5 { rope))
+
+  Q =. Q % head_dim ^ 0.5
+
+  attn_out =. ''
+  b =. 0
+  while. b < B do.
+    pos_b =. b { pos
+    base_b =. ((layer * kv_batch_g) + b) * eff_seq
+    idxw =. base_b + pos_b + i. c
+    k_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { K)) idxw} k_cache_g
+    v_cache_g =: ((c, n_heads_kv*head_dim) $ , (b { V)) idxw} v_cache_g
+    kv_pos_g =: kv_pos_g >. pos_b + c
+    win =. pos_b + c
+    mask_2d =. (pos_b + i. c) </ i. win
+    if. 0 < # lens do.
+      mask_2d =. mask_2d +. ((i. win) >: b { lens)
+    end.
+    scores2 =. ((n_heads_kv, (n_groups*c), head_dim) $ , (1 0 2 |: (b { Q))) (+/ .* "2) (1 2 0 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { k_cache_g)))
+    scores2 =. scores2 -"2 (((n_groups * c), win) $ , (2 0 1 |: (mask_2d (*/) (n_groups $ 1))) * 1e9)
+    max_sf =. >./"1 scores2
+    exp_sf =. ^ (scores2 - max_sf)
+    softmax_f =. exp_sf % +/"1 exp_sf
+    attn_out =. attn_out , <((c, n_heads*head_dim) $ , (1 0 2 |: ((n_heads, c, head_dim) $ , (softmax_f (+/ .* "2) (1 0 2 |: ((win, n_heads_kv, head_dim) $ , ((base_b + i. win) { v_cache_g)))))))
+    b =. b + 1
+  end.
+  attn_all =. > attn_out
+  attn_result =. |: ((bd_attn_o block_data) (+/ .* ) |: (((B*c) , (n_heads*head_dim)) $ , attn_all))
+  attn_result =. (B, c, emb_len) $ , attn_result
+  (<attn_result)
+)
+
+qwen_block_forward_bp =: 4 : 0
+  hidden =. x
+  block_data =. > 0 { y
+  mi =. > 3 { y
+  B =. {. $ hidden
+  c =. 1 { $ hidden
+  emb_len =. 2 { $ hidden
+  attn_result =. hidden qwen_attention_bp y
+  attn_out =. > 0 { attn_result
+  sa_out =. attn_out + hidden
+  sa_flat =. ((B*c) , emb_len) $ , sa_out
+  ffn_in =. rms_norm_rows ((< mi_rms_eps mi) , (< (bd_ff_norm block_data)) , <sa_flat)
+  ft =. |: ffn_in
+  ffn_raw =. |: ((bd_ff_down block_data) (+/ .* ) ((bd_ff_gate block_data) (+/ .* ) ft) swiglu ((bd_ff_up block_data) (+/ .* ) ft))
+  output_flat =. ffn_raw + sa_flat
+  output =. (B, c, emb_len) $ , output_flat
+  (<output)
+)
+
+qwen_run_blocks_bp =: 4 : 0
+  llm =. > 0 { y
+  pos =. > 1 { y
+  has_qk_norm =. > ((# y) - 1) { y
+  has_bias =. > ((# y) - 2) { y
+  lens =. ''
+  if. 2 < (# y) - 2 do. lens =. > 2 { y end.
+  mi =. llm_mi llm
+  head_dim =. mi_head_dim mi
+  n_heads =. mi_n_heads mi
+  n_heads_kv =. mi_n_heads_kv mi
+  block_count =. mi_block_count mi
+  ctx_len =. mi_context_len mi
+  state =. x
+  if. 0 = # kv_meta do.
+    kv_create ((<block_count) , (<ctx_len) , (<n_heads_kv) , (<head_dim))
+  end.
+  B =. {. $ state
+  c =. 1 { $ state
+  half =. <. head_dim % 2
+  pos_bc_flat =. (B*c) $ , (pos +/ i. c)
+  cos_all =. pos_bc_flat { mi_cos_tab mi
+  sin_all =. pos_bc_flat { mi_sin_tab mi
+  rope_exp =. (cos_all ; sin_all ; half ; n_heads ; n_heads_kv ; B*c) build_rope_expansions ''
+  cos_expq =. (B, c, n_heads, half) $ , > 0 { rope_exp
+  sin_expq =. (B, c, n_heads, half) $ , > 1 { rope_exp
+  cos_expk =. (B, c, n_heads_kv, half) $ , > 2 { rope_exp
+  sin_expk =. (B, c, n_heads_kv, half) $ , > 3 { rope_exp
+  rope =. (<cos_all) , (<sin_all) , (<cos_expq) , (<sin_expq) , (<cos_expk) , (<sin_expk)
+  bfb_pre =. ((<pos) , (<mi) , <lens)
+  b =. 0
+  block_data_list =. llm_block_data llm
+  while. b < block_count do.
+    result =. state qwen_block_forward_bp ((b { block_data_list) , (<b) , bfb_pre , (<rope) , (<has_bias) , (<has_qk_norm))
+    state =. > 0 { result
+    b =. b + 1
+  end.
+  <state
+)
+
+NB. ---- NEOX RoPE cos/sin table expansion (shared) ----
+NB. x = <cos_all; sin_all; half; n_heads; n_heads_kv; lead> where cos_all/sin_all are
+NB. (lead, half) tables and lead = L (run_blocks_b), B (run_blocks_bd), or B*c
+NB. (run_blocks_bp — the caller reshapes the returned (lead,n_heads,half) to
+NB. (B,c,n_heads,half)). Returns <cos_expq; sin_expq; cos_expk; sin_expk> each
+NB. (lead, n_heads, half) — pre-expanded per-head, hoisted once per chunk and
+NB. threaded through the layer loop (NEOX pairs (i, i+half)).
+build_rope_expansions =: 4 : 0
+  cos_all =. > 0 { x
+  sin_all =. > 1 { x
+  half =. > 2 { x
+  n_heads =. > 3 { x
+  n_heads_kv =. > 4 { x
+  lead =. > 5 { x
+  cos_expq =. (0 2 1) |: ((lead , half , n_heads) $ , (cos_all (*/) (n_heads $ 1)))
+  sin_expq =. (0 2 1) |: ((lead , half , n_heads) $ , (sin_all (*/) (n_heads $ 1)))
+  cos_expk =. (0 2 1) |: ((lead , half , n_heads_kv) $ , (cos_all (*/) (n_heads_kv $ 1)))
+  sin_expk =. (0 2 1) |: ((lead , half , n_heads_kv) $ , (sin_all (*/) (n_heads_kv $ 1)))
+  (cos_expq ; sin_expq ; cos_expk ; sin_expk)
 )
 
 NB. ---- Sample from logits ----

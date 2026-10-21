@@ -164,23 +164,23 @@ test_qwen3 =: 3 : 0
 
   bd0 =. > 0 { bd_list
   tc =. tc + 1
-  if. 14 = # bd0 do. pc =. pc + 1
-    echo 'PASS: block_data[0] has 14 elements (no bias slots, q/k norms)'
+  if. 17 = # bd0 do. pc =. pc + 1
+    echo 'PASS: block_data[0] has 17 elements (normalized, bias+q/k-norm slots)'
   else. fc =. fc + 1
-    fl =. fl , 'block_data[0] has 14 elements', LF; echo 'FAIL: block_data[0] has 14 elements'; echo '  got: '; echo # bd0 end.
+    fl =. fl , 'block_data[0] has 17 elements', LF; echo 'FAIL: block_data[0] has 17 elements'; echo '  got: '; echo # bd0 end.
 
   NB. Q/K norms: per-head RMSNorm weights, size = head_dim = 128
   tc =. tc + 1
-  if. 128 = # qw3_bd_q_norm bd0 do. pc =. pc + 1
+  if. 128 = # bd_q_norm bd0 do. pc =. pc + 1
     echo 'PASS: attn_q_norm length = 128'
   else. fc =. fc + 1
-    fl =. fl , 'attn_q_norm length = 128', LF; echo 'FAIL: attn_q_norm length = 128'; echo '  got: '; echo # qw3_bd_q_norm bd0 end.
+    fl =. fl , 'attn_q_norm length = 128', LF; echo 'FAIL: attn_q_norm length = 128'; echo '  got: '; echo # bd_q_norm bd0 end.
 
   tc =. tc + 1
-  if. 128 = # qw3_bd_k_norm bd0 do. pc =. pc + 1
+  if. 128 = # bd_k_norm bd0 do. pc =. pc + 1
     echo 'PASS: attn_k_norm length = 128'
   else. fc =. fc + 1
-    fl =. fl , 'attn_k_norm length = 128', LF; echo 'FAIL: attn_k_norm length = 128'; echo '  got: '; echo # qw3_bd_k_norm bd0 end.
+    fl =. fl , 'attn_k_norm length = 128', LF; echo 'FAIL: attn_k_norm length = 128'; echo '  got: '; echo # bd_k_norm bd0 end.
 
   NB. No Q/K/V biases in qwen3: the bias tensors must be absent
   tc =. tc + 1
@@ -190,7 +190,7 @@ test_qwen3 =: 3 : 0
     fl =. fl , 'no attn_q.bias tensor', LF; echo 'FAIL: no attn_q.bias tensor'; echo '  got len: '; echo # 'blk.0.attn_q.bias' get_tensor_cached_d llm end.
 
   NB. attn_q weight: (2048, 1024) = [out=16*128, in=emb]
-  attn_q =. qw3_bd_attn_q bd0
+  attn_q =. bd_attn_q bd0
   tq =. $ attn_q
   tc =. tc + 1
   if. 2048 = {. tq do. pc =. pc + 1
@@ -204,7 +204,7 @@ test_qwen3 =: 3 : 0
     fl =. fl , 'attn_q shape[1] = 1024', LF; echo 'FAIL: attn_q shape[1] = 1024'; echo '  got: '; echo {: tq end.
 
   NB. attn_k weight: (1024, 1024) = [out=8*128, in=emb]
-  attn_k =. qw3_bd_attn_k bd0
+  attn_k =. bd_attn_k bd0
   tk =. $ attn_k
   tc =. tc + 1
   if. 1024 = {. tk do. pc =. pc + 1
@@ -213,7 +213,7 @@ test_qwen3 =: 3 : 0
     fl =. fl , 'attn_k shape[0] = 1024', LF; echo 'FAIL: attn_k shape[0] = 1024'; echo '  got: '; echo {. tk end.
 
   NB. attn_output weight: (1024, 1024)
-  ao =. qw3_bd_attn_o bd0
+  ao =. bd_attn_o bd0
   ao_sh =. $ ao
   tc =. tc + 1
   if. 1024 = {. ao_sh do. pc =. pc + 1
@@ -223,10 +223,10 @@ test_qwen3 =: 3 : 0
 
   NB. ffn_gate: (3072, 1024)
   tc =. tc + 1
-  if. 3072 = {. $ qw3_bd_ff_gate bd0 do. pc =. pc + 1
+  if. 3072 = {. $ bd_ff_gate bd0 do. pc =. pc + 1
     echo 'PASS: ffn_gate shape[0] = 3072'
   else. fc =. fc + 1
-    fl =. fl , 'ffn_gate shape[0] = 3072', LF; echo 'FAIL: ffn_gate shape[0] = 3072'; echo '  got: '; echo {. $ qw3_bd_ff_gate bd0 end.
+    fl =. fl , 'ffn_gate shape[0] = 3072', LF; echo 'FAIL: ffn_gate shape[0] = 3072'; echo '  got: '; echo {. $ bd_ff_gate bd0 end.
 
   NB. ================================================================
   echo '--- Section 3: Single-Token Inference (vs llama.cpp) ---'

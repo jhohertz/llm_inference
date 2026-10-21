@@ -61,21 +61,8 @@ granite_mi_logit_scale =: 3 : 0
   > get__d (<'logit_scale')
 )
 
-NB. ---- block_data accessors (granite: separate weights, like llama) ----
-NB. block_data = <attn_norm; attn_q; attn_k; attn_v; attn_o; ffn_norm; ffn_gate; ffn_up; ffn_down; n_heads; head_dim; rope_freq; n_heads_kv; n_ff; block_idx>
-granite_bd_attn_norm =: >@(0&{)
-granite_bd_attn_q    =: >@(1&{)
-granite_bd_attn_k    =: >@(2&{)
-granite_bd_attn_v    =: >@(3&{)
-granite_bd_attn_o    =: >@(4&{)
-granite_bd_ff_norm   =: >@(5&{)
-granite_bd_ff_gate   =: >@(6&{)
-granite_bd_ff_up     =: >@(7&{)
-granite_bd_ff_down   =: >@(8&{)
-granite_bd_n_heads   =: >@(9&{)
-granite_bd_head_dim  =: >@(10&{)
-
-granite_bd_n_heads_kv=: >@(11&{)
+NB. ---- block_data accessors (granite aliases llama's forward verbs, which
+NB. read llama_bd_* — granite_bd_* is dead) ----
 NB. ---- Pre-build block data for granite arch ----
 NB. ---- Build one block's data (rank-1; x=llm, y=block index) ----
 granite_build_block =: 4 : 0
@@ -151,67 +138,40 @@ granite_run_blocks_bd =: llama_run_blocks_bd
 granite_load =: 3 : 0
   NB. y = <path; raw> — raw is the memory-mapped file (mapped by
   NB. load_gguf_to_llm; unmap'd after load — kvs_ctx is load-time only).
-  data =. y
-  path =. > 0 { data
-  raw =. > 1 { data
-  header =. parse_hdr_raw raw
-  n_tensors =. > 2 { header
-  kv_result =. parse_kv_pairs_raw raw
-  kvs =. > 0 { kv_result
-  kv_end =. > 3 { kv_result
-  ti =. parse_tensor_infos (<raw) , (<kv_end) , (<n_tensors)
-  ti_end_offset =. > ((n_tensors * 6) - 1) { ti
-  tds =. 32 * <. (ti_end_offset + 31) % 32
-  kvs_ctx =. (<kvs) , (<raw)
-  kv_data =. build_kv_dict kvs_ctx
-  mi =. granite_extract_hparams kvs_ctx
-  mi =. build_mi_dict mi
+  NB. The parse + tensor-load + llm-noun base is shared (load_gguf_base).
+  base =. load_gguf_base y
+  path =. 0 {:: base
+  ti =. 1 {:: base
+  tds =. 2 {:: base
+  at =. 3 {:: base
+  kvd =. 4 {:: base
+  kvs_ctx =. 5 {:: base
+  kvres =. 6 {:: base
+  ct_tmpl =. 7 {:: base
+  mi =. build_mi_dict (granite_extract_hparams kvs_ctx)
   rope_tables =. build_rope_tables ((< mi_context_len mi) , (< mi_head_dim mi) , (< mi_rope_freq mi))
   NB. granite-specific config fields, read from the kv_data dict by name.
   NB. attn_scale/resid_scale are the COMMON mi accessors (mi_attn_scale/mi_resid_scale)
   NB. the shared forward verbs read; embed/logit stay granite-specific.
   NB. ONE multi-put: the jdict single-put (1-key) path is broken in this J9.8
   NB. build (domain/length error); multi-put (2+ keys) and get/has work.
-  attn_scale =. 'granite.attention.scale' dict_get kv_data
-  resid_scale =. 'granite.residual_scale' dict_get kv_data
-  embed_scale =. 'granite.embedding_scale' dict_get kv_data
-  logit_scale =. 'granite.logit_scale' dict_get kv_data
+  attn_scale =. 'granite.attention.scale' dict_get kvd
+  resid_scale =. 'granite.residual_scale' dict_get kvd
+  embed_scale =. 'granite.embedding_scale' dict_get kvd
+  logit_scale =. 'granite.logit_scale' dict_get kvd
   ((> 0 { rope_tables) ; (> 1 { rope_tables) ; attn_scale ; resid_scale ; embed_scale ; logit_scale) put__mi 'cos_tab' ; 'sin_tab' ; 'attn_scale' ; 'resid_scale' ; 'embed_scale' ; 'logit_scale'
-  NB. Real chat template from the GGUF ('' if absent → bespoke fallback).
-  ct_tmpl =. 'tokenizer.chat_template' kv_string (0 1 { kv_result)
-  tokenizer =. build_gpt2_tokenizer kv_result
+  tokenizer =. build_gpt2_tokenizer kvres
   stop_tokens =. tokenizer_eos_g tokenizer
-  all_tensors =. ''
-  tensor_idx =. 0
-  while. tensor_idx < n_tensors do.
-    tname =. > (tensor_idx * 6) { ti
-    tdata =. (<path) , (<ti) , (<tds) , (<tname) , (<raw)
-    td =. load_tdata tdata
-    if. 0 < # td do.
-      ti_row =. tname get_tensor_info ti
-      dims =. ti_dims ti_row
-      etype =. ti_etype ti_row
-      all_tensors =. all_tensors , (<tname) , (<td) , (<dims) , (<etype)
-    end.
-    tensor_idx =. tensor_idx + 1
-  end.
   n_heads_kv =. mi_n_heads_kv mi
   head_dim =. mi_head_dim mi
   ctx_len =. mi_context_len mi
   block_count =. mi_block_count mi
-  p  =. <path
-  t  =. <ti
   ze =. <0 0 0.95 0.0   NB. default_params (chat sampling defaults)
-  tk =. <tokenizer
-  mi_b =. <mi
   kc_b =. <(block_count ; ctx_len ; n_heads_kv ; head_dim)   NB. kv cache config (per-model, authoritative; mirror globals are the hot path)
-  td =. <tds
-  all_tensors =. emb_canonical all_tensors
-  at =. <all_tensors
-  llm =. p , t , ze , tk , mi_b , kc_b , td , at
+  llm =. (<path) , (<ti) , ze , (<tokenizer) , (<mi) , kc_b , (<tds) , (<at)
   block_data =. granite_pre_build_block_data llm
   llm =. llm , <block_data
-  llm =. llm , <kv_data
+  llm =. llm , <kvd
   llm =. llm , <stop_tokens
   llm =. llm , <ct_tmpl
 )

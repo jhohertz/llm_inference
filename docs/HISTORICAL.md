@@ -1499,3 +1499,24 @@ block_data; kv_data; stop_tokens; ct_tmpl; arch; ct_caps; ct_tool_ex; lf2_conv`)
   `lf2_conv_layers`/`lf2_n_conv_g` + dims, read via `llm_lf2_conv`, bound on
   model load by `llm_lf2_bind`, which also resets the conv runtime mirror so no
   stale conv state crosses models).
+- **Generic infer/generate (Tier 2, DRY)** — the 8-arch `*_infer`/`*_generate`/
+  `*_generate_batch`/`*_infer_simple`/`*_generate_simple` (40 verbs, ~720 lines,
+  ~90% identical) collapsed into ONE generic set in util/chat.ijs that reads
+  everything from the llm dict and dispatches the forward via `llm_arch`
+  (`*_run_blocks`/`*_run_blocks_b`, embed-scale + logit-scale from `mi`,
+  `kv_create` args from `mi`); `generate`/`generate_batch` frame via `chat_prompt`,
+  tokenize via `llm_tokenize`, stop via `llm_stop_tokens`, then the unified
+  `gen_loop_core`/`gen_loop_batch`. The 8 arch names are thin aliases to the
+  generic (no behavior change); each arch module keeps only hparam extraction,
+  block_data build, and the forward math. `sample_from` is the single sampler
+  entry (gemma3 folded).
+- **Tier 3 KV-cache member — ASSESSED/CLOSED (deferred)** — moving the cache
+  buffers (`k_cache_g`/`v_cache_g`) into the dict's `kv_cache` member was
+  measured and REJECTED: the jdict `get__d` hands back a value that is NOT
+  shared with the dict's storage, so an in-place amend on the read value does
+  not persist; persisting needs `put__d`, which copies the WHOLE buffer
+  (O(buffer) per write — measured ~95× slower than the global in-place amend on
+  a 0.8MB buffer, ~2ms per write for a 100MB cache). The current design (cache
+  config in the dict, buffers + state in the globals, in-place amend) is kept —
+  it preserves the O(cell) writes. The remaining Tier 3 items (chat-template,
+  tokenizer-pre, lfm2-conv members) are DONE (see above).

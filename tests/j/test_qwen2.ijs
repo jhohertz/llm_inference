@@ -149,13 +149,13 @@ test_qwen2 =: 3 : 0
 
   bd0 =. > 0 { bd_list
   tc =. tc + 1
-  if. 15 = # bd0 do. pc =. pc + 1
-    echo 'PASS: block_data[0] has 15 elements'
+  if. 17 = # bd0 do. pc =. pc + 1
+    echo 'PASS: block_data[0] has 17 elements (normalized, bias+q/k-norm slots)'
   else. fc =. fc + 1
-    fl =. fl , 'block_data[0] has 15 elements', LF; echo 'FAIL: block_data[0] has 15 elements'; echo '  got: '; echo # bd0 end.
+    fl =. fl , 'block_data[0] has 17 elements', LF; echo 'FAIL: block_data[0] has 17 elements'; echo '  got: '; echo # bd0 end.
 
   NB. Q bias: (n_heads * head_dim) = 896 flat vector
-  qb =. qw2_bd_q_bias bd0
+  qb =. bd_q_bias bd0
   tc =. tc + 1
   if. 896 = # qb do. pc =. pc + 1
     echo 'PASS: attn_q.bias length = 896 (14*64)'
@@ -163,7 +163,7 @@ test_qwen2 =: 3 : 0
     fl =. fl , 'attn_q.bias length = 896', LF; echo 'FAIL: attn_q.bias length = 896'; echo '  got: '; echo # qb end.
 
   NB. K bias: (n_kv_heads * head_dim) = 128 flat vector
-  kb =. qw2_bd_k_bias bd0
+  kb =. bd_k_bias bd0
   tc =. tc + 1
   if. 128 = # kb do. pc =. pc + 1
     echo 'PASS: attn_k.bias length = 128 (2*64)'
@@ -171,7 +171,7 @@ test_qwen2 =: 3 : 0
     fl =. fl , 'attn_k.bias length = 128', LF; echo 'FAIL: attn_k.bias length = 128'; echo '  got: '; echo # kb end.
 
   NB. V bias: (n_kv_heads * head_dim) = 128
-  vb =. qw2_bd_v_bias bd0
+  vb =. bd_v_bias bd0
   tc =. tc + 1
   if. 128 = # vb do. pc =. pc + 1
     echo 'PASS: attn_v.bias length = 128'
@@ -179,7 +179,7 @@ test_qwen2 =: 3 : 0
     fl =. fl , 'attn_v.bias length = 128', LF; echo 'FAIL: attn_v.bias length = 128'; echo '  got: '; echo # vb end.
 
   NB. attn_q weight: (896, 896) = [out=14*64, in=emb]
-  attn_q =. qw2_bd_attn_q bd0
+  attn_q =. bd_attn_q bd0
   tq =. $ attn_q
   tc =. tc + 1
   if. 896 = {. tq do. pc =. pc + 1
@@ -193,7 +193,7 @@ test_qwen2 =: 3 : 0
     fl =. fl , 'attn_q shape[1] = 896', LF; echo 'FAIL: attn_q shape[1] = 896'; echo '  got: '; echo {: tq end.
 
   NB. attn_k weight: (128, 896) = [out=2*64, in=emb]
-  attn_k =. qw2_bd_attn_k bd0
+  attn_k =. bd_attn_k bd0
   tk =. $ attn_k
   tc =. tc + 1
   if. 128 = {. tk do. pc =. pc + 1
@@ -202,7 +202,7 @@ test_qwen2 =: 3 : 0
     fl =. fl , 'attn_k shape[0] = 128', LF; echo 'FAIL: attn_k shape[0] = 128'; echo '  got: '; echo {. tk end.
 
   NB. attn_output weight: (896, 896)
-  ao =. qw2_bd_attn_o bd0
+  ao =. bd_attn_o bd0
   ao_sh =. $ ao
   tc =. tc + 1
   if. 896 = {. ao_sh do. pc =. pc + 1
@@ -212,10 +212,10 @@ test_qwen2 =: 3 : 0
 
   NB. ffn_gate: (4864, 896)
   tc =. tc + 1
-  if. 4864 = {. $ qw2_bd_ff_gate bd0 do. pc =. pc + 1
+  if. 4864 = {. $ bd_ff_gate bd0 do. pc =. pc + 1
     echo 'PASS: ffn_gate shape[0] = 4864'
   else. fc =. fc + 1
-    fl =. fl , 'ffn_gate shape[0] = 4864', LF; echo 'FAIL: ffn_gate shape[0] = 4864'; echo '  got: '; echo {. $ qw2_bd_ff_gate bd0 end.
+    fl =. fl , 'ffn_gate shape[0] = 4864', LF; echo 'FAIL: ffn_gate shape[0] = 4864'; echo '  got: '; echo {. $ bd_ff_gate bd0 end.
 
   NB. ================================================================
   echo '--- Section 3: Single-Token Inference (vs llama.cpp) ---'

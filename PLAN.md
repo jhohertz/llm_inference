@@ -13,109 +13,86 @@ architectures. An educational inference engine; simplicity over speed.
 
 ## Current Status
 
-The suite is green (all arch + kv-cache suites bit-exact vs `llama-cpp-python`).
-Everything through **Phase 6 is COMPLETE** — minja Jinja port (Phase 5), the
-chat-template layer (Phase 5G), GGUF-jinja chat integration (Phase 5H),
-tool/typed-content prompts, streaming OpenAI-compatible chat API, the stateful
-chat TUI, the network HTTP server, multi-session + batched HTTP generation,
-**batched prefill** (all 8 arches), and **batched decode vectorization**
-(qwen35 SSM recurrence, lfm2 conv decode+prefill, gemma3 SWA attention — all 8
-arches batch==single, `tests/j/test_batched.ijs` 11/11). **Phase 4 (engineering
-stretch) is evaluated** — each item was measured/analyzed and closed (kept or
-dropped) with a reason. **No prior planned work remains** — the deferred idiom
-ideas (Broadcastly, LoopWithInitial, tokenizer obverse) and the **jllama study**
-(findings 1-8, all resolved) are assessed/closed in **docs/HISTORICAL.md**
-("jllama study — adopted/evaluated").
+The suite is green (all arch + kv-cache suites bit-exact vs `llama-cpp-python`);
+everything through **Phase 6 is COMPLETE** and **Phase 4 is evaluated**; the
+DRY/Dict-ification refactor is complete (Tier 1 + Tier 2 done; the Tier 3
+KV-cache member assessed/closed — see HISTORICAL.md). See
+**docs/HISTORICAL.md** for the completed/evaluated details (phases, minja/jinja
++ GGUF-jinja, HTTP server, batched prefill + decode vectorization, jllama
+study, boxing/copy + redundant-computation passes).
 
-## Deferred Optimization Opportunities
+## DRY Refactor (Tier 2 follow-up — in progress)
 
-Found during the 2026-10 boxing/copy-elimination pass (see HISTORICAL.md
-"Boxing/copy elimination — generation hot paths (2026-10)"). Measured/assessed,
-left for a later pass — each is real but marginal/invasive relative to the
-matmul-dominated decode. (The RoPE table+expansion hoist for the batched paths
-and the per-layer `mi` dict-lookup hoist for the single-token path are DONE —
-see HISTORICAL.md "Redundant computation elimination — generation hot paths
-(2026-10)".)
-- **Tacit conversion**: the hot kernels (`rms_norm`, `rms_norm_rows`,
-  `linear_r`) are already tacit; the batched loops stay explicit `while.`
-  because the candidate `u^:v^:_` DoWhile / `u^:n` Power / `m@.v` idioms are
-  rank-0 slow for these per-layer/per-token loops — keep explicit unless a
-  measured win appears.
+A deep-inspection pass (Oct 2026) found the hot path is already at its
+practical peak (memory-bound; mi-hoist, `|: hidden` hoisting, fused QKV,
+unified `gen_loop` all done; matvec-vs-vector-matrix measured ~1.0x — NOT a
+win). Remaining value is structural DRY. Work through **in this order**:
 
-## DRY / Dict-ification Refactor (PLANNED)
+1. **Batched RoPE kernels** — the NEOX batched RoPE block is inlined ~6×
+   (qwen2.ijs:191-200/:410-419/:588-597, gemma3.ijs:261-274/:453-466/:637-648)
+   and the interleaved form ~3× (llama.ijs:179-188/:401-410/:522-531). Extract
+   `rope_apply2_neox_b` / `rope_apply2_t_b` into kernels/jfloat.ijs (any-rank,
+   dim-last-axis; the 4D `B,c,heads,dim` case already works via `"1`).
+   **DONE** — both kernels added; all 9 standard inline copies replaced
+   (llama/qwen2/qwen3/gemma3/lfm2; qwen35's Qtail variant is genuinely
+   different and stays). Verified: lint/load-probe + test_kernels 32/32 +
+   rank-generic kernel == inline (bit-exact).
+2. **GQA attention scores/softmax/output** — the group-major
+   `((n_kv,n_groups,hd)$ ,Q) (+/ .* "2) (1 2 0 |: k_all)` + direct-3D-softmax +
+   `(attn_o) linear_r ...` block is identical across llama/qwen2/qwen3/granite.
+   Extract `gqa_attn_single` / `gqa_attn_batch` into llm_core.ijs (scope to
+   standard-GQA archs; gemma3/qwen35/lfm2 differ). **DONE** — both helpers
+   added; single + batched call sites replaced in llama/qwen2/qwen3 (the
+   `_bd`/`_bp` per-seq loops are different shapes and stay). Verified:
+   lint/load-probe + test_kernels 32/32 + single==reference (bit-exact);
+   batched helper runs (correct shape/finiteness).
+3. **Loader duplication** — `*_load` in llama/qwen2/gemma3/granite/qwen3/
+   qwen35/lfm2 each repeat ~50 lines of parse + tensor-load + llm-noun build.
+   Extract `load_gguf_base` (returns `<path; ti; tds; all_tensors; kv_data;
+   kvs_ctx; kvres; ct_tmpl>`) with arch hooks composing the rest. **DONE** —
+   `load_gguf_base` added to llm_core.ijs; the 6 standard loaders (llama/qwen2/
+   qwen3/gemma3/granite/ernie) refactored to use it. qwen35 (skips `blk.24.`
+   tensors) and lfm2 (lf2_conv member + conv loop) have genuinely special
+   tensor loops — correctly left. Verified: lint/load-probe (all load=1).
+4. **`*_run_blocks_b`/`_bd`/`_bp` rope-table build + loop** — the cos_exp/sin_exp
+   expansion + block_data_list loop is duplicated ~6×. Extract
+   `build_rope_expansions` + `run_blocks_loop`. **PARTIALLY DONE** — the
+   rope-expansion subset is DONE: `build_rope_expansions` added to llm_core.ijs
+   (NEOX, lead-parameterized; x = <cos_all; sin_all; half; n_heads; n_heads_kv;
+   lead>, returns <cos_expq; sin_expq; cos_expk; sin_expk>), replacing the
+   duplicated `(0 2 1)|:((lead,half,n_heads)$,(cos_all(*/)(n_heads$1)))` builds
+   across qwen2/qwen3/gemma3/lfm2 (b=L, bd=B, bp=B*c-with-reshape). Verified:
+   test_qwen2/qwen3/gemma3_all/lfm2/batched (Failed: 0) + lint (exit 0).
+   The **loop stays DEFERRED** — the loop cannot be shared: J cannot box a verb
+   into a list (noun-verb syntax error), so the per-arch block-forward verb
+   can't be threaded as data (the global-verb pattern would be a bigger
+   architectural change).
+   Low value, high awkwardness — leave.
+5. **qwen2/qwen3 forward-pass unification** — normalize block_data to a shared
+   17-element layout + flag-driven shared verbs (`qwen_attention`/
+   `qwen_block_forward`/`qwen_run_blocks` + `_b`/`_bd`/`_bp`) in llm_core.ijs.
+   qwen2 (`has_bias=1/has_qk_norm=0`) vs qwen3 (`has_bias=0/has_qk_norm=1`)
+   dispatch on the flag pair; each arch module keeps thin wrappers. **DONE** —
+   the per-arch `*_bd_*`/`*_run_blocks*` duplicated bodies are replaced with
+   wrappers (the qwen2/qwen3 pair shares; the cross-arch loop stays deferred
+   because other archs differ). Verified: test_qwen2/qwen3 (Failed: 0) +
+   batch==single (qwen2/qwen3 MATCH) + lint (exit 0).
+5. **Dead code cleanup** — `rope_apply`/`rope_apply2`/`rope_apply2_v1`/
+   `rope_apply_neox`/`rope_apply2_neox` (per-call-trig RoPE, superseded by the
+   table-based `rope_apply2_neox_t`/`_b` + `rope_apply2_t`/`_b`),
+   `matmul` (alias of `+/ .*`) and `linear` (boxed wrapper; hot path uses
+   `linear_r`/`+/ .*`). **DONE** — removed from kernels/jfloat.ijs and their
+   tests from tests/j/test_kernels.ijs. The per-call-trig RoPE kernels compute
+   cos/sin trig every call (slow path); the runtime precomputes tables once
+   (build_rope_tables) and threads them — no reason to switch back. The
+   ggml-oracle NEOX tests were dropped too: the runtime table-based NEOX kernels
+   are verified bit-exact vs llama.cpp in the arch suites (stronger than the
+   isolated oracle). `rope_apply2_v1` was fully dead (no tests, no runtime).
+   Verified: test_kernels (20 pass/0 fail), test_qwen3/test_batched (Failed: 0),
+   lint (exit 0).
 
-The 2026-10 dict-ification pass (llm noun → named dict, `catalog_d`, `dict_probe`,
-`kv_write` re-box — see HISTORICAL.md "Dict-ification & accessor robustness")
-made the per-arch wrappers largely redundant: the llm dict now carries
-`tokenizer`, `mi`, `kv_data`, `default_params`, `block_data`, `arch` — so the
-per-model verbs/nouns that just dispatch on those are pure aliases/data and can
-be shed into ONE generic set that reads everything from the dict and dispatches
-the arch-specific forward via `llm_arch`. This is a DRY study (2026-10) —
-inventory below; the plan is 3 tiers, executed in order. **Tier 1 items 1-3 and
-the Tier 3 per-model-globals members are DONE** (see HISTORICAL.md
-"Dict-ification & accessor robustness" — generic `chat_prompt`/`llm_stop_tokens`/
-`llm_tokenize`/`llm_detokenize`, and the `ct_tmpl`/`ct_caps`/`ct_tool_ex`/`lf2_conv`
-dict members). The remaining tiers/items below are still planned.
-
-### Tier 1 — shed pure aliases/data (low risk, ~40 verbs)
-
-The per-arch wrapper verbs below are identical across all 8 arch modules except
-for the arch-specific forward math + tokenizer — fold them into one shared verb
-each. The per-arch names stay as thin aliases so the documented "precise entry
-points" (and the tests that pin them) keep working.
-
-1. **`*_kv_uint`/`*_kv_float` (16)** — thin wrappers over the gguf `kv_uint`/
-   `kv_float`; the `kv_value` vt dispatch already handles them. Fold into
-   `kv_value` (or keep one generic `kv_uint`/`kv_float`); alias the 8 pairs.
-2. **gemma3 `*_infer` sample call** — gemma3 uses `params sampler_sample logits`
-   (gemma3.ijs:991) while all others use `sample_from ((<temp),(<k),(<p),(<min_p),<logits)`
-   (llm_core.ijs:297 wraps `sampler_sample`). Fold gemma3 onto `sample_from`.
-
-### Tier 2 — generic infer/generate in llm_core (the big win, ~720 lines)
-
-Collapse the per-arch `*_infer`/`*_generate`/`*_generate_batch`/`*_infer_simple`/
-`*_generate_simple` (40 verbs, ~720 lines, ~90% identical) into ONE generic set
-in util/llm_core.ijs that reads everything from the dict and dispatches the
-forward via `llm_arch`:
-
-- **Generic `infer`**: read tokenizer (`llm_tokenize`/`llm_detokenize` dispatch),
-  embed-scale + logit-scale (from the mi dict: `mi_emb_scale`/`mi_logit_scale` —
-  gemma3 `%: emb_len`, granite `granite_mi_embed_scale`/`granite_mi_logit_scale`,
-  others 1), `kv_create` args (block_count/ctx_len/n_heads_kv/head_dim from mi),
-  and dispatch `*_run_blocks`/`*_run_blocks_b` on `llm_arch`.
-- **Generic `generate`/`generate_batch`**: frame via `chat_prompt`, tokenize via
-  `llm_tokenize`, stop via `llm_stop_tokens`, then the EXISTING unified
-  `gen_loop_core`/`gen_loop_batch` (already arch-dispatched).
-- **Generic `*_simple`**: the two-line default-params wrappers.
-
-The per-arch `*_infer`/`*_generate`/`*_generate_batch`/`*_infer_simple`/
-`*_generate_simple` names become aliases to the generic (they still pin the
-loaded arch via `llm_arch` — no behavior change). Each arch module then keeps
-ONLY: hparam extraction, block_data build, and the forward math
-(`*_run_blocks`/`*_attention`/`*_block_forward`/`*_run_blocks_b`/`_bd`/`_bp`).
-Tests (test_gemma3/test_llama/test_qwen2/test_qwen3/test_ernie/test_qwen35/
-test_lfm2/test_batched) + CLI/chat/TUI/server all keep working via the aliases.
-
-### Tier 3 — per-model globals into the llm dict
-
-Per-model state that is currently a shared global (set per `*_load`), move into
-dict members so each loaded model keeps its own (no clobber, multi-model-ready).
-(The chat-template `ct_tmpl`/`ct_caps`/`ct_tool_ex`, the tokenizer-pre, and the
-lfm2 `lf2_conv` members are DONE — see the intro + HISTORICAL.md.)
-
-- **KV cache state** (`kv_pos_g`/`kv_max_seq_g`/`kv_batch_g`/`kv_seq_g`/
-  `kv_batch_alloc_g` + `k_cache_g`/`v_cache_g`) → the dict's `kv_cache` member.
-  **Medium risk**: the kv verbs are monadic (no llm arg) — need dyadic `llm`
-  threading. DEFER until Tier 2 settles (it's the only tier needing
-  monadic→dyadic verb changes).
-
-### Risk / verification
-
-- Tier 1/2: per-arch names stay as aliases → the documented "precise entry
-  points" and all tests keep working. Verify each arch suite + test_batched +
-  lint load-probe after each tier.
-- Tier 3: data-ification only (no verb signatures change except the KV-cache
-  tier, which is deferred); verify the chat/TUI/server suites still pass.
+Each step: implement, then `./scripts/install_local.sh --force`, then run the
+affected suites (test_llama/test_qwen2/test_qwen3/test_batched) bit-exact.
 
 ## Key Reference
 
